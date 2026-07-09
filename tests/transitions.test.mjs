@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { STATUS } from "../scripts/constants.mjs";
+import { buildStagingDir } from "../scripts/prompts/asset-service.mjs";
 import { DrawingAssignment } from "../scripts/prompts/prompt-models.mjs";
 import {
   evaluateOpened,
   evaluateRejection,
   evaluateSnapshot,
-  evaluateSubmission
+  evaluateSubmission,
+  isValidSubmissionPayload
 } from "../scripts/prompts/transitions.mjs";
 
 const STATUSES = Object.values(STATUS);
@@ -76,4 +78,51 @@ test("evaluateSnapshot displays only while pending or opened", () => {
   for ( const status of STATUSES ) {
     assert.deepEqual(evaluateSnapshot(assignmentWithStatus(status)), expected[status], status);
   }
+});
+
+test("buildStagingDir normalizes asset folders and appends staging", () => {
+  assert.equal(buildStagingDir("worlds/test/drawing-prompts"), "worlds/test/drawing-prompts/staging");
+  assert.equal(buildStagingDir("/worlds/test/drawing-prompts/"), "worlds/test/drawing-prompts/staging");
+  assert.equal(buildStagingDir(""), "staging");
+});
+
+test("isValidSubmissionPayload accepts socket-lane submissions", () => {
+  assert.equal(isValidSubmissionPayload({
+    overlay: { dataUrl: "data:image/webp;base64,abc", format: "webp" },
+    merged: { dataUrl: "data:image/webp;base64,def", format: "webp" },
+    opLog: { operations: [] },
+    width: 1024,
+    height: 768
+  }), true);
+});
+
+test("isValidSubmissionPayload accepts staged submissions", () => {
+  assert.equal(isValidSubmissionPayload({
+    mode: "staged",
+    staged: { overlayPath: "worlds/test/drawing-prompts/staging/a1-overlay.webp", mergedPath: null },
+    opLog: { operations: [] },
+    width: 1024,
+    height: 768,
+    formats: { overlay: "webp", merged: null }
+  }), true);
+});
+
+test("isValidSubmissionPayload rejects malformed staged submissions", () => {
+  assert.equal(isValidSubmissionPayload({
+    mode: "staged",
+    staged: { mergedPath: null },
+    opLog: {},
+    width: 1024,
+    height: 768,
+    formats: { overlay: "webp", merged: null }
+  }), false);
+});
+
+test("isValidSubmissionPayload rejects unknown submission modes", () => {
+  assert.equal(isValidSubmissionPayload({
+    mode: "future",
+    overlay: { dataUrl: "data:image/webp;base64,abc", format: "webp" },
+    width: 1024,
+    height: 768
+  }), false);
 });

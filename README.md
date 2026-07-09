@@ -40,6 +40,12 @@ Install `socketlib` separately before enabling Drawing Prompts. On The Forge, us
 
 Players receive a non-blocking drawing window. They can brush, erase, fill, sample colors, use the eyedropper, undo, redo, clear, submit, reject, close, and reopen active prompts from the Drawing Prompts control. Closing the window does not cancel the assignment.
 
+## Submission Transport
+
+Drawing submissions use two transport lanes. Players with the core `Upload New Files` permission (`FILES_UPLOAD`) stage full-resolution overlay and merged images directly into the configured asset folder under `staging`, then only the staged paths and operation log cross the socket. Players without that permission use the socket fallback lane; the module may reduce image quality or resolution to stay under Foundry socket-size limits.
+
+Staged filenames are deterministic per assignment, such as `{assignmentId}-overlay.webp` and `{assignmentId}-merged.webp`, so resubmitting overwrites that player's prior staged files. Foundry does not expose a client-side delete API, so abandoned staged files can remain, but they are bounded to one overlay and one merged file per assignment id.
+
 ## Settings
 
 | Setting | Purpose |
@@ -87,7 +93,7 @@ The module fires:
 
 Privacy is soft. Foundry world documents and user-data files are available to determined clients, so this module hides drawings in normal UI but does not provide cryptographic access control.
 
-Pending submissions are cached in the GM's current browser session until saved, so they survive a GM reload in the same session. They are still lost after logout, browser close, or browser storage eviction; reopen the assignment so the player can resubmit.
+Pending socket-lane submissions are cached in the GM's current browser session until saved, so they survive a GM reload in the same session. They are still lost after logout, browser close, or browser storage eviction; reopen the assignment so the player can resubmit. Staged-lane submissions also cache their small path payload in the GM session, and the images are server files, so they can usually still be saved after logout as long as the staged files remain on the server.
 
 Player-side reloads lose unsaved strokes because V1 has no local crash/reload recovery for in-progress drawings.
 

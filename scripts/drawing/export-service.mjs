@@ -26,12 +26,12 @@ export async function canvasToEncodedImage(canvas, { format, quality } = {}) {
 }
 
 /**
- * Build a socket submission payload from an engine.
+ * Build a full-resolution submission payload from an engine.
  * @param {import("./drawing-engine.mjs").DrawingEngine} engine Drawing engine.
  * @param {{format: string, quality?: number}} options Export options.
  * @returns {Promise<{overlay: {dataUrl: string, format: string}, merged?: {dataUrl: string, format: string}, opLog: object, width: number, height: number}>}
  */
-export async function buildSubmission(engine, { format, quality } = {}) {
+export async function buildFullSubmission(engine, { format, quality } = {}) {
   const hasBackground = engine.hasBackground;
   const [overlay, merged] = await Promise.all([
     engine.exportOverlay({ format, quality }),
@@ -44,7 +44,18 @@ export async function buildSubmission(engine, { format, quality } = {}) {
     width: engine.width,
     height: engine.height
   };
-  return enforceSubmissionWireLimit(engine, payload, { format, hasBackground });
+  return payload;
+}
+
+/**
+ * Build a socket-safe submission payload from an engine.
+ * @param {import("./drawing-engine.mjs").DrawingEngine} engine Drawing engine.
+ * @param {{format: string, quality?: number}} options Export options.
+ * @returns {Promise<{overlay: {dataUrl: string, format: string}, merged?: {dataUrl: string, format: string}, opLog: object, width: number, height: number}>}
+ */
+export async function buildSubmission(engine, { format, quality } = {}) {
+  const payload = await buildFullSubmission(engine, { format, quality });
+  return enforceSubmissionWireLimit(engine, payload, { format, hasBackground: engine.hasBackground });
 }
 
 /**

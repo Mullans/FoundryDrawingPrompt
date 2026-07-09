@@ -256,6 +256,7 @@
               <strong>{{this.name}}</strong>
               <span class="dp-user-flags">
                 {{#if this.isOffline}}<span>{{localize "DRAWING-PROMPTS.status.offline"}}</span>{{/if}}
+                {{#if this.lacksFileUpload}}<span data-tooltip="{{this.fileUploadTooltip}}">{{localize "DRAWING-PROMPTS.manager.fileUpload.missing"}}</span>{{/if}}
               </span>
             </span>
 

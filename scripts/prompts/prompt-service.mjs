@@ -1,15 +1,15 @@
-import { MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { DrawingPromptManager } from "../apps/drawing-prompt-manager.mjs";
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
 import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { buildTileData } from "../foundry/tile-placement-service.mjs";
 import { CALLS, emit } from "../socket.mjs";
-import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, uploadDataUrl, uploadJson } from "./asset-service.mjs";
+import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, stagingDir, uploadBlob, uploadDataUrl, uploadJson } from "./asset-service.mjs";
 import { getAssignment as getClientAssignment, updateStatus, upsertAssignment } from "./client-store.mjs";
 import { createPromptEntry, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
 import { defaultAssignmentAssetName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
-import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission } from "./transitions.mjs";
+import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isValidSubmissionPayload } from "./transitions.mjs";
 
 const pendingSubmissions = new Map();
 const SUBMISSION_KEY_PREFIX = "drawing-prompts.sub.";
@@ -139,6 +139,17 @@ export async function createAndSendPrompt(draft) {
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.promptCreated", prompt);
 
+  // Pre-create the staging directory for upload-capable players: FILES_UPLOAD
+  // lets them upload into existing directories but not create them, so the GM
+  // must ensure the directory exists before any staged submission arrives.
+  if ( Object.values(prompt.assignments).some(a => game.users.get(a.userId)?.can(FILES_UPLOAD_PERMISSION)) ) {
+    try {
+      await ensureDir(stagingDir());
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not pre-create staging directory`, err);
+    }
+  }
+
   // Dispatch deliveries in parallel and never let one player's slow or failed
   // remote handler block or fail the send: the assignment stays pending and can
   // be resent, which is the same recovery path as an offline player.
@@ -237,21 +248,15 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   if ( submission ) {
     const dir = normalizePath(folder || assignment.assets?.folder || game.settings.get(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER) || defaultAssetFolder());
     await ensureDir(dir);
-    const hasMerged = Boolean(submission.merged?.dataUrl);
+    const hasMerged = hasMergedSubmission(submission);
     const filenames = uniqueDrawingAssetFilenames({
       name: resolvedName,
-      extension: extensionFor((hasMerged ? submission.merged?.format : submission.overlay?.format) ?? "webp"),
+      extension: extensionFor(primarySubmissionFormat(submission, hasMerged)),
       hasMerged,
       existingFiles: await browseFiles(dir),
       fallback: game.i18n.localize("DRAWING-PROMPTS.manager.saveDialog.defaultSlug")
     });
-    const primaryDataUrl = hasMerged ? submission.merged?.dataUrl : submission.overlay?.dataUrl;
-    const uploads = [
-      uploadDataUrl(dir, filenames.primary, primaryDataUrl),
-      uploadJson(dir, filenames.opLog, submission.opLog ?? {})
-    ];
-    if ( hasMerged ) uploads.push(uploadDataUrl(dir, filenames.overlay, submission.overlay?.dataUrl));
-    const [primary, opLog, overlay] = await Promise.all(uploads);
+    const [primary, opLog, overlay] = await uploadSubmissionAssets(dir, filenames, submission, hasMerged);
     assignment.assets.overlayPath = hasMerged ? overlay.path : primary.path;
     assignment.assets.mergedPath = hasMerged ? primary.path : null;
     assignment.assets.oplogPath = opLog.path;
@@ -570,6 +575,11 @@ async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
  */
 async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
+  if ( !isValidSubmissionPayload(submissionPayload) ) {
+    ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidSubmissionPayload"));
+    console.warn("drawing-prompts | rejected invalid submission payload", assignmentId, submissionPayload);
+    return;
+  }
   const decision = evaluateSubmission(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("submitted", assignment, decision.reason);
   const now = Date.now();
@@ -577,13 +587,14 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   const late = prompt.deadlineAt ? now > prompt.deadlineAt : false;
   const overtimeMs = late ? now - prompt.deadlineAt : null;
   assignment.markSubmitted({ ts: now, late, overtimeMs });
-  pendingSubmissions.set(assignment.id, submissionPayload);
-  cacheSubmission(assignment.id, submissionPayload);
+  const receivedSubmission = { ...submissionPayload, receiptTs: now };
+  pendingSubmissions.set(assignment.id, receivedSubmission);
+  cacheSubmission(assignment.id, receivedSubmission);
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
-  Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, submissionPayload);
-  const previewDataUrl = submissionPayload?.merged?.dataUrl ?? submissionPayload?.overlay?.dataUrl;
-  if ( previewDataUrl ) DrawingPromptManager.receiveSnapshotOpen(assignment.id, previewDataUrl);
+  Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, receivedSubmission);
+  const previewSrc = submissionPreviewSrc(receivedSubmission);
+  if ( previewSrc ) DrawingPromptManager.receiveSnapshotOpen(assignment.id, previewSrc);
   await setManagerWindowOpen(assignment.id, false);
   await refreshManager();
 }
@@ -806,6 +817,128 @@ function resolveDrawingName(prompt, assignment, explicitName) {
     promptText: prompt.promptText,
     userName: assignment.userName
   })).trim();
+}
+
+/**
+ * Upload submission assets through the shared naming tail.
+ * @param {string} dir Target directory.
+ * @param {object} filenames Resolved filenames.
+ * @param {object} submission Submission payload.
+ * @param {boolean} hasMerged Whether a merged image exists.
+ * @returns {Promise<[{path: string}, {path: string}, {path: string}|undefined]>} Uploaded assets.
+ */
+async function uploadSubmissionAssets(dir, filenames, submission, hasMerged) {
+  if ( isStagedSubmission(submission) ) {
+    const primaryPath = hasMerged ? submission.staged.mergedPath : submission.staged.overlayPath;
+    const uploads = [
+      uploadStagedPath(dir, filenames.primary, primaryPath, submission.receiptTs),
+      uploadJson(dir, filenames.opLog, submission.opLog ?? {})
+    ];
+    if ( hasMerged ) uploads.push(uploadStagedPath(dir, filenames.overlay, submission.staged.overlayPath, submission.receiptTs));
+    return Promise.all(uploads);
+  }
+
+  const primaryDataUrl = hasMerged ? submission.merged?.dataUrl : submission.overlay?.dataUrl;
+  const uploads = [
+    uploadDataUrl(dir, filenames.primary, primaryDataUrl),
+    uploadJson(dir, filenames.opLog, submission.opLog ?? {})
+  ];
+  if ( hasMerged ) uploads.push(uploadDataUrl(dir, filenames.overlay, submission.overlay?.dataUrl));
+  return Promise.all(uploads);
+}
+
+/**
+ * Upload a staged file path into the GM-selected final folder.
+ * @param {string} dir Target directory.
+ * @param {string} filename Target filename.
+ * @param {string} path Staged source path.
+ * @param {number} receiptTs Receipt timestamp.
+ * @returns {Promise<{path: string}>} Uploaded final asset.
+ */
+async function uploadStagedPath(dir, filename, path, receiptTs) {
+  const blob = await fetchStagedBlob(path, receiptTs);
+  return uploadBlob(dir, filename, blob);
+}
+
+/**
+ * Fetch a staged server file as a Blob.
+ * @param {string} path Staged source path.
+ * @param {number} receiptTs Receipt timestamp.
+ * @returns {Promise<Blob>} Staged Blob.
+ */
+async function fetchStagedBlob(path, receiptTs) {
+  try {
+    const response = await fetch(stagedFetchUrl(path, receiptTs));
+    if ( !response.ok ) throw new Error(`HTTP ${response.status}`);
+    return response.blob();
+  } catch (err) {
+    console.warn("drawing-prompts | staged submission file fetch failed", path, err);
+    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.stagedSubmissionUnavailable"));
+  }
+}
+
+/**
+ * Resolve whether a submission uses staged file paths.
+ * @param {object} submission Submission payload.
+ * @returns {boolean} Whether staged.
+ */
+function isStagedSubmission(submission) {
+  return submission?.mode === "staged";
+}
+
+/**
+ * Resolve whether a submission includes merged output.
+ * @param {object} submission Submission payload.
+ * @returns {boolean} Whether merged output exists.
+ */
+function hasMergedSubmission(submission) {
+  return isStagedSubmission(submission)
+    ? Boolean(submission.staged?.mergedPath)
+    : Boolean(submission.merged?.dataUrl);
+}
+
+/**
+ * Resolve the primary image format for naming.
+ * @param {object} submission Submission payload.
+ * @param {boolean} hasMerged Whether merged output exists.
+ * @returns {string} Export format.
+ */
+function primarySubmissionFormat(submission, hasMerged) {
+  if ( isStagedSubmission(submission) ) return (hasMerged ? submission.formats?.merged : submission.formats?.overlay) ?? "webp";
+  return (hasMerged ? submission.merged?.format : submission.overlay?.format) ?? "webp";
+}
+
+/**
+ * Resolve a preview image source for a pending submission.
+ * @param {object} submission Submission payload.
+ * @returns {string|null} Preview source.
+ */
+function submissionPreviewSrc(submission) {
+  if ( isStagedSubmission(submission) ) {
+    const path = submission.staged?.mergedPath ?? submission.staged?.overlayPath;
+    return path ? cacheBustedAssetSrc(path, submission.receiptTs) : null;
+  }
+  return submission?.merged?.dataUrl ?? submission?.overlay?.dataUrl ?? null;
+}
+
+/**
+ * Build a root-relative fetch URL for a staged asset.
+ * @param {string} path Asset path.
+ * @param {number} receiptTs Receipt timestamp.
+ * @returns {string} Fetch URL.
+ */
+function stagedFetchUrl(path, receiptTs) {
+  return `/${encodeURI(normalizePath(path))}?ts=${encodeURIComponent(String(receiptTs ?? Date.now()))}`;
+}
+
+/**
+ * Add a cache-buster query to an image asset source.
+ * @param {string} path Asset path.
+ * @param {number} receiptTs Receipt timestamp.
+ * @returns {string} Image source.
+ */
+function cacheBustedAssetSrc(path, receiptTs) {
+  return `${encodeURI(path)}?ts=${encodeURIComponent(String(receiptTs ?? Date.now()))}`;
 }
 
 /**

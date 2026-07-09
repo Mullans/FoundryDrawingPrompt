@@ -1,7 +1,8 @@
 import { INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { DrawingEngine } from "../drawing/drawing-engine.mjs";
-import { buildSubmission } from "../drawing/export-service.mjs";
+import { buildFullSubmission, buildSubmission } from "../drawing/export-service.mjs";
 import { loadBackgroundImage } from "../foundry/background-source-service.mjs";
+import { canStageUploads, stageSubmissionImages } from "../prompts/asset-service.mjs";
 import { updateStatus } from "../prompts/client-store.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { createLeadingTrailingThrottle } from "../utils/throttle.mjs";
@@ -197,7 +198,9 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     const quality = Number(game.settings.get(MODULE_ID, SETTINGS.WEBP_QUALITY) ?? 0.9);
     let submissionPayload;
     try {
-      submissionPayload = await buildSubmission(this.#engine, { format, quality });
+      submissionPayload = canStageUploads()
+        ? await this.#buildStagedSubmissionPayload({ format, quality })
+        : await buildSubmission(this.#engine, { format, quality });
     } catch (_err) {
       ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.player.errors.exportFailed"));
       return;
@@ -210,6 +213,32 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     await emit.drawingSubmitted(this.assignmentPayload.prompt.gmUserId, this.assignmentPayload.assignment.id, game.user.id, submissionPayload);
     updateStatus(this.assignmentPayload.assignment.id, STATUS.SUBMITTED);
     await this.close();
+  }
+
+  /**
+   * Build a staged payload, falling back to the socket lane if upload is rejected.
+   * @param {{format: string, quality: number}} options Export options.
+   * @returns {Promise<object>} Submission payload.
+   */
+  async #buildStagedSubmissionPayload({ format, quality }) {
+    const fullSubmission = await buildFullSubmission(this.#engine, { format, quality });
+    try {
+      const staged = await stageSubmissionImages(this.assignmentPayload.assignment.id, fullSubmission);
+      return {
+        mode: "staged",
+        staged,
+        opLog: fullSubmission.opLog,
+        width: fullSubmission.width,
+        height: fullSubmission.height,
+        formats: {
+          overlay: fullSubmission.overlay?.format ?? format,
+          merged: fullSubmission.merged?.format ?? null
+        }
+      };
+    } catch (err) {
+      console.warn("drawing-prompts | staged submission upload failed; falling back to socket lane", err);
+      return buildSubmission(this.#engine, { format, quality });
+    }
   }
 
   /**

@@ -1,5 +1,6 @@
 export const MODULE_ID = "drawing-prompts";
 export const FLAG_PROMPT = "prompt";
+export const FILES_UPLOAD_PERMISSION = "FILES_UPLOAD";
 
 export const STATUS = Object.freeze({
   PENDING: "pending",

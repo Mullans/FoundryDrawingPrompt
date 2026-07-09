@@ -1,4 +1,4 @@
-import { MODULE_ID, SETTINGS } from "../constants.mjs";
+import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS } from "../constants.mjs";
 
 /**
  * Ensure the current user is a GM before writing files.
@@ -29,12 +29,40 @@ export function normalizePath(path) {
 }
 
 /**
+ * Build the staging directory below a normalized base asset folder.
+ * @param {string} baseFolder Base asset folder.
+ * @returns {string} Staging directory.
+ */
+export function buildStagingDir(baseFolder) {
+  const base = normalizePath(String(baseFolder ?? ""));
+  return base ? `${base}/staging` : "staging";
+}
+
+/**
  * Get the default flat asset folder.
  * @returns {string}
  */
 export function defaultAssetFolder() {
   const configured = normalizePath(game.settings.get(MODULE_ID, SETTINGS.ASSET_FOLDER) || "");
   return configured || `worlds/${game.world.id}/drawing-prompts`;
+}
+
+/**
+ * Test whether the current user can use the staged upload lane.
+ * @returns {boolean} Whether the current user can upload files.
+ */
+export function canStageUploads() {
+  return Boolean(game.user?.can?.(FILES_UPLOAD_PERMISSION));
+}
+
+/**
+ * Get the player-side submission staging directory. Staged files use
+ * deterministic names and overwrite on resubmission; there is no client-side
+ * delete API, so abandoned staged files are bounded by assignment id.
+ * @returns {string} Staging directory.
+ */
+export function stagingDir() {
+  return buildStagingDir(defaultAssetFolder());
 }
 
 /**
@@ -100,6 +128,19 @@ export async function uploadDataUrl(dir, filename, dataUrl) {
 }
 
 /**
+ * Upload a Blob as a file to the Foundry data source.
+ * @param {string} dir Target directory.
+ * @param {string} filename Target filename.
+ * @param {Blob} blob Source blob.
+ * @returns {Promise<{path: string}>} Uploaded file path response.
+ */
+export async function uploadBlob(dir, filename, blob) {
+  assertGM();
+  await ensureDir(dir);
+  return uploadBlobForCurrentUser(dir, filename, blob);
+}
+
+/**
  * Upload JSON data as a file to the Foundry data source.
  * @param {string} dir Target directory.
  * @param {string} filename Target filename.
@@ -114,4 +155,74 @@ export async function uploadJson(dir, filename, data) {
   const uploadResponse = await getFilePicker().upload("data", dir, file, {}, { notify: false });
   if ( !uploadResponse?.path ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.uploadFailed"));
   return { path: uploadResponse.path };
+}
+
+/**
+ * Stage full-resolution submission images from an upload-capable player.
+ * Staged filenames are deterministic per assignment and overwrite on
+ * resubmission; Foundry exposes no client-side delete API, so orphaned staging
+ * files are bounded by assignment id.
+ * @param {string} assignmentId Assignment id.
+ * @param {object} submission Full-resolution submission payload.
+ * @returns {Promise<{overlayPath: string, mergedPath: string|null}>} Staged file paths.
+ */
+export async function stageSubmissionImages(assignmentId, submission) {
+  if ( !canStageUploads() ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.fileUploadRequired"));
+  // FILES_UPLOAD permits uploads into EXISTING directories only — createDirectory
+  // requires browse rights players usually lack. The GM pre-creates the staging
+  // directory at send time (see createAndSendPrompt); if it is missing the upload
+  // rejects and the caller falls back to the socket lane.
+  const dir = stagingDir();
+  const basename = String(assignmentId || "assignment");
+  const overlayBlob = await dataUrlToBlob(submission?.overlay?.dataUrl);
+  const overlayFilename = `${basename}-overlay.${extensionFor(submission?.overlay?.format)}`;
+  const uploads = [
+    uploadBlobForCurrentUser(dir, overlayFilename, overlayBlob)
+  ];
+
+  const hasMerged = Boolean(submission?.merged?.dataUrl);
+  if ( hasMerged ) {
+    const mergedBlob = await dataUrlToBlob(submission.merged.dataUrl);
+    const mergedFilename = `${basename}-merged.${extensionFor(submission.merged.format)}`;
+    uploads.push(uploadBlobForCurrentUser(dir, mergedFilename, mergedBlob));
+  }
+
+  const [overlay, merged] = await Promise.all(uploads);
+  return {
+    overlayPath: overlay.path,
+    mergedPath: merged?.path ?? null
+  };
+}
+
+/**
+ * Upload a Blob without a GM assertion. Callers must guard capability first.
+ * @param {string} dir Target directory.
+ * @param {string} filename Target filename.
+ * @param {Blob} blob Source blob.
+ * @returns {Promise<{path: string}>} Uploaded file path response.
+ */
+async function uploadBlobForCurrentUser(dir, filename, blob) {
+  const file = new File([blob], filename, { type: blob.type });
+  const uploadResponse = await getFilePicker().upload("data", normalizePath(dir), file, {}, { notify: false });
+  if ( !uploadResponse?.path ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.uploadFailed"));
+  return { path: uploadResponse.path };
+}
+
+/**
+ * Convert a data URL to a Blob.
+ * @param {string} dataUrl Source data URL.
+ * @returns {Promise<Blob>} Blob.
+ */
+async function dataUrlToBlob(dataUrl) {
+  const response = await fetch(dataUrl);
+  return response.blob();
+}
+
+/**
+ * Convert an exported format to a file extension.
+ * @param {string} format Export format.
+ * @returns {string}
+ */
+function extensionFor(format) {
+  return format === "png" ? "png" : "webp";
 }

@@ -1,4 +1,4 @@
-import { BG_SOURCE, FIT_MODE, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { computeBackgroundLayout } from "../drawing/background-layout.mjs";
 import { defaultAssetFolder, normalizePath } from "../prompts/asset-service.mjs";
 import {
@@ -483,7 +483,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       isSaved: Boolean(assignment?.primaryImagePath),
       savedTooltip: assignment?.primaryImagePath
         ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: assignment.primaryImagePath })
-        : ""
+        : "",
+      lacksFileUpload: !userCanUploadFiles(user),
+      fileUploadTooltip: game.i18n.localize("DRAWING-PROMPTS.manager.fileUpload.tooltip")
     };
   }
 
@@ -534,10 +536,26 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   static async #onSendPrompt() {
     const draft = this.#serviceDraft();
     if ( !this.#validateDraft(draft) ) return;
+    this.#warnSelectedUsersWithoutFileUpload(draft.selectedUserIds);
     const service = await import("../prompts/prompt-service.mjs");
     this.activePrompt = await service.createAndSendPrompt(draft);
     this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
     await this.render({ parts: ["body"] });
+  }
+
+  /**
+   * Warn when selected users cannot stage full-resolution uploads.
+   * @param {string[]} selectedUserIds Selected user ids.
+   * @returns {void}
+   */
+  #warnSelectedUsersWithoutFileUpload(selectedUserIds) {
+    const selected = new Set(selectedUserIds);
+    const names = userValues()
+      .filter(user => !user.isGM && selected.has(user.id) && !userCanUploadFiles(user))
+      .map(user => user.name);
+    if ( names.length ) {
+      ui.notifications.warn(game.i18n.format("DRAWING-PROMPTS.manager.warnings.noFileUpload", { names: names.join(", ") }));
+    }
   }
 
   /** @this {DrawingPromptManager} */
@@ -794,7 +812,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       const service = await import("../prompts/prompt-service.mjs");
       const submission = service.getPendingSubmission(assignment.id);
       return {
-        src: submission?.merged?.dataUrl ?? submission?.overlay?.dataUrl ?? snapshot,
+        src: pendingSubmissionPreviewSrc(submission) ?? snapshot,
         heading: assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing")
       };
     }
@@ -1073,6 +1091,28 @@ function userValues() {
   if ( typeof game.users.filter === "function" ) return game.users.filter(() => true);
   if ( typeof game.users.values === "function" ) return Array.from(game.users.values());
   return Array.from(game.users);
+}
+
+/**
+ * Test whether a user document can upload files.
+ * @param {User} user Foundry user.
+ * @returns {boolean} Whether uploads are allowed.
+ */
+function userCanUploadFiles(user) {
+  return Boolean(user?.can?.(FILES_UPLOAD_PERMISSION));
+}
+
+/**
+ * Resolve a preview source from a cached pending submission.
+ * @param {object|null} submission Submission payload.
+ * @returns {string|null} Preview source.
+ */
+function pendingSubmissionPreviewSrc(submission) {
+  if ( submission?.mode === "staged" ) {
+    const path = submission.staged?.mergedPath ?? submission.staged?.overlayPath;
+    return path ? `${encodeURI(path)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}` : null;
+  }
+  return submission?.merged?.dataUrl ?? submission?.overlay?.dataUrl ?? null;
 }
 
 /**
