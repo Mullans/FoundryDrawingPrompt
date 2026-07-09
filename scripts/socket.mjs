@@ -1,4 +1,5 @@
 import { MODULE_ID } from "./constants.mjs";
+import { assertGmInitiator } from "./prompts/socket-auth.mjs";
 
 export const CALLS = Object.freeze({
   OPEN: "openDrawingPrompt",
@@ -32,9 +33,37 @@ export function initSocket(handlers) {
     return;
   }
   for ( const callName of Object.values(CALLS) ) {
-    socket.register(callName, handlers[callName] ?? (() => console.debug(`${MODULE_ID} | Unhandled socket call`, callName)));
+    const handler = handlers[callName] ?? (() => console.debug(`${MODULE_ID} | Unhandled socket call`, callName));
+    socket.register(callName, wrapPlayerGmHandler(callName, handler));
   }
 }
+
+/**
+ * Wrap player-targeted handlers so only a GM initiator can invoke them.
+ * @param {string} callName Socket call name.
+ * @param {Function} handler Registered handler.
+ * @returns {Function} Wrapped handler.
+ */
+function wrapPlayerGmHandler(callName, handler) {
+  if ( !PLAYER_GM_INITIATED_CALLS.has(callName) ) return handler;
+  return function wrappedPlayerGmHandler(...args) {
+    try {
+      assertGmInitiator(this?.socketdata?.userId, game.users);
+    } catch (_err) {
+      console.debug(`${MODULE_ID} | rejected non-GM socket call`, callName, this?.socketdata?.userId);
+      return;
+    }
+    return handler.apply(this, args);
+  };
+}
+
+const PLAYER_GM_INITIATED_CALLS = new Set([
+  CALLS.OPEN,
+  CALLS.REOPEN,
+  CALLS.CANCEL,
+  CALLS.SHOW,
+  CALLS.REQUEST_SNAPSHOT
+]);
 
 /**
  * Test whether socketlib registration completed.

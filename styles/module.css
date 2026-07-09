@@ -240,6 +240,20 @@
   color: var(--dp-text);
 }
 
+.drawing-prompts .dp-prompt-queue {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--dp-text);
+  font-weight: 600;
+}
+
+.drawing-prompts .dp-prompt-queue select {
+  flex: 1 1 auto;
+  min-width: 12rem;
+}
+
 .drawing-prompts .dp-summary-bar {
   display: flex;
   flex: 0 0 auto;

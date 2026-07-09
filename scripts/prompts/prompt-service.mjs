@@ -1,15 +1,17 @@
 import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
-import { DrawingPromptManager } from "../apps/drawing-prompt-manager.mjs";
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
 import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { buildTileData } from "../foundry/tile-placement-service.mjs";
 import { CALLS, emit } from "../socket.mjs";
-import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, stagingDir, uploadBlob, uploadDataUrl, uploadJson } from "./asset-service.mjs";
+import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, pendingDir, stagingDir, uploadBlob, uploadDataUrl, uploadJson } from "./asset-service.mjs";
 import { getAssignment as getClientAssignment, updateStatus, upsertAssignment } from "./client-store.mjs";
-import { createPromptEntry, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
+import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
 import { defaultAssignmentAssetName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
+import { assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
 import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isValidSubmissionPayload } from "./transitions.mjs";
+import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
+import { isValidSnapshotDataUrl } from "./wire-validation.mjs";
 
 const pendingSubmissions = new Map();
 const SUBMISSION_KEY_PREFIX = "drawing-prompts.sub.";
@@ -30,6 +32,12 @@ function assertGM() {
  * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment}}
  */
 function requirePromptAssignment(assignmentId) {
+  const promptId = getPromptIdForAssignment(assignmentId);
+  if ( promptId ) {
+    const prompt = loadPrompt(promptId);
+    const assignment = prompt?.getAssignment(assignmentId);
+    if ( prompt && assignment ) return { prompt, assignment };
+  }
   for ( const prompt of loadAllPrompts() ) {
     const assignment = prompt.getAssignment(assignmentId);
     if ( assignment ) return { prompt, assignment };
@@ -139,9 +147,6 @@ export async function createAndSendPrompt(draft) {
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.promptCreated", prompt);
 
-  // Pre-create the staging directory for upload-capable players: FILES_UPLOAD
-  // lets them upload into existing directories but not create them, so the GM
-  // must ensure the directory exists before any staged submission arrives.
   if ( Object.values(prompt.assignments).some(a => game.users.get(a.userId)?.can(FILES_UPLOAD_PERMISSION)) ) {
     try {
       await ensureDir(stagingDir());
@@ -150,9 +155,17 @@ export async function createAndSendPrompt(draft) {
     }
   }
 
-  // Dispatch deliveries in parallel and never let one player's slow or failed
-  // remote handler block or fail the send: the assignment stays pending and can
-  // be resent, which is the same recovery path as an offline player.
+  const deliveries = deliverPromptAssignments(prompt);
+  if ( draft.awaitDeliveries ) await deliveries;
+  return prompt;
+}
+
+/**
+ * Deliver active assignments for a prompt and return their settlement promise.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<PromiseSettledResult<void>[]>}
+ */
+function deliverPromptAssignments(prompt) {
   const deliveries = Object.values(prompt.assignments)
     .filter(assignment => game.users.get(assignment.userId)?.active)
     .map(assignment => emit.openDrawingPrompt(assignment.userId, payloadFor(prompt, assignment))
@@ -160,9 +173,9 @@ export async function createAndSendPrompt(draft) {
       .catch(err => {
         console.warn(`drawing-prompts | delivery failed for ${assignment.userName}`, err);
         ui.notifications.warn(game.i18n.format("DRAWING-PROMPTS.errors.deliveryFailed", { name: assignment.userName }));
+        throw err;
       }));
-  Promise.allSettled(deliveries);
-  return prompt;
+  return Promise.allSettled(deliveries);
 }
 
 /**
@@ -174,6 +187,7 @@ export async function openPromptManager() {
     ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
     return;
   }
+  const { DrawingPromptManager } = await import("../apps/drawing-prompt-manager.mjs");
   await DrawingPromptManager.open();
 }
 
@@ -190,8 +204,9 @@ export async function openPlayerPromptList() {
  * @param {object} options Prompt options.
  * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
  */
-export async function createPrompt(options) {
-  return createAndSendPrompt(options);
+export async function createPrompt(options = {}) {
+  const { awaitDeliveries, ...draft } = options;
+  return createAndSendPrompt({ ...draft, awaitDeliveries });
 }
 
 /**
@@ -209,6 +224,11 @@ export function getPrompt(promptId) {
  * @returns {import("./prompt-models.mjs").DrawingAssignment|null}
  */
 export function getAssignment(assignmentId) {
+  const promptId = getPromptIdForAssignment(assignmentId);
+  if ( promptId ) {
+    const assignment = loadPrompt(promptId)?.getAssignment(assignmentId);
+    if ( assignment ) return assignment;
+  }
   for ( const prompt of loadAllPrompts() ) {
     const assignment = prompt.getAssignment(assignmentId);
     if ( assignment ) return assignment;
@@ -224,7 +244,13 @@ export function getAssignment(assignmentId) {
 export function getPendingSubmission(assignmentId) {
   const submission = pendingSubmissions.get(assignmentId) ?? readCachedSubmission(assignmentId);
   if ( submission && !pendingSubmissions.has(assignmentId) ) pendingSubmissions.set(assignmentId, submission);
-  return submission ?? null;
+  if ( submission ) return submission;
+  const assignment = getAssignment(assignmentId);
+  if ( assignment?.pendingSubmission ) {
+    pendingSubmissions.set(assignmentId, assignment.pendingSubmission);
+    return assignment.pendingSubmission;
+  }
+  return null;
 }
 
 /**
@@ -261,6 +287,9 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     assignment.assets.mergedPath = hasMerged ? primary.path : null;
     assignment.assets.oplogPath = opLog.path;
     assignment.assets.folder = dir;
+    assignment.assets.tileWidth = submissionTileWidth(submission, prompt);
+    assignment.assets.tileHeight = submissionTileHeight(submission, prompt);
+    assignment.pendingSubmission = null;
     await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, dir);
     pendingSubmissions.delete(assignment.id);
     clearCachedSubmission(assignment.id);
@@ -288,11 +317,20 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {
 
   const scene = globalThis.canvas?.scene;
   if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));
+  const submission = getPendingSubmission(assignmentId);
+  const tileWidth = assignment.assets.tileWidth ?? submissionTileWidth(submission, prompt);
+  const tileHeight = assignment.assets.tileHeight ?? submissionTileHeight(submission, prompt);
+  if ( submission?.wireScaled && !isStagedSubmission(submission) ) {
+    ui.notifications.warn(game.i18n.format("DRAWING-PROMPTS.manager.warnings.wireScaledPlacement", {
+      width: tileWidth,
+      height: tileHeight
+    }));
+  }
   const tileData = buildTileData({
     src: assignment.primaryImagePath,
     name: assignment.assets.name,
-    width: prompt.canvasWidth,
-    height: prompt.canvasHeight,
+    width: tileWidth,
+    height: tileHeight,
     center: {
       x: globalThis.canvas.stage?.pivot?.x ?? (Number(scene.width) / 2),
       y: globalThis.canvas.stage?.pivot?.y ?? (Number(scene.height) / 2)
@@ -373,7 +411,7 @@ export async function finishPrompt(promptId) {
     pendingSubmissions.delete(assignment.id);
     clearCachedSubmission(assignment.id);
   }
-  await savePrompt(prompt);
+  await deletePromptEntry(promptId);
   await refreshManager();
   return prompt;
 }
@@ -390,6 +428,7 @@ export async function reopenAssignment(assignmentId, userId = null) {
   assertPromptOwner(prompt);
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
   assignment.markReopened();
+  assignment.pendingSubmission = null;
   pendingSubmissions.delete(assignment.id);
   clearCachedSubmission(assignment.id);
   await savePrompt(prompt);
@@ -476,7 +515,13 @@ export async function showPlayerWindow(assignmentId) {
  * @returns {Promise<void>}
  */
 async function handleOpenPrompt(payload) {
-  payload = validatePlayerPayload(payload);
+  try {
+    payload = validatePlayerPayload(payload);
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored open prompt", err);
+    return;
+  }
   upsertAssignment(payload);
   notifyPlayer("DRAWING-PROMPTS.player.notifications.received");
   await refreshPromptList();
@@ -491,7 +536,13 @@ async function handleOpenPrompt(payload) {
  * @returns {Promise<void>}
  */
 async function handleReopenPrompt(payload) {
-  payload = validatePlayerPayload(payload);
+  try {
+    payload = validatePlayerPayload(payload);
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored reopen prompt", err);
+    return;
+  }
   payload.assignment.status = STATUS.OPENED;
   upsertAssignment(payload);
   notifyPlayer("DRAWING-PROMPTS.player.notifications.reopened");
@@ -507,6 +558,12 @@ async function handleReopenPrompt(payload) {
 async function handleCancelPrompt(assignmentId) {
   const payload = validateKnownActivePlayerAssignment(assignmentId, "cancel");
   if ( !payload ) return;
+  try {
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored cancel prompt", err);
+    return;
+  }
   updateStatus(assignmentId, STATUS.CANCELLED);
   await refreshPromptList();
   await PlayerDrawingApp.closeAssignment(assignmentId, { silent: true });
@@ -520,6 +577,12 @@ async function handleCancelPrompt(assignmentId) {
 async function handleShowPrompt(assignmentId) {
   const payload = validateKnownActivePlayerAssignment(assignmentId, "show");
   if ( !payload ) return;
+  try {
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored show prompt", err);
+    return;
+  }
   await PlayerDrawingApp.open(payload, { mode: "live" });
 }
 
@@ -531,6 +594,12 @@ async function handleShowPrompt(assignmentId) {
 async function handleRequestSnapshot(assignmentId) {
   const payload = validateKnownActivePlayerAssignment(assignmentId, "request-snapshot");
   if ( !payload ) return;
+  try {
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored snapshot request", err);
+    return;
+  }
   await PlayerDrawingApp.sendSnapshotForAssignment(assignmentId);
 }
 
@@ -561,9 +630,13 @@ async function handleAssignmentOpened(assignmentId, userId) {
  */
 async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
   const { assignment } = validateOwningGMSender(assignmentId, userId);
+  if ( !isValidSnapshotDataUrl(snapshotDataUrl) ) {
+    console.debug("drawing-prompts | ignored invalid snapshot payload", assignmentId);
+    return;
+  }
   const decision = evaluateSnapshot(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("snapshot", assignment, decision.reason);
-  DrawingPromptManager.receiveSnapshotOpen(assignmentId, snapshotDataUrl);
+  receiveManagerSnapshot(assignmentId, snapshotDataUrl);
 }
 
 /**
@@ -575,7 +648,7 @@ async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
  */
 async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
-  if ( !isValidSubmissionPayload(submissionPayload) ) {
+  if ( !isValidSubmissionPayload(submissionPayload, submissionValidationContext(assignmentId)) ) {
     ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidSubmissionPayload"));
     console.warn("drawing-prompts | rejected invalid submission payload", assignmentId, submissionPayload);
     return;
@@ -587,14 +660,22 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   const late = prompt.deadlineAt ? now > prompt.deadlineAt : false;
   const overtimeMs = late ? now - prompt.deadlineAt : null;
   assignment.markSubmitted({ ts: now, late, overtimeMs });
-  const receivedSubmission = { ...submissionPayload, receiptTs: now };
+  let receivedSubmission = { ...submissionPayload, receiptTs: now };
+  if ( !isStagedSubmission(receivedSubmission) ) {
+    try {
+      receivedSubmission = await persistSocketSubmission(assignmentId, receivedSubmission);
+    } catch (err) {
+      console.warn("drawing-prompts | could not persist socket submission to pending folder", assignmentId, err);
+    }
+  }
   pendingSubmissions.set(assignment.id, receivedSubmission);
+  assignment.pendingSubmission = receivedSubmission;
   cacheSubmission(assignment.id, receivedSubmission);
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, receivedSubmission);
   const previewSrc = submissionPreviewSrc(receivedSubmission);
-  if ( previewSrc ) DrawingPromptManager.receiveSnapshotOpen(assignment.id, previewSrc);
+  if ( previewSrc ) receiveManagerSnapshot(assignment.id, previewSrc);
   await setManagerWindowOpen(assignment.id, false);
   await refreshManager();
 }
@@ -677,8 +758,10 @@ function cacheSubmission(assignmentId, submission) {
     index[assignmentId] = { ts: Date.now(), size: serialized.length };
     writeSubmissionIndex(index);
     evictSubmissionCache(index);
-  } catch (_err) {
-    // Ignore quota or privacy mode failures.
+  } catch (err) {
+    if ( err?.name === "QuotaExceededError" ) {
+      ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.submissionCacheQuota"));
+    }
   }
 }
 
@@ -748,9 +831,16 @@ function writeSubmissionIndex(index) {
  */
 function evictSubmissionCache(index) {
   let total = Object.values(index).reduce((sum, item) => sum + Number(item.size || 0), 0);
+  const protectedIds = new Set(
+    [...pendingSubmissions.keys()].filter(assignmentId => {
+      const submission = pendingSubmissions.get(assignmentId);
+      return submission && !submissionPersistedOnDisk(submission);
+    })
+  );
   const entries = Object.entries(index).sort((a, b) => Number(a[1].ts || 0) - Number(b[1].ts || 0));
   for ( const [assignmentId, item] of entries ) {
     if ( total <= SUBMISSION_CACHE_LIMIT ) break;
+    if ( protectedIds.has(assignmentId) ) continue;
     sessionStorage.removeItem(`${SUBMISSION_KEY_PREFIX}${assignmentId}`);
     total -= Number(item.size || 0);
     delete index[assignmentId];
@@ -777,31 +867,90 @@ function notifyPlayer(key) {
 }
 
 /**
- * Refresh the GM manager if present.
- * @returns {Promise<void>}
- */
-async function refreshManager() {
-  if ( !game.user.isGM ) return;
-  DrawingPromptManager.refreshOpen();
-}
-
-/**
- * Update the manager's window-open state.
- * @param {string} assignmentId Assignment id.
- * @param {boolean} open Whether open.
- * @returns {Promise<void>}
- */
-async function setManagerWindowOpen(assignmentId, open) {
-  if ( !game.user.isGM ) return;
-  DrawingPromptManager.setWindowOpen(assignmentId, open);
-}
-
-/**
  * Refresh the player prompt list if present.
  * @returns {Promise<void>}
  */
 async function refreshPromptList() {
   PlayerPromptList.refreshOpen();
+}
+
+/**
+ * Build validation context for inbound submission payloads.
+ * @param {string} assignmentId Assignment id.
+ * @returns {{assignmentId: string, stagingRoot: string, pendingRoot: string}}
+ */
+function submissionValidationContext(assignmentId) {
+  return {
+    assignmentId,
+    stagingRoot: stagingDir(),
+    pendingRoot: pendingDir(assignmentId)
+  };
+}
+
+/**
+ * Persist a socket-lane submission to the GM pending folder and rewrite as staged paths.
+ * @param {string} assignmentId Assignment id.
+ * @param {object} submission Socket submission payload.
+ * @returns {Promise<object>} Staged-shaped persisted submission.
+ */
+async function persistSocketSubmission(assignmentId, submission) {
+  const dir = pendingDir(assignmentId);
+  await ensureDir(dir);
+  const hasMerged = Boolean(submission.merged?.dataUrl);
+  const overlayExt = extensionFor(submission.overlay?.format);
+  const overlay = await uploadDataUrl(dir, `overlay.${overlayExt}`, submission.overlay.dataUrl);
+  let merged = null;
+  if ( hasMerged ) {
+    merged = await uploadDataUrl(dir, `merged.${extensionFor(submission.merged.format)}`, submission.merged.dataUrl);
+  }
+  return {
+    mode: "staged",
+    staged: {
+      overlayPath: overlay.path,
+      mergedPath: merged?.path ?? null
+    },
+    formats: {
+      overlay: submission.overlay?.format ?? "webp",
+      merged: hasMerged ? submission.merged?.format ?? "webp" : null
+    },
+    opLog: submission.opLog,
+    width: submission.width,
+    height: submission.height,
+    originalWidth: submission.originalWidth,
+    originalHeight: submission.originalHeight,
+    wireScaled: submission.wireScaled,
+    opLogTruncated: submission.opLogTruncated,
+    receiptTs: submission.receiptTs
+  };
+}
+
+/**
+ * Test whether a submission is already persisted on the server data source.
+ * @param {object} submission Submission payload.
+ * @returns {boolean} Whether persisted on disk.
+ */
+function submissionPersistedOnDisk(submission) {
+  return isStagedSubmission(submission);
+}
+
+/**
+ * Resolve tile width from a submission payload.
+ * @param {object|null} submission Submission payload.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {number}
+ */
+function submissionTileWidth(submission, prompt) {
+  return Number(submission?.originalWidth ?? submission?.width ?? prompt.canvasWidth);
+}
+
+/**
+ * Resolve tile height from a submission payload.
+ * @param {object|null} submission Submission payload.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {number}
+ */
+function submissionTileHeight(submission, prompt) {
+  return Number(submission?.originalHeight ?? submission?.height ?? prompt.canvasHeight);
 }
 
 /**

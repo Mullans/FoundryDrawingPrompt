@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { STATUS } from "../scripts/constants.mjs";
-import { buildStagingDir } from "../scripts/prompts/asset-service.mjs";
+import { buildPendingDir, buildStagingDir } from "../scripts/prompts/asset-service.mjs";
 import { DrawingAssignment } from "../scripts/prompts/prompt-models.mjs";
 import {
   evaluateOpened,
@@ -125,4 +125,34 @@ test("isValidSubmissionPayload rejects unknown submission modes", () => {
     width: 1024,
     height: 768
   }), false);
+});
+
+test("isValidSubmissionPayload rejects invalid socket-lane image MIME", () => {
+  assert.equal(isValidSubmissionPayload({
+    overlay: { dataUrl: "data:text/plain;base64,YQ==", format: "webp" },
+    width: 1024,
+    height: 768
+  }), false);
+});
+
+test("isValidSubmissionPayload rejects staged paths outside allowlist", () => {
+  const assignmentId = "a1";
+  const stagingRoot = buildStagingDir("worlds/test/drawing-prompts");
+  const pendingRoot = buildPendingDir("worlds/test/drawing-prompts", assignmentId);
+  assert.equal(isValidSubmissionPayload({
+    mode: "staged",
+    staged: { overlayPath: "worlds/other/secret.webp", mergedPath: null },
+    opLog: { operations: [] },
+    width: 1024,
+    height: 768,
+    formats: { overlay: "webp", merged: null }
+  }, { assignmentId, stagingRoot, pendingRoot }), false);
+  assert.equal(isValidSubmissionPayload({
+    mode: "staged",
+    staged: { overlayPath: `${stagingRoot}/${assignmentId}-overlay.webp`, mergedPath: null },
+    opLog: { operations: [] },
+    width: 1024,
+    height: 768,
+    formats: { overlay: "webp", merged: null }
+  }, { assignmentId, stagingRoot, pendingRoot }), true);
 });

@@ -28,7 +28,9 @@ export class DrawingAssignment {
       mergedPath: data.assets?.mergedPath ?? null,
       oplogPath: data.assets?.oplogPath ?? null,
       thumbPath: data.assets?.thumbPath ?? null,
-      folder: data.assets?.folder ?? null
+      folder: data.assets?.folder ?? null,
+      tileWidth: data.assets?.tileWidth ?? null,
+      tileHeight: data.assets?.tileHeight ?? null
     };
     this.placements = Array.isArray(data.placements) ? data.placements.map(placement => ({
       tileId: placement?.tileId ?? null,
@@ -36,6 +38,7 @@ export class DrawingAssignment {
       hidden: Boolean(placement?.hidden),
       placedAt: placement?.placedAt ?? null
     })) : [];
+    this.pendingSubmission = data.pendingSubmission ?? null;
   }
 
   /**
@@ -84,7 +87,8 @@ export class DrawingAssignment {
       overtimeMs: this.overtimeMs,
       reopenedCount: this.reopenedCount,
       assets: { ...this.assets },
-      placements: this.placements.map(placement => ({ ...placement }))
+      placements: this.placements.map(placement => ({ ...placement })),
+      pendingSubmission: this.pendingSubmission ? JSON.parse(JSON.stringify(this.pendingSubmission)) : null
     };
   }
 

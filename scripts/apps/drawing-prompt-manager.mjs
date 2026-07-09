@@ -55,7 +55,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       saveAssignment: DrawingPromptManager.#onSaveAssignment,
       placeAssignment: DrawingPromptManager.#onPlaceAssignment,
       placeHiddenAssignment: DrawingPromptManager.#onPlaceHiddenAssignment,
-      finishPrompt: DrawingPromptManager.#onFinishPrompt
+      finishPrompt: DrawingPromptManager.#onFinishPrompt,
+      switchPrompt: DrawingPromptManager.#onSwitchPrompt
     }
   };
 
@@ -217,6 +218,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       canCancelAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.isActive)),
       canResendAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
       canFinishPrompt: Boolean(this.activePrompt),
+      promptQueue: this.#promptQueueContext(),
       selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !selectedAssignment.primaryImagePath,
       selectedIsSaved: Boolean(selectedAssignment?.primaryImagePath),
       selectedSavedTooltip: selectedAssignment?.primaryImagePath
@@ -666,6 +668,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /** @this {DrawingPromptManager} */
+  static async #onSwitchPrompt(_event, target) {
+    const promptId = target?.value ?? target?.dataset?.promptId;
+    await this.#switchToPrompt(String(promptId || ""));
+  }
+
+  /** @this {DrawingPromptManager} */
   static async #onFinishPrompt() {
     if ( !this.activePrompt ) return;
     const affected = Object.values(this.activePrompt.assignments)
@@ -862,6 +870,46 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     return loadAllPrompts()
       .filter(prompt => prompt.needsAttention && prompt.gmUserId === game.user.id)
       .sort((a, b) => Number(b.sentAt ?? 0) - Number(a.sentAt ?? 0));
+  }
+
+  /**
+   * Build review-mode prompt queue context.
+   * @returns {{options: Array<{id: string, label: string, selected: boolean}>}|null}
+   */
+  #promptQueueContext() {
+    const prompts = this.#unfinishedPrompts();
+    if ( prompts.length <= 1 ) return null;
+    return {
+      options: prompts.map(prompt => ({
+        id: prompt.id,
+        label: prompt.drawingName || prompt.promptText || prompt.id,
+        selected: prompt.id === this.activePrompt?.id
+      }))
+    };
+  }
+
+  /**
+   * Switch the manager to another unfinished prompt.
+   * @param {string} promptId Prompt id.
+   * @returns {Promise<void>}
+   */
+  async #switchToPrompt(promptId) {
+    if ( !promptId || promptId === this.activePrompt?.id ) return;
+    this.activePrompt = loadPrompt(promptId);
+    if ( !this.activePrompt ) return;
+    this.#adoptDraftFromPrompt();
+    this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
+    this.latestSnapshots.clear();
+    this.#hydrateSnapshotCache();
+    await this.#hydrateSubmissionCache();
+    if ( isSocketReady() ) {
+      for ( const assignment of Object.values(this.activePrompt.assignments) ) {
+        if ( assignment.isActive && game.users.get(assignment.userId)?.active ) {
+          await emit.requestSnapshot(assignment.userId, assignment.id);
+        }
+      }
+    }
+    await this.render({ parts: ["body"] });
   }
 
   /**

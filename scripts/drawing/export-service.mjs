@@ -1,4 +1,5 @@
 import { INTERNAL } from "../constants.mjs";
+import { estimateOpLogWireBytes } from "../prompts/wire-validation.mjs";
 
 /**
  * Encode a canvas to a requested image format with PNG fallback.
@@ -64,8 +65,9 @@ export async function buildSubmission(engine, { format, quality } = {}) {
  * @returns {number} Estimated bytes.
  */
 export function estimateSubmissionWireSize(payload) {
-  return String(payload?.overlay?.dataUrl ?? "").length
+  const images = String(payload?.overlay?.dataUrl ?? "").length
     + String(payload?.merged?.dataUrl ?? "").length;
+  return images + estimateOpLogWireBytes(payload?.opLog);
 }
 
 /**
@@ -136,7 +138,11 @@ async function enforceSubmissionWireLimit(engine, initialPayload, { format, hasB
     });
 
     if ( step.action === "done" ) return payload;
-    if ( step.action === "oversized" ) return { ...payload, wireOversized: true };
+    if ( step.action === "oversized" ) {
+      const trimmed = trimOpLogForWire(payload);
+      if ( estimateSubmissionWireSize(trimmed) <= INTERNAL.MAX_SUBMISSION_BYTES ) return trimmed;
+      return { ...trimmed, wireOversized: true, opLogTruncated: trimmed.opLog !== payload.opLog };
+    }
 
     if ( step.action === "quality" ) {
       qualityIndex = step.qualityIndex;
@@ -162,7 +168,27 @@ async function enforceSubmissionWireLimit(engine, initialPayload, { format, hasB
     strategyFormat = "png";
   }
 
-  return { ...payload, wireOversized: true };
+  return { ...payload, wireOversized: true, opLogTruncated: Boolean(payload.opLog) };
+}
+
+/**
+ * Drop redo tail from an op-log so wire size can fit under the cap.
+ * @param {object} payload Submission payload.
+ * @returns {object} Payload with trimmed op-log when possible.
+ */
+function trimOpLogForWire(payload) {
+  const opLog = payload?.opLog;
+  if ( !opLog || typeof opLog !== "object" ) return payload;
+  const pointer = Number(opLog.pointer);
+  const operations = Array.isArray(opLog.operations) ? opLog.operations : null;
+  if ( !operations?.length || !Number.isFinite(pointer) ) return payload;
+  return {
+    ...payload,
+    opLog: {
+      ...opLog,
+      operations: operations.slice(0, Math.max(0, pointer + 1))
+    }
+  };
 }
 
 /**

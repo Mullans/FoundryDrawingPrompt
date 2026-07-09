@@ -1,6 +1,9 @@
 import { FLAG_PROMPT, MODULE_ID } from "../constants.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 
+/** @type {Map<string, string>|null} */
+let assignmentIndex = null;
+
 /**
  * Ensure the current user is a GM before writing world data.
  * @returns {void}
@@ -15,6 +18,56 @@ function assertGM() {
  */
 function journalFolderName() {
   return game.i18n.localize("DRAWING-PROMPTS.journal.folderName");
+}
+
+/**
+ * Rebuild the assignment id to prompt id lookup index.
+ * @returns {Map<string, string>} Assignment index.
+ */
+export function rebuildAssignmentIndex() {
+  assignmentIndex = new Map();
+  for ( const entry of game.journal ) {
+    const data = entry.getFlag(MODULE_ID, FLAG_PROMPT);
+    if ( !data?.assignments ) continue;
+    for ( const assignment of Object.values(data.assignments) ) {
+      if ( assignment?.id ) assignmentIndex.set(assignment.id, data.id ?? entry.id);
+    }
+  }
+  return assignmentIndex;
+}
+
+/**
+ * Resolve a prompt id for an assignment id using the warm index.
+ * @param {string} assignmentId Assignment id.
+ * @returns {string|null} Prompt id.
+ */
+export function getPromptIdForAssignment(assignmentId) {
+  if ( !assignmentIndex ) rebuildAssignmentIndex();
+  return assignmentIndex.get(assignmentId) ?? null;
+}
+
+/**
+ * Update the assignment index after prompt mutations.
+ * @param {DrawingPrompt} prompt Prompt model.
+ * @returns {void}
+ */
+function indexPromptAssignments(prompt) {
+  if ( !assignmentIndex ) assignmentIndex = new Map();
+  for ( const assignment of Object.values(prompt.assignments ?? {}) ) {
+    if ( assignment?.id ) assignmentIndex.set(assignment.id, prompt.id);
+  }
+}
+
+/**
+ * Remove one prompt's assignments from the index.
+ * @param {string} promptId Prompt id.
+ * @returns {void}
+ */
+function unindexPrompt(promptId) {
+  if ( !assignmentIndex ) return;
+  for ( const [assignmentId, indexedPromptId] of assignmentIndex.entries() ) {
+    if ( indexedPromptId === promptId ) assignmentIndex.delete(assignmentId);
+  }
 }
 
 /**
@@ -51,6 +104,7 @@ export async function createPromptEntry(prompt) {
   prompt.id = entry.id;
   for ( const assignment of Object.values(prompt.assignments) ) assignment.promptId = prompt.id;
   await entry.setFlag(MODULE_ID, FLAG_PROMPT, prompt.toObject());
+  indexPromptAssignments(prompt);
   return entry;
 }
 
@@ -63,6 +117,7 @@ export async function savePrompt(prompt) {
   assertGM();
   const entry = game.journal.get(prompt.id);
   if ( !entry ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+  indexPromptAssignments(prompt);
   return entry.setFlag(MODULE_ID, FLAG_PROMPT, prompt.toObject());
 }
 
@@ -92,6 +147,7 @@ export function loadAllPrompts({ activeOnly = false } = {}) {
     if ( activeOnly && !prompt.isActive ) continue;
     prompts.push(prompt);
   }
+  if ( !assignmentIndex ) rebuildAssignmentIndex();
   return prompts;
 }
 
@@ -103,5 +159,7 @@ export function loadAllPrompts({ activeOnly = false } = {}) {
 export async function deletePromptEntry(promptId) {
   assertGM();
   const entry = game.journal.get(promptId);
-  return entry ? entry.delete() : null;
+  if ( !entry ) return null;
+  unindexPrompt(promptId);
+  return entry.delete();
 }

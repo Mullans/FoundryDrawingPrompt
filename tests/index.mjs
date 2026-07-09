@@ -14,6 +14,8 @@ const TEST_FILES = [
   "tests/prompt-models.test.mjs",
   "tests/transitions.test.mjs",
   "tests/wire-size.test.mjs",
+  "tests/wire-validation.test.mjs",
+  "tests/socket-auth.test.mjs",
   "tests/timer-chip.test.mjs"
 ];
 

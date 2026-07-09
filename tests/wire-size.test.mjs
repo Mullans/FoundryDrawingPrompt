@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { INTERNAL } from "../scripts/constants.mjs";
-import { nextWireSizeStep } from "../scripts/drawing/export-service.mjs";
+import { estimateSubmissionWireSize, nextWireSizeStep } from "../scripts/drawing/export-service.mjs";
 
 test("nextWireSizeStep returns done for payloads under the cap", () => {
   assert.deepEqual(nextWireSizeStep({
@@ -79,4 +79,14 @@ test("nextWireSizeStep downscales PNG payloads until the minimum edge", () => {
     width: 2048,
     height: 1024
   }), { action: "oversized" });
+});
+
+test("estimateSubmissionWireSize includes op-log JSON length", () => {
+  const payload = {
+    overlay: { dataUrl: "data:image/webp;base64,abc" },
+    merged: { dataUrl: "data:image/webp;base64,def" },
+    opLog: { operations: [{ type: "stroke", points: [1, 2, 3] }] }
+  };
+  const withoutOpLog = String(payload.overlay.dataUrl).length + String(payload.merged.dataUrl).length;
+  assert.equal(estimateSubmissionWireSize(payload) > withoutOpLog, true);
 });

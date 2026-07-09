@@ -66,6 +66,27 @@ export function stagingDir() {
 }
 
 /**
+ * Build the GM-side pending directory for one assignment's socket-lane submissions.
+ * @param {string} baseFolder Base asset folder.
+ * @param {string} assignmentId Assignment id.
+ * @returns {string} Pending directory.
+ */
+export function buildPendingDir(baseFolder, assignmentId) {
+  const base = normalizePath(String(baseFolder ?? ""));
+  const id = String(assignmentId || "assignment");
+  return base ? `${base}/pending/${id}` : `pending/${id}`;
+}
+
+/**
+ * Get the GM-side pending directory for one assignment.
+ * @param {string} assignmentId Assignment id.
+ * @returns {string} Pending directory.
+ */
+export function pendingDir(assignmentId) {
+  return buildPendingDir(defaultAssetFolder(), assignmentId);
+}
+
+/**
  * Get the asset directory for a prompt.
  * @param {string} promptId Prompt id.
  * @returns {string}

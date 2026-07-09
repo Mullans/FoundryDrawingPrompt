@@ -1,4 +1,11 @@
-import { STATUS } from "../constants.mjs";
+import { INTERNAL, STATUS } from "../constants.mjs";
+import {
+  estimateDataUrlWireBytes,
+  estimateOpLogWireBytes,
+  isAllowedPendingPath,
+  isAllowedStagedPath,
+  isValidImageDataUrl
+} from "./wire-validation.mjs";
 
 const ACTIVE_STATUSES = Object.freeze([STATUS.PENDING, STATUS.OPENED]);
 
@@ -42,11 +49,12 @@ export function evaluateSnapshot(assignment) {
 /**
  * Validate a drawing submission payload without touching Foundry globals.
  * @param {object} payload Submission payload.
+ * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string}} [options] Context for path allowlists.
  * @returns {boolean} Whether the payload is valid.
  */
-export function isValidSubmissionPayload(payload) {
+export function isValidSubmissionPayload(payload, options = {}) {
   if ( !isPlainObject(payload) ) return false;
-  if ( payload.mode === "staged" ) return isValidStagedSubmissionPayload(payload);
+  if ( payload.mode === "staged" ) return isValidStagedSubmissionPayload(payload, options);
   if ( payload.mode !== undefined ) return false;
   return isValidSocketSubmissionPayload(payload);
 }
@@ -67,24 +75,62 @@ function isActive(assignment) {
  */
 function isValidSocketSubmissionPayload(payload) {
   if ( !isImageDataPayload(payload.overlay) ) return false;
-  if ( payload.merged !== undefined && !isImageDataPayload(payload.merged) ) return false;
+  if ( !isValidImageDataUrl(payload.overlay.dataUrl) ) return false;
+  if ( payload.merged !== undefined ) {
+    if ( !isImageDataPayload(payload.merged) ) return false;
+    if ( !isValidImageDataUrl(payload.merged.dataUrl) ) return false;
+  }
   if ( !isValidDimensions(payload) ) return false;
-  return payload.opLog === undefined || isPlainObject(payload.opLog);
+  if ( payload.opLog !== undefined && !isValidOpLog(payload.opLog) ) return false;
+  return true;
 }
 
 /**
  * Validate a staged submission shape.
  * @param {object} payload Submission payload.
+ * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string}} options Path allowlist context.
  * @returns {boolean} Whether valid.
  */
-function isValidStagedSubmissionPayload(payload) {
+function isValidStagedSubmissionPayload(payload, options) {
   if ( !isPlainObject(payload.staged) ) return false;
   if ( !nonEmptyString(payload.staged.overlayPath) ) return false;
   if ( payload.staged.mergedPath !== null && payload.staged.mergedPath !== undefined && !nonEmptyString(payload.staged.mergedPath) ) return false;
   if ( !isPlainObject(payload.formats) || !nonEmptyString(payload.formats.overlay) ) return false;
   if ( payload.formats.merged !== null && payload.formats.merged !== undefined && !nonEmptyString(payload.formats.merged) ) return false;
   if ( !isValidDimensions(payload) ) return false;
-  return payload.opLog === undefined || isPlainObject(payload.opLog);
+  if ( payload.opLog !== undefined && !isValidOpLog(payload.opLog) ) return false;
+  return isAllowedStagedSubmissionPaths(payload, options);
+}
+
+/**
+ * Validate staged asset paths against assignment-scoped allowlists.
+ * @param {object} payload Submission payload.
+ * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string}} options Path allowlist context.
+ * @returns {boolean} Whether paths are allowed.
+ */
+function isAllowedStagedSubmissionPaths(payload, options) {
+  const { assignmentId, stagingRoot, pendingRoot } = options;
+  if ( !assignmentId || (!stagingRoot && !pendingRoot) ) return true;
+  const overlayAllowed = isAllowedSubmissionPath(assignmentId, payload.staged.overlayPath, stagingRoot, pendingRoot);
+  if ( !overlayAllowed ) return false;
+  if ( payload.staged.mergedPath ) {
+    return isAllowedSubmissionPath(assignmentId, payload.staged.mergedPath, stagingRoot, pendingRoot);
+  }
+  return true;
+}
+
+/**
+ * Test whether a staged asset path is under staging or pending roots.
+ * @param {string} assignmentId Assignment id.
+ * @param {string} path Asset path.
+ * @param {string|undefined} stagingRoot Staging root.
+ * @param {string|undefined} pendingRoot Pending root.
+ * @returns {boolean} Whether allowed.
+ */
+function isAllowedSubmissionPath(assignmentId, path, stagingRoot, pendingRoot) {
+  if ( stagingRoot && isAllowedStagedPath(assignmentId, path, stagingRoot) ) return true;
+  if ( pendingRoot && isAllowedPendingPath(assignmentId, path, pendingRoot) ) return true;
+  return false;
 }
 
 /**
@@ -102,8 +148,20 @@ function isImageDataPayload(image) {
  * @returns {boolean} Whether valid.
  */
 function isValidDimensions(payload) {
-  return Number.isFinite(Number(payload.width)) && Number(payload.width) > 0
-    && Number.isFinite(Number(payload.height)) && Number(payload.height) > 0;
+  const width = Number(payload.width);
+  const height = Number(payload.height);
+  return Number.isFinite(width) && width > 0 && width <= INTERNAL.MAX_CANVAS_DIM
+    && Number.isFinite(height) && height > 0 && height <= INTERNAL.MAX_CANVAS_DIM;
+}
+
+/**
+ * Test operation log size and shape.
+ * @param {*} opLog Operation log payload.
+ * @returns {boolean} Whether valid.
+ */
+function isValidOpLog(opLog) {
+  if ( !isPlainObject(opLog) ) return false;
+  return estimateOpLogWireBytes(opLog) <= INTERNAL.MAX_OPLOG_BYTES;
 }
 
 /**

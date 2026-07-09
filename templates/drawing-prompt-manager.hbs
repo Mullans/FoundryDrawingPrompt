@@ -1,6 +1,16 @@
 <div class="dp-manager-shell is-{{mode}}">
   {{#if hasActivePrompt}}
   <div class="dp-review-mode">
+    {{#if promptQueue}}
+    <label class="dp-prompt-queue">
+      <span>{{localize "DRAWING-PROMPTS.manager.queue.label"}}</span>
+      <select name="promptQueue" data-action="switchPrompt">
+        {{#each promptQueue.options}}
+        <option value="{{this.id}}" {{#if this.selected}}selected{{/if}}>{{this.label}}</option>
+        {{/each}}
+      </select>
+    </label>
+    {{/if}}
     <div class="dp-summary-bar" aria-label="{{localize 'DRAWING-PROMPTS.manager.summary.label'}}">
       {{#if summary.promptTruncated}}
       <details class="dp-summary-prompt">
