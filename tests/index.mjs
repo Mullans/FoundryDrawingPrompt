@@ -12,6 +12,8 @@ const TEST_FILES = [
   "tests/phase-b-assets.test.mjs",
   "tests/phase-d-helpers.test.mjs",
   "tests/prompt-models.test.mjs",
+  "tests/transitions.test.mjs",
+  "tests/wire-size.test.mjs",
   "tests/timer-chip.test.mjs"
 ];
 

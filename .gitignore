@@ -10,3 +10,6 @@ docs/
 # OS
 Thumbs.db
 .DS_Store
+
+# Generic ignore files
+ignore__*

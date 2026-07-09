@@ -72,9 +72,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   static async open() {
     if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
     this.#instance ??= new this();
-    await this.#instance.adoptMostRecentActivePrompt();
+    const adoption = await this.#instance.adoptMostRecentActivePrompt();
     await this.#instance.render({ force: true });
     this.#instance.bringToFront();
+    if ( adoption.total > 1 ) {
+      ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.unfinishedPrompts", { count: adoption.total }));
+    }
     return this.#instance;
   }
 
@@ -161,17 +164,22 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /**
    * Adopt the newest active persisted prompt after a GM reload.
-   * @returns {Promise<void>}
+   * @returns {Promise<{adopted: boolean, remaining: number, total: number}>} Adoption result.
    */
   async adoptMostRecentActivePrompt() {
-    if ( this.activePrompt ) return;
-    const prompts = loadAllPrompts()
-      .filter(prompt => prompt.needsAttention && prompt.gmUserId === game.user.id)
-      .sort((a, b) => Number(b.sentAt ?? 0) - Number(a.sentAt ?? 0));
+    const prompts = this.#unfinishedPrompts();
+    if ( this.activePrompt ) {
+      return {
+        adopted: false,
+        remaining: Math.max(0, prompts.filter(prompt => prompt.id !== this.activePrompt.id).length),
+        total: prompts.length
+      };
+    }
     this.activePrompt = prompts[0] ?? null;
     if ( this.activePrompt ) this.#adoptDraftFromPrompt();
     this.selectedAssignmentId = Object.keys(this.activePrompt?.assignments ?? {})[0] ?? null;
     this.#hydrateSnapshotCache();
+    await this.#hydrateSubmissionCache();
     if ( this.activePrompt && isSocketReady() ) {
       for ( const assignment of Object.values(this.activePrompt.assignments) ) {
         if ( assignment.isActive && game.users.get(assignment.userId)?.active ) {
@@ -179,6 +187,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         }
       }
     }
+    return {
+      adopted: Boolean(this.activePrompt),
+      remaining: Math.max(0, prompts.length - 1),
+      total: prompts.length
+    };
   }
 
   /** @override */
@@ -664,7 +677,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       this.activePrompt = null;
       this.selectedAssignmentId = null;
       this.latestSnapshots.clear();
+      const adoption = await this.adoptMostRecentActivePrompt();
       await this.render({ parts: ["body"] });
+      if ( adoption.adopted ) {
+        ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.adoptedNext", { count: adoption.remaining }));
+      }
     } catch (err) {
       ui.notifications.warn(err.message);
     }
@@ -798,9 +815,35 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         const dataUrl = sessionStorage.getItem(`${SNAPSHOT_KEY_PREFIX}${assignmentId}`);
         if ( dataUrl ) this.latestSnapshots.set(assignmentId, dataUrl);
       } catch (_err) {
-        return;
+        continue;
       }
     }
+  }
+
+  /**
+   * Hydrate cached submissions for active prompt assignments.
+   * @returns {Promise<void>}
+   */
+  async #hydrateSubmissionCache() {
+    if ( !game.user.isGM || !this.activePrompt ) return;
+    const service = await import("../prompts/prompt-service.mjs");
+    for ( const assignmentId of Object.keys(this.activePrompt.assignments) ) {
+      try {
+        service.getPendingSubmission(assignmentId);
+      } catch (_err) {
+        continue;
+      }
+    }
+  }
+
+  /**
+   * List this GM's unfinished prompts newest first.
+   * @returns {import("../prompts/prompt-models.mjs").DrawingPrompt[]} Unfinished prompts.
+   */
+  #unfinishedPrompts() {
+    return loadAllPrompts()
+      .filter(prompt => prompt.needsAttention && prompt.gmUserId === game.user.id)
+      .sort((a, b) => Number(b.sentAt ?? 0) - Number(a.sentAt ?? 0));
   }
 
   /**
@@ -985,7 +1028,8 @@ function escapeHtml(value) {
  */
 function chooseFolder(current) {
   return new Promise(resolve => {
-    const picker = new foundry.applications.apps.FilePicker({
+    const FilePickerImpl = foundry.applications.apps.FilePicker.implementation ?? foundry.applications.apps.FilePicker;
+    const picker = new FilePickerImpl({
       type: "folder",
       current,
       activeSource: "data",

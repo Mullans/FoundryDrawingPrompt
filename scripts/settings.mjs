@@ -73,6 +73,8 @@ export function registerSettings() {
 
   game.settings.register(MODULE_ID, SETTINGS.DEFAULT_PERMISSIONS, {
     ...common,
+    // This becomes user-facing with the V2 gallery; keep the setting hidden in V1.
+    config: false,
     name: `${PREFIX}.defaultPermissions.name`,
     hint: `${PREFIX}.defaultPermissions.hint`,
     type: String,

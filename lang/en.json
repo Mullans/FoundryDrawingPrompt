@@ -113,6 +113,8 @@
   "DRAWING-PROMPTS.manager.validation.users": "Select at least one player before sending.",
   "DRAWING-PROMPTS.manager.validation.dimensions": "Canvas width and height must be between 1 and {max} pixels.",
   "DRAWING-PROMPTS.manager.validation.name": "Enter a drawing name before saving.",
+  "DRAWING-PROMPTS.manager.notifications.unfinishedPrompts": "{count} unfinished prompts - finish the current one to review the next.",
+  "DRAWING-PROMPTS.manager.notifications.adoptedNext": "Adopted the next unfinished prompt - {count} remaining.",
   "DRAWING-PROMPTS.manager.warnings.userOffline": "That player is offline.",
   "DRAWING-PROMPTS.notifications.activePrompts": "{count} active drawing prompts - open the manager to resume.",
 
@@ -145,6 +147,7 @@
   "DRAWING-PROMPTS.player.errors.canvasTooLarge": "That drawing is too large to fill safely.",
   "DRAWING-PROMPTS.player.errors.engineUnavailable": "The drawing surface is not ready yet.",
   "DRAWING-PROMPTS.player.errors.exportFailed": "The drawing could not be exported.",
+  "DRAWING-PROMPTS.player.warnings.wireScaled": "Connection-size limit reached; the GM receives a reduced-resolution copy.",
   "DRAWING-PROMPTS.player.notifications.received": "You received a drawing prompt.",
   "DRAWING-PROMPTS.player.notifications.reopened": "A drawing prompt was reopened.",
 
@@ -165,7 +168,7 @@
   "DRAWING-PROMPTS.errors.promptNotFound": "Drawing prompt not found.",
   "DRAWING-PROMPTS.errors.uploadFailed": "Drawing asset upload failed.",
   "DRAWING-PROMPTS.errors.nameRequired": "A saved drawing must have a name.",
-  "DRAWING-PROMPTS.errors.pendingSubmissionLost": "The submitted image was lost when the GM client reloaded. Reopen the assignment so the player can resubmit it.",
+  "DRAWING-PROMPTS.errors.pendingSubmissionLost": "The submitted image is no longer available in this browser session. Reopen the assignment so the player can resubmit it.",
   "DRAWING-PROMPTS.errors.noScene": "View a Scene before placing a drawing Tile.",
   "DRAWING-PROMPTS.errors.saveBeforePlace": "Save the drawing before placing it.",
 

@@ -65,6 +65,7 @@ export class DrawingEngine {
    * @returns {void}
    */
   attach(displayCanvasEl) {
+    if ( this.#displayCanvas === displayCanvasEl ) return;
     this.detach();
     this.#displayCanvas = displayCanvasEl;
     this.#displayCtx = displayCanvasEl.getContext("2d");
@@ -266,26 +267,39 @@ export class DrawingEngine {
 
   /**
    * Export the foreground overlay only.
-   * @param {{format: string, quality?: number}} options Export options.
+   * @param {{format: string, quality?: number, scale?: number}} options Export options.
    * @returns {Promise<{blob: Blob, dataUrl: string, format: string}>}
    */
-  async exportOverlay({ format, quality } = {}) {
-    const canvas = createCanvas(this.width, this.height);
-    canvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0);
+  async exportOverlay({ format, quality, scale = 1 } = {}) {
+    const canvas = this.#scaledExportCanvas(scale);
+    canvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0, canvas.width, canvas.height);
     return canvasToEncodedImage(canvas, { format, quality });
   }
 
   /**
    * Export a flattened background plus foreground image.
-   * @param {{format: string, quality?: number}} options Export options.
+   * @param {{format: string, quality?: number, scale?: number}} options Export options.
    * @returns {Promise<{blob: Blob, dataUrl: string, format: string}>}
    */
-  async exportMerged({ format, quality } = {}) {
-    const canvas = createCanvas(this.width, this.height);
+  async exportMerged({ format, quality, scale = 1 } = {}) {
+    const canvas = this.#scaledExportCanvas(scale);
     const context = canvas.getContext("2d");
-    context.drawImage(this.#bgCanvas, 0, 0);
-    context.drawImage(this.#drawCanvas, 0, 0);
+    context.drawImage(this.#bgCanvas, 0, 0, canvas.width, canvas.height);
+    context.drawImage(this.#drawCanvas, 0, 0, canvas.width, canvas.height);
     return canvasToEncodedImage(canvas, { format, quality });
+  }
+
+  /**
+   * Create an export canvas at a bounded scale.
+   * @param {number} scale Requested export scale.
+   * @returns {HTMLCanvasElement|OffscreenCanvas} Export canvas.
+   */
+  #scaledExportCanvas(scale) {
+    const resolvedScale = Math.max(0.01, Math.min(1, Number(scale) || 1));
+    return createCanvas(
+      Math.max(1, Math.round(this.width * resolvedScale)),
+      Math.max(1, Math.round(this.height * resolvedScale))
+    );
   }
 
   /**

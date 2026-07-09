@@ -6,6 +6,8 @@ Folders starting with "FoundryVTT-WindowsPortable" contain the local install of 
 
 ## Division of Labor (IMPORTANT)
 
+For any implementation effort, make sure to divide the work into tasks (individual work items) and waves (groups of tasks that can be implemented in parallel and don't block/conflict). Use parallel sub-agents or Codex calls to implement tasks within the same wave when feasible and reasonable.
+
 Codex acts as **product manager / architect**: makes architecture and design decisions, writes specs, reviews output. **Codex implements.**
 
 **Delegate ALL file operations and implementation steps to Codex** via `codex exec`. When delegating implementation, always provide:

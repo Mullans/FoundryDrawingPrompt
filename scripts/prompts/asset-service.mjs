@@ -9,11 +9,14 @@ function assertGM() {
 }
 
 /**
- * Get the v14 FilePicker class.
+ * Get the configured FilePicker implementation. Hosting services such as The
+ * Forge substitute their own class here (Assets Library integration), so the
+ * raw core class must never be used directly.
  * @returns {typeof foundry.applications.apps.FilePicker}
  */
 function getFilePicker() {
-  return foundry.applications.apps.FilePicker;
+  const base = foundry.applications.apps.FilePicker;
+  return base.implementation ?? base;
 }
 
 /**

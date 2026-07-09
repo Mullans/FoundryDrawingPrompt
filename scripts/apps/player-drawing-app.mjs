@@ -115,6 +115,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #brushSize = 8;
   #brushOpacity = 1;
   #unsubscribers = [];
+  #wireScaledWarned = false;
 
   /** @override */
   async _prepareContext(options) {
@@ -200,6 +201,10 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     } catch (_err) {
       ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.player.errors.exportFailed"));
       return;
+    }
+    if ( submissionPayload.wireScaled && !this.#wireScaledWarned ) {
+      this.#wireScaledWarned = true;
+      ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.player.warnings.wireScaled"));
     }
     this.#closeReason = "submit";
     await emit.drawingSubmitted(this.assignmentPayload.prompt.gmUserId, this.assignmentPayload.assignment.id, game.user.id, submissionPayload);

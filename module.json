@@ -8,6 +8,10 @@
     "verified": "14.364"
   },
   "socket": true,
+  "url": "https://github.com/Mullans/FoundryDrawingPrompt",
+  "manifest": "https://github.com/Mullans/FoundryDrawingPrompt/releases/latest/download/module.json",
+  "download": "https://github.com/Mullans/FoundryDrawingPrompt/releases/latest/download/module.zip",
+  "bugs": "https://github.com/Mullans/FoundryDrawingPrompt/issues",
   "esmodules": [
     "scripts/module.mjs"
   ],

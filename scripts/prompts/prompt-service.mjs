@@ -9,8 +9,12 @@ import { getAssignment as getClientAssignment, updateStatus, upsertAssignment } 
 import { createPromptEntry, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
 import { defaultAssignmentAssetName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
+import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission } from "./transitions.mjs";
 
 const pendingSubmissions = new Map();
+const SUBMISSION_KEY_PREFIX = "drawing-prompts.sub.";
+const SUBMISSION_INDEX_KEY = "drawing-prompts.sub.index";
+const SUBMISSION_CACHE_LIMIT = 8 * 1024 * 1024;
 
 /**
  * Throw a localized GM-only error when the current user is not a GM.
@@ -207,7 +211,9 @@ export function getAssignment(assignmentId) {
  * @returns {object|null}
  */
 export function getPendingSubmission(assignmentId) {
-  return pendingSubmissions.get(assignmentId) ?? null;
+  const submission = pendingSubmissions.get(assignmentId) ?? readCachedSubmission(assignmentId);
+  if ( submission && !pendingSubmissions.has(assignmentId) ) pendingSubmissions.set(assignmentId, submission);
+  return submission ?? null;
 }
 
 /**
@@ -224,7 +230,8 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   if ( !resolvedName ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.nameRequired"));
 
   const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath && assignment.assets?.oplogPath);
-  const submission = pendingSubmissions.get(assignment.id);
+  const submission = pendingSubmissions.get(assignment.id) ?? readCachedSubmission(assignment.id);
+  if ( submission && !pendingSubmissions.has(assignment.id) ) pendingSubmissions.set(assignment.id, submission);
   if ( !submission && !alreadySaved ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.pendingSubmissionLost"));
 
   if ( submission ) {
@@ -251,6 +258,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     assignment.assets.folder = dir;
     await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, dir);
     pendingSubmissions.delete(assignment.id);
+    clearCachedSubmission(assignment.id);
   }
 
   assignment.assets.name = resolvedName;
@@ -287,6 +295,8 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {
     scene: { width: scene.width, height: scene.height },
     hidden
   });
+  // Tile#name only exists on Foundry v14+; strip it on older schemas (v13).
+  if ( !CONFIG.Tile.documentClass.schema.fields.name ) delete tileData.name;
   const [tile] = await scene.createEmbeddedDocuments("Tile", [tileData]);
   assignment.placements.push({
     tileId: tile?.id ?? tile?._id ?? null,
@@ -356,6 +366,7 @@ export async function finishPrompt(promptId) {
       await setManagerWindowOpen(assignment.id, false);
     }
     pendingSubmissions.delete(assignment.id);
+    clearCachedSubmission(assignment.id);
   }
   await savePrompt(prompt);
   await refreshManager();
@@ -374,6 +385,8 @@ export async function reopenAssignment(assignmentId, userId = null) {
   assertPromptOwner(prompt);
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
   assignment.markReopened();
+  pendingSubmissions.delete(assignment.id);
+  clearCachedSubmission(assignment.id);
   await savePrompt(prompt);
   if ( game.users.get(assignment.userId)?.active ) await emit.reopenDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
@@ -487,7 +500,8 @@ async function handleReopenPrompt(payload) {
  * @returns {Promise<void>}
  */
 async function handleCancelPrompt(assignmentId) {
-  validateKnownPlayerAssignment(assignmentId);
+  const payload = validateKnownActivePlayerAssignment(assignmentId, "cancel");
+  if ( !payload ) return;
   updateStatus(assignmentId, STATUS.CANCELLED);
   await refreshPromptList();
   await PlayerDrawingApp.closeAssignment(assignmentId, { silent: true });
@@ -499,8 +513,8 @@ async function handleCancelPrompt(assignmentId) {
  * @returns {Promise<void>}
  */
 async function handleShowPrompt(assignmentId) {
-  const payload = validateKnownPlayerAssignment(assignmentId);
-  if ( ![STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) return;
+  const payload = validateKnownActivePlayerAssignment(assignmentId, "show");
+  if ( !payload ) return;
   await PlayerDrawingApp.open(payload, { mode: "live" });
 }
 
@@ -510,7 +524,8 @@ async function handleShowPrompt(assignmentId) {
  * @returns {Promise<void>}
  */
 async function handleRequestSnapshot(assignmentId) {
-  validateKnownPlayerAssignment(assignmentId);
+  const payload = validateKnownActivePlayerAssignment(assignmentId, "request-snapshot");
+  if ( !payload ) return;
   await PlayerDrawingApp.sendSnapshotForAssignment(assignmentId);
 }
 
@@ -522,6 +537,8 @@ async function handleRequestSnapshot(assignmentId) {
  */
 async function handleAssignmentOpened(assignmentId, userId) {
   const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
+  const decision = evaluateOpened(assignment);
+  if ( !decision.apply ) return debugIgnoredTransition("opened", assignment, decision.reason);
   assignment.markOpened(Date.now());
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
@@ -538,7 +555,9 @@ async function handleAssignmentOpened(assignmentId, userId) {
  * @returns {Promise<void>}
  */
 async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
-  validateOwningGMSender(assignmentId, userId);
+  const { assignment } = validateOwningGMSender(assignmentId, userId);
+  const decision = evaluateSnapshot(assignment);
+  if ( !decision.apply ) return debugIgnoredTransition("snapshot", assignment, decision.reason);
   DrawingPromptManager.receiveSnapshotOpen(assignmentId, snapshotDataUrl);
 }
 
@@ -551,12 +570,15 @@ async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
  */
 async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
+  const decision = evaluateSubmission(assignment);
+  if ( !decision.apply ) return debugIgnoredTransition("submitted", assignment, decision.reason);
   const now = Date.now();
   if ( assignment.status === STATUS.PENDING ) assignment.markOpened(now);
   const late = prompt.deadlineAt ? now > prompt.deadlineAt : false;
   const overtimeMs = late ? now - prompt.deadlineAt : null;
   assignment.markSubmitted({ ts: now, late, overtimeMs });
   pendingSubmissions.set(assignment.id, submissionPayload);
+  cacheSubmission(assignment.id, submissionPayload);
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, submissionPayload);
@@ -575,6 +597,8 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
  */
 async function handleDrawingRejected(assignmentId, userId, reason) {
   const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
+  const decision = evaluateRejection(assignment);
+  if ( !decision.apply ) return debugIgnoredTransition("rejected", assignment, decision.reason);
   assignment.markRejected(Date.now());
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
@@ -593,6 +617,134 @@ async function handlePlayerWindowClosed(assignmentId, userId) {
   const { assignment } = validateOwningGMSender(assignmentId, userId);
   await setManagerWindowOpen(assignment.id, false);
   await refreshManager();
+}
+
+/**
+ * Validate a player assignment for active-only remote handlers.
+ * @param {string} assignmentId Assignment id.
+ * @param {string} action Handler action name.
+ * @returns {{assignment: object, prompt: object}|null} Player payload or null.
+ */
+function validateKnownActivePlayerAssignment(assignmentId, action) {
+  let payload;
+  try {
+    payload = validateKnownPlayerAssignment(assignmentId);
+  } catch (err) {
+    console.debug(`drawing-prompts | ignored ${action} for unknown player assignment ${assignmentId}`, err);
+    return null;
+  }
+  if ( ![STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) {
+    console.debug(`drawing-prompts | ignored ${action} for inactive player assignment ${assignmentId}: ${payload.assignment.status}`);
+    return null;
+  }
+  return payload;
+}
+
+/**
+ * Log an ignored lifecycle transition.
+ * @param {string} event Event name.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @param {string} reason Ignore reason.
+ * @returns {void}
+ */
+function debugIgnoredTransition(event, assignment, reason) {
+  console.debug(`drawing-prompts | ignored ${event} for assignment ${assignment?.id ?? "unknown"}: ${reason ?? "inactive"}`);
+}
+
+/**
+ * Cache a pending submission in sessionStorage for same-session GM reloads.
+ * @param {string} assignmentId Assignment id.
+ * @param {object} submission Submission payload.
+ * @returns {void}
+ */
+function cacheSubmission(assignmentId, submission) {
+  if ( !game.user.isGM || !globalThis.sessionStorage ) return;
+  try {
+    const serialized = JSON.stringify(submission);
+    sessionStorage.setItem(`${SUBMISSION_KEY_PREFIX}${assignmentId}`, serialized);
+    const index = readSubmissionIndex();
+    index[assignmentId] = { ts: Date.now(), size: serialized.length };
+    writeSubmissionIndex(index);
+    evictSubmissionCache(index);
+  } catch (_err) {
+    // Ignore quota or privacy mode failures.
+  }
+}
+
+/**
+ * Read a cached submission payload.
+ * @param {string} assignmentId Assignment id.
+ * @returns {object|null} Cached submission or null.
+ */
+function readCachedSubmission(assignmentId) {
+  if ( !globalThis.sessionStorage ) return null;
+  try {
+    const serialized = sessionStorage.getItem(`${SUBMISSION_KEY_PREFIX}${assignmentId}`);
+    if ( !serialized ) return null;
+    return JSON.parse(serialized);
+  } catch (_err) {
+    clearCachedSubmission(assignmentId);
+    return null;
+  }
+}
+
+/**
+ * Clear one cached submission.
+ * @param {string} assignmentId Assignment id.
+ * @returns {void}
+ */
+function clearCachedSubmission(assignmentId) {
+  if ( !globalThis.sessionStorage ) return;
+  try {
+    sessionStorage.removeItem(`${SUBMISSION_KEY_PREFIX}${assignmentId}`);
+    const index = readSubmissionIndex();
+    delete index[assignmentId];
+    writeSubmissionIndex(index);
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+/**
+ * Read submission cache index.
+ * @returns {Record<string, {ts: number, size: number}>} Cache index.
+ */
+function readSubmissionIndex() {
+  try {
+    return JSON.parse(sessionStorage.getItem(SUBMISSION_INDEX_KEY) || "{}");
+  } catch (_err) {
+    return {};
+  }
+}
+
+/**
+ * Write submission cache index.
+ * @param {Record<string, {ts: number, size: number}>} index Cache index.
+ * @returns {void}
+ */
+function writeSubmissionIndex(index) {
+  try {
+    sessionStorage.setItem(SUBMISSION_INDEX_KEY, JSON.stringify(index));
+  } catch (_err) {
+    // Ignore storage failures.
+  }
+}
+
+/**
+ * Evict old cached submissions when the coarse quota is exceeded.
+ * @param {Record<string, {ts: number, size: number}>} index Cache index.
+ * @returns {void}
+ */
+function evictSubmissionCache(index) {
+  let total = Object.values(index).reduce((sum, item) => sum + Number(item.size || 0), 0);
+  const entries = Object.entries(index).sort((a, b) => Number(a[1].ts || 0) - Number(b[1].ts || 0));
+  for ( const [assignmentId, item] of entries ) {
+    if ( total <= SUBMISSION_CACHE_LIMIT ) break;
+    sessionStorage.removeItem(`${SUBMISSION_KEY_PREFIX}${assignmentId}`);
+    total -= Number(item.size || 0);
+    delete index[assignmentId];
+  }
+  writeSubmissionIndex(index);
 }
 
 /**

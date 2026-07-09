@@ -9,13 +9,21 @@ Drawing Prompts is a Foundry VTT module for private, per-player drawing requests
 
 ## Installation
 
-From this repository, create a junction into your Foundry data `Data/modules` folder:
+Install from the release manifest URL:
 
-```powershell
-.\tools\link-module.ps1 -FoundryDataPath "C:\Code\FoundryVTT\FoundryVTT-WindowsPortable-14.364"
+```text
+https://github.com/Mullans/FoundryDrawingPrompt/releases/latest/download/module.json
 ```
 
-Then start Foundry, open your world, enable `socketlib`, and enable `Drawing Prompts`.
+Paste that URL into Foundry's Install Module dialog. On The Forge, use the same URL in the Bazaar custom-manifest field.
+
+For the manual or Forge Import Wizard route, build the release archive locally and upload `dist/module.zip`:
+
+```powershell
+.\tools\build-release.ps1
+```
+
+Install `socketlib` separately before enabling Drawing Prompts. On The Forge, use the Bazaar one-click install; in standard Foundry, install it from the official module listing. Drawing Prompts requires Foundry VTT v13 or newer and is verified on Foundry VTT v14.364.
 
 ## GM Usage
 
@@ -42,7 +50,6 @@ Players receive a non-blocking drawing window. They can brush, erase, fill, samp
 | Default background fit | Center, fit width, fit height, or stretch. |
 | Export format | Preferred saved image format, WebP or PNG. |
 | WebP quality | WebP encoder quality for exports. |
-| Default drawing permissions | V1 supports GM-only saved drawing metadata. |
 | Asset folder | Optional data-source folder; blank uses `worlds/{world.id}/drawing-prompts`. |
 | Auto-open player window | Opens the drawing app when a prompt arrives. |
 | Notify player | Shows a notification when a prompt arrives. |
@@ -80,7 +87,7 @@ The module fires:
 
 Privacy is soft. Foundry world documents and user-data files are available to determined clients, so this module hides drawings in normal UI but does not provide cryptographic access control.
 
-Pending submissions are held in GM client memory until saved. If the GM reloads after a player submits but before saving, the submitted image payload is lost; reopen the assignment so the player can resubmit.
+Pending submissions are cached in the GM's current browser session until saved, so they survive a GM reload in the same session. They are still lost after logout, browser close, or browser storage eviction; reopen the assignment so the player can resubmit.
 
 Player-side reloads lose unsaved strokes because V1 has no local crash/reload recovery for in-progress drawings.
 
@@ -88,11 +95,29 @@ Player-side reloads lose unsaved strokes because V1 has no local crash/reload re
 
 There is no build step. The module uses plain ESM `.mjs` files loaded directly by Foundry.
 
+For local development from this repository, create a junction into your Foundry data `Data/modules` folder:
+
+```powershell
+.\tools\link-module.ps1 -FoundryDataPath "C:\Code\FoundryVTT\FoundryVTT-WindowsPortable-14.364"
+```
+
+Then start Foundry, open your world, enable `socketlib`, and enable `Drawing Prompts`.
+
 Run tests with:
 
 ```powershell
 node --test tests/
 ```
+
+Optional E2E smoke coverage is available when a local Foundry server is already running on port 30000:
+
+```powershell
+node .\FoundryVTT-WindowsPortable-14.364\App\resources\app\main.js --dataPath="C:\Code\FoundryVTT\FoundryVTT-WindowsPortable-14.364" --port=30000 --world=test-world
+npm i playwright
+node tools\e2e-smoke.mjs
+```
+
+The smoke script expects users named `Gamemaster` and `Player2`, joins through `/join`, drives the real GM/player UI, and exits non-zero on any failed step.
 
 Useful layout:
 
