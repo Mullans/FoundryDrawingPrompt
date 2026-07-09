@@ -1,0 +1,836 @@
+/* Drawing Prompts module styles. Keep every rule scoped under .drawing-prompts. */
+
+.drawing-prompts {
+  --dp-panel-bg: color-mix(in srgb, var(--background, var(--color-cool-5-50, rgba(11, 10, 19, 0.5))) 72%, transparent);
+  --dp-panel-bg-raised: color-mix(in srgb, var(--background, var(--color-cool-5-50, rgba(11, 10, 19, 0.5))) 86%, transparent);
+  --dp-panel-border: var(--color-border, var(--color-border-light-2, #999));
+  --dp-panel-border-soft: color-mix(in srgb, var(--dp-panel-border) 55%, transparent);
+  --dp-text: var(--color-text-primary, #c9c7b8);
+  --dp-text-muted: var(--color-text-secondary, #9b998c);
+  --dp-accent: var(--color-warm-1, #ee9b3a);
+  --dp-control-bg: var(--button-background-color, var(--color-cool-5-50, rgba(11, 10, 19, 0.5)));
+  --dp-checker-a: color-mix(in srgb, var(--dp-panel-border) 24%, transparent);
+  --dp-checker-b: color-mix(in srgb, var(--background, var(--color-cool-5-25, rgba(11, 10, 19, 0.25))) 56%, transparent);
+  --dp-status-pending: #caa53d;
+  --dp-status-opened: #caa53d;
+  --dp-status-submitted: #56a06a;
+  --dp-status-rejected: #b25454;
+  --dp-status-cancelled: #8a887d;
+  --dp-status-offline: #6f6d64;
+}
+
+.drawing-prompts.application {
+  min-height: 0;
+  color: var(--dp-text);
+}
+
+.drawing-prompts .window-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  color: var(--dp-text);
+}
+
+.drawing-prompts .dp-manager-shell,
+.drawing-prompts .dp-player-shell,
+.drawing-prompts .dp-list-shell {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.drawing-prompts .dp-manager-grid {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.drawing-prompts .dp-manager-grid-setup {
+  grid-template-columns: minmax(0, 640px);
+  justify-content: center;
+}
+
+.drawing-prompts .dp-manager-main,
+.drawing-prompts .dp-preview-panel,
+.drawing-prompts .dp-review-mode,
+.drawing-prompts .dp-players-preview-grid,
+.drawing-prompts .dp-list,
+.drawing-prompts .dp-list-main {
+  min-width: 0;
+}
+
+.drawing-prompts .dp-review-mode {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.drawing-prompts .dp-players-preview-grid {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(310px, 1.1fr);
+  gap: 12px;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.drawing-prompts .dp-manager-main,
+.drawing-prompts .dp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Keep the preview and its actions in view while the form column scrolls. */
+.drawing-prompts .dp-preview-panel {
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: 100%;
+}
+
+.drawing-prompts .dp-preview-panel fieldset {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.drawing-prompts .dp-panel {
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 4px;
+  background: var(--dp-panel-bg);
+  padding: 12px;
+}
+
+.drawing-prompts .dp-player-header,
+.drawing-prompts .dp-list-row header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.drawing-prompts .dp-player-header h2,
+.drawing-prompts .dp-list-row h2,
+.drawing-prompts .dp-color-control span,
+.drawing-prompts .dp-size-control span,
+.drawing-prompts .dp-timer span {
+  margin: 0;
+  color: var(--dp-text-muted);
+  font-size: var(--font-size-12, 12px);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.drawing-prompts .dp-player-header h2,
+.drawing-prompts .dp-list-row h2 {
+  color: var(--dp-text);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.drawing-prompts .dp-muted,
+.drawing-prompts .dp-empty,
+.drawing-prompts .dp-user-flags,
+.drawing-prompts .dp-canvas-note,
+.drawing-prompts .dp-timestamps {
+  color: var(--dp-text-muted);
+}
+
+.drawing-prompts .dp-empty {
+  margin: 0;
+  text-align: center;
+}
+
+.drawing-prompts textarea,
+.drawing-prompts input,
+.drawing-prompts select {
+  width: 100%;
+  color: var(--dp-text);
+}
+
+.drawing-prompts textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+
+.drawing-prompts .window-content :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--dp-accent);
+  outline-offset: 2px;
+}
+
+.drawing-prompts .window-content button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  border-color: var(--dp-panel-border-soft);
+  color: var(--dp-text);
+}
+
+.drawing-prompts .window-content button:not(:disabled):hover {
+  border-color: var(--dp-accent);
+}
+
+.drawing-prompts .window-content button:disabled {
+  opacity: 0.4;
+}
+
+.drawing-prompts .window-content button:disabled:hover {
+  border-color: var(--dp-panel-border-soft);
+  box-shadow: none;
+}
+
+.drawing-prompts .window-content button i {
+  pointer-events: none;
+}
+
+.drawing-prompts .dp-button-strip,
+.drawing-prompts .dp-action-bar,
+.drawing-prompts .dp-row-actions,
+.drawing-prompts .dp-submission-actions,
+.drawing-prompts .dp-tool-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.drawing-prompts .dp-button-strip button {
+  min-height: 28px;
+  padding: 3px 8px;
+}
+
+.drawing-prompts .dp-action-bar {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  border-top: 1px solid var(--dp-panel-border-soft);
+  padding-top: 10px;
+}
+
+/* Neutralize core form-footer emphasis so only our primary button carries the accent. */
+.drawing-prompts .dp-action-bar button:not(.primary):not([data-action="sendPrompt"]):not([data-action="submit"]) {
+  background: var(--dp-control-bg);
+  border-color: var(--dp-panel-border-soft);
+  color: var(--dp-text);
+}
+
+.drawing-prompts .dp-action-bar button.primary,
+.drawing-prompts .dp-action-bar button[data-action="sendPrompt"],
+.drawing-prompts .dp-action-bar button[data-action="submit"] {
+  border-color: color-mix(in srgb, var(--dp-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--dp-accent) 28%, var(--dp-control-bg));
+  color: var(--dp-text);
+}
+
+.drawing-prompts .dp-summary-bar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--dp-panel-bg-raised) 82%, transparent);
+  color: var(--dp-text);
+  font-weight: 700;
+}
+
+.drawing-prompts .dp-summary-bar :is(details, summary) {
+  min-width: 0;
+}
+
+.drawing-prompts .dp-summary-bar summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.drawing-prompts .dp-summary-bar summary::-webkit-details-marker {
+  display: none;
+}
+
+.drawing-prompts .dp-summary-prompt {
+  flex: 1 1 260px;
+  max-width: 100%;
+}
+
+.drawing-prompts .dp-summary-prompt-text,
+.drawing-prompts .dp-summary-name,
+.drawing-prompts .dp-summary-dimensions {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-prompts .dp-summary-prompt p {
+  margin: 6px 0 0;
+  color: var(--dp-text);
+  font-weight: 400;
+  white-space: normal;
+}
+
+.drawing-prompts .dp-summary-toggle {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  place-items: center;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 3px;
+  color: var(--dp-text-muted);
+  font-size: var(--font-size-11, 11px);
+}
+
+.drawing-prompts .dp-summary-prompt[open] .dp-summary-toggle i {
+  transform: rotate(180deg);
+}
+
+.drawing-prompts .dp-summary-separator::before {
+  content: "\00b7";
+  color: var(--dp-text-muted);
+}
+
+.drawing-prompts .dp-summary-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--dp-status-pending) 55%, transparent);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--dp-status-pending);
+  font-variant-numeric: tabular-nums;
+}
+
+.drawing-prompts .dp-summary-timer.is-overtime {
+  border-color: color-mix(in srgb, var(--dp-status-rejected) 62%, transparent);
+  background: color-mix(in srgb, var(--dp-status-rejected) 14%, transparent);
+  color: var(--dp-status-rejected);
+}
+
+.drawing-prompts .dp-summary-countdown {
+  color: var(--dp-text);
+  font-weight: 600;
+}
+
+.drawing-prompts .dp-summary-countdown.is-overtime {
+  color: var(--dp-status-rejected);
+}
+
+.drawing-prompts .dp-summary-background {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.drawing-prompts .dp-summary-thumb {
+  display: inline-grid;
+  width: 38px;
+  height: 26px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--dp-accent) 48%, transparent);
+  border-radius: 3px;
+  background: var(--dp-checker-b);
+}
+
+.drawing-prompts .dp-summary-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.drawing-prompts .dp-summary-background-expanded {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  width: min(320px, 70vw);
+  margin-top: 6px;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 4px;
+  padding: 6px;
+  background: var(--dp-panel-bg-raised);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 35%);
+}
+
+.drawing-prompts .dp-summary-background-expanded img {
+  display: block;
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+}
+
+.drawing-prompts .dp-background-preview,
+.drawing-prompts .dp-preview-frame,
+.drawing-prompts .dp-canvas-box {
+  background-color: var(--dp-checker-b);
+  background-image:
+    linear-gradient(45deg, var(--dp-checker-a) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--dp-checker-a) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--dp-checker-a) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--dp-checker-a) 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-repeat: repeat;
+  background-size: 16px 16px;
+}
+
+.drawing-prompts .dp-background-preview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 96px;
+  max-height: 132px;
+  overflow: hidden;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 4px;
+}
+
+.drawing-prompts .dp-background-preview img {
+  position: absolute;
+  max-width: none;
+  max-height: none;
+  object-fit: fill;
+}
+
+.drawing-prompts .dp-preview-frame {
+  position: relative;
+  display: grid;
+  flex: 1 1 auto;
+  place-items: center;
+  min-height: 180px;
+  overflow: hidden;
+  border: 1px solid var(--dp-panel-border);
+  border-radius: 4px;
+  outline: 1px solid color-mix(in srgb, var(--dp-accent) 32%, transparent);
+  outline-offset: 2px;
+}
+
+.drawing-prompts .is-review .dp-preview-frame {
+  min-height: 230px;
+}
+
+.drawing-prompts .dp-preview-frame img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.drawing-prompts .dp-preview-frame img.is-fading {
+  animation: dp-preview-fade 150ms ease-out;
+}
+
+.drawing-prompts .dp-submission-actions {
+  flex: 0 0 auto;
+}
+
+.drawing-prompts .dp-saved-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dp-status-submitted);
+  font-weight: 700;
+}
+
+.drawing-prompts .dp-user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.drawing-prompts .is-review .dp-user-list {
+  max-height: none;
+}
+
+.drawing-prompts .dp-user-row,
+.drawing-prompts .dp-list-row {
+  --dp-row-status: var(--dp-status-cancelled);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--dp-row-status);
+  border-radius: 4px;
+  padding: 7px 8px;
+  background: color-mix(in srgb, var(--dp-panel-bg-raised) 74%, transparent);
+}
+
+.drawing-prompts .is-review .dp-user-row {
+  min-height: 44px;
+  padding: 8px 9px;
+}
+
+.drawing-prompts .dp-user-row:hover,
+.drawing-prompts .dp-list-row:hover {
+  border-color: var(--dp-panel-border-soft);
+  border-left-color: var(--dp-row-status);
+  background: var(--dp-panel-bg-raised);
+}
+
+.drawing-prompts .dp-user-row.is-selected {
+  border-left-color: var(--dp-accent);
+  background: color-mix(in srgb, var(--dp-accent) 10%, var(--dp-panel-bg-raised));
+}
+
+.drawing-prompts .status-pending {
+  --dp-row-status: var(--dp-status-pending);
+}
+
+.drawing-prompts .status-opened {
+  --dp-row-status: var(--dp-status-opened);
+}
+
+.drawing-prompts .status-submitted {
+  --dp-row-status: var(--dp-status-submitted);
+}
+
+.drawing-prompts .status-rejected {
+  --dp-row-status: var(--dp-status-rejected);
+}
+
+.drawing-prompts .status-cancelled,
+.drawing-prompts .status-unselected {
+  --dp-row-status: var(--dp-status-cancelled);
+}
+
+.drawing-prompts .is-offline {
+  --dp-row-status: var(--dp-status-offline);
+  opacity: 0.64;
+}
+
+.drawing-prompts .status-cancelled .dp-user-name strong {
+  text-decoration: line-through;
+}
+
+.drawing-prompts .is-expired {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dp-status-rejected) 40%, transparent);
+}
+
+.drawing-prompts .dp-row-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.drawing-prompts .dp-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--dp-row-status);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dp-row-status) 40%, transparent);
+}
+
+.drawing-prompts .dp-status-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 120px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--dp-row-status) 60%, transparent);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--dp-row-status);
+  font-size: var(--font-size-11, 11px);
+  font-weight: 700;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-prompts .dp-user-name,
+.drawing-prompts .dp-list-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.drawing-prompts .dp-user-name strong,
+.drawing-prompts .dp-list-main h2,
+.drawing-prompts .dp-list-main p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-prompts .dp-user-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  font-size: var(--font-size-11, 11px);
+}
+
+.drawing-prompts .dp-user-flags span {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 999px;
+  padding: 0 5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-prompts .dp-row-actions {
+  justify-content: flex-end;
+}
+
+.drawing-prompts .dp-row-actions button,
+.drawing-prompts .dp-tool-button {
+  width: 28px;
+  min-width: 28px;
+  padding-inline: 0;
+}
+
+.drawing-prompts .is-review .dp-row-actions button {
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+}
+
+.drawing-prompts .dp-drawing-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 1px solid var(--dp-panel-border-soft);
+  padding-bottom: 10px;
+}
+
+.drawing-prompts .dp-tool-button.is-active {
+  border-color: var(--dp-accent);
+  background: color-mix(in srgb, var(--dp-accent) 24%, var(--dp-control-bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dp-accent) 45%, transparent);
+}
+
+.drawing-prompts .dp-color-control,
+.drawing-prompts .dp-size-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.drawing-prompts .dp-color-control span,
+.drawing-prompts .dp-size-control span {
+  white-space: nowrap;
+}
+
+.drawing-prompts .dp-color-input {
+  width: 40px;
+  min-width: 40px;
+  height: 28px;
+  padding: 2px;
+}
+
+.drawing-prompts .dp-size-input,
+.drawing-prompts .dp-opacity-input {
+  width: 128px;
+}
+
+.drawing-prompts .dp-size-value,
+.drawing-prompts .dp-opacity-value {
+  min-width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.drawing-prompts .dp-player-header {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--dp-panel-border-soft);
+  padding-bottom: 10px;
+}
+
+.drawing-prompts .dp-player-header p,
+.drawing-prompts .dp-list-main p {
+  margin: 4px 0 0;
+}
+
+.drawing-prompts .dp-timer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 88px;
+}
+
+.drawing-prompts .dp-timer-value {
+  color: var(--dp-text);
+  font-size: var(--font-size-18, 18px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.drawing-prompts .dp-canvas-wrap {
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.drawing-prompts .dp-canvas-box {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 180px;
+  align-self: stretch;
+  overflow: hidden;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 4px;
+}
+
+.drawing-prompts .dp-display-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.drawing-prompts .dp-display-canvas.tool-brush,
+.drawing-prompts .dp-display-canvas.tool-fill {
+  cursor: crosshair;
+}
+
+.drawing-prompts .dp-display-canvas.tool-eraser {
+  cursor: cell;
+}
+
+.drawing-prompts .dp-display-canvas.tool-eyedropper {
+  cursor: copy;
+}
+
+.drawing-prompts .dp-canvas-note,
+.drawing-prompts .dp-canvas-error {
+  margin: 0;
+  padding: 12px;
+  text-align: center;
+}
+
+.drawing-prompts .dp-canvas-error {
+  color: var(--dp-status-rejected);
+  font-weight: 700;
+}
+
+.drawing-prompts .dp-list-shell {
+  overflow: auto;
+}
+
+.drawing-prompts .dp-list-row {
+  align-items: start;
+}
+
+.drawing-prompts .dp-timestamps {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 8px;
+  margin: 6px 0 0;
+  font-size: var(--font-size-12, 12px);
+}
+
+.drawing-prompts .dp-timestamps dt,
+.drawing-prompts .dp-timestamps dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-prompts .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+@keyframes dp-preview-fade {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawing-prompts .dp-preview-frame img.is-fading {
+    animation: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .drawing-prompts .dp-manager-grid,
+  .drawing-prompts .dp-players-preview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .drawing-prompts .dp-preview-panel {
+    position: static;
+  }
+
+  .drawing-prompts .dp-user-row,
+  .drawing-prompts .dp-list-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .drawing-prompts .dp-row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .drawing-prompts .dp-player-header {
+    flex-direction: column;
+  }
+
+  .drawing-prompts .dp-timer {
+    align-items: flex-start;
+  }
+
+  .drawing-prompts .dp-drawing-toolbar,
+  .drawing-prompts .dp-color-control,
+  .drawing-prompts .dp-size-control {
+    align-items: stretch;
+  }
+}
+
+.drawing-prompts .dp-danger {
+  border-color: color-mix(in srgb, var(--dp-status-rejected) 70%, transparent);
+  background: color-mix(in srgb, var(--dp-status-rejected) 20%, var(--dp-control-bg));
+}

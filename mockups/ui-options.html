@@ -1,0 +1,1676 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drawing Prompt Manager UI Options</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --font-size-11: 11px;
+      --font-size-12: 12px;
+      --font-size-13: 13px;
+      --font-size-14: 14px;
+      --font-size-15: 15px;
+      --font-size-16: 16px;
+      --input-height: 2rem;
+      --spacer-16: 1rem;
+      --spacer-12: 0.75rem;
+      --spacer-8: 0.5rem;
+      --spacer-4: 0.25rem;
+
+      /* Values lifted from Foundry v14 foundry2.css. */
+      --color-warm-1: #ee9b3a;
+      --color-warm-2: #c9593f;
+      --color-warm-3: #5d142b;
+      --color-cool-3: #584a75;
+      --color-cool-4: #302831;
+      --color-cool-5: #0b0a13;
+      --color-cool-5-25: rgba(11, 10, 19, 0.25);
+      --color-cool-5-50: rgba(11, 10, 19, 0.5);
+      --color-cool-5-75: rgba(11, 10, 19, 0.75);
+      --color-cool-5-90: rgba(11, 10, 19, 0.9);
+      --color-light-1: #f7f3e8;
+      --color-light-2: #efe6d8;
+      --color-light-3: #e7d1b1;
+      --color-light-4: #d0b8a3;
+      --color-light-5: #9f8475;
+      --color-light-6: #816b66;
+
+      --background: var(--color-cool-5-90);
+      --color-header-background: rgba(0, 0, 0, 0.5);
+      --color-border: var(--color-cool-4);
+      --color-fieldset-border: var(--color-light-6);
+      --color-form-hint: var(--color-light-5);
+      --color-form-hint-hover: var(--color-light-4);
+      --color-form-label: var(--color-light-4);
+      --color-form-label-hover: var(--color-light-2);
+      --input-background-color: var(--color-cool-4);
+      --input-border-color: transparent;
+      --input-text-color: var(--color-light-3);
+      --input-placeholder-color: var(--color-light-5);
+      --input-focus-outline-color: var(--color-cool-3);
+      --button-background-color: var(--color-cool-5-50);
+      --button-border-color: var(--color-light-5);
+      --button-text-color: var(--color-light-3);
+      --button-hover-background-color: var(--color-warm-2);
+      --button-hover-border-color: var(--color-light-3);
+      --button-hover-text-color: var(--color-light-1);
+
+      --dp-status-pending: #caa53d;
+      --dp-status-opened: #caa53d;
+      --dp-status-submitted: #56a06a;
+      --dp-status-rejected: #b25454;
+      --dp-status-cancelled: #8a887d;
+      --dp-status-offline: #6f6d64;
+      --dp-page-bg: #16151a;
+      --dp-text: var(--color-light-2);
+      --dp-muted: var(--color-light-5);
+      --dp-panel: rgba(11, 10, 19, 0.46);
+      --dp-panel-raised: rgba(48, 40, 49, 0.42);
+      --dp-soft-border: rgba(129, 107, 102, 0.55);
+      --dp-checker-a: rgba(129, 107, 102, 0.28);
+      --dp-checker-b: rgba(11, 10, 19, 0.34);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 15% -10%, rgba(88, 74, 117, 0.18), transparent 30rem),
+        linear-gradient(180deg, #1d1b20 0%, var(--dp-page-bg) 44rem, #121116 100%);
+      color: var(--dp-text);
+      font-family: Signika, "Segoe UI", sans-serif;
+      font-size: var(--font-size-14);
+      line-height: 1.45;
+    }
+
+    a {
+      color: var(--color-warm-1);
+      text-decoration: none;
+    }
+
+    a:hover {
+      color: #fda948;
+      text-decoration: underline;
+    }
+
+    .page {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 18px 0 48px;
+    }
+
+    .toc {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 28px;
+      border: 1px solid rgba(129, 107, 102, 0.5);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: rgba(11, 10, 19, 0.9);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(4px);
+    }
+
+    .toc strong {
+      flex: 0 0 auto;
+      color: var(--color-light-1);
+      font-size: var(--font-size-13);
+    }
+
+    .toc nav {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .toc a {
+      border: 1px solid rgba(159, 132, 117, 0.55);
+      border-radius: 4px;
+      padding: 4px 8px;
+      background: rgba(48, 40, 49, 0.55);
+      color: var(--color-light-3);
+      font-size: var(--font-size-13);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .toc a:hover {
+      border-color: var(--color-warm-1);
+      color: var(--color-light-1);
+    }
+
+    section {
+      scroll-margin-top: 70px;
+      margin: 0 0 42px;
+    }
+
+    .section-header {
+      max-width: 980px;
+      margin: 0 auto 12px;
+    }
+
+    .section-header h2 {
+      margin: 0 0 6px;
+      color: var(--color-light-1);
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .section-header p {
+      margin: 0;
+      color: var(--color-light-3);
+    }
+
+    .pros-cons {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      max-width: 980px;
+      margin: 12px auto 16px;
+    }
+
+    .pros-cons div {
+      border: 1px solid rgba(129, 107, 102, 0.48);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: rgba(11, 10, 19, 0.42);
+    }
+
+    .pros-cons h3 {
+      margin: 0 0 6px;
+      color: var(--color-light-2);
+      font-size: var(--font-size-14);
+    }
+
+    .pros-cons ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--color-light-4);
+    }
+
+    .stage-label {
+      width: min(980px, 100%);
+      margin: 0 auto 8px;
+      color: var(--color-light-4);
+      font-size: var(--font-size-13);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .window-stack,
+    .window-pair {
+      display: grid;
+      gap: 18px;
+      justify-items: center;
+    }
+
+    .window-pair {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
+      width: min(1180px, 100%);
+      margin: 0 auto;
+    }
+
+    .application {
+      position: relative;
+      display: flex;
+      flex-flow: column nowrap;
+      width: min(980px, 100%);
+      min-width: 200px;
+      overflow: hidden;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      background: var(--background);
+      color: var(--color-light-2);
+      box-shadow: 0 0 10px #000;
+    }
+
+    .application.compact {
+      width: min(520px, 100%);
+    }
+
+    .application.review-small {
+      width: min(650px, 100%);
+    }
+
+    .window-header {
+      display: flex;
+      align-items: center;
+      flex: 0 0 36px;
+      gap: 0.25rem;
+      overflow: hidden;
+      border-bottom: 1px solid var(--color-border);
+      padding: 0 0.5rem;
+      background: var(--color-header-background);
+      color: var(--color-light-1);
+      font-size: var(--font-size-13);
+    }
+
+    .window-icon {
+      flex: none;
+      width: 16px;
+      height: 16px;
+      color: var(--color-warm-1);
+    }
+
+    .window-title {
+      flex: 1;
+      min-width: 0;
+      margin: 0;
+      overflow: hidden;
+      color: var(--color-light-1);
+      font: inherit;
+      line-height: 36px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .header-control {
+      display: inline-grid;
+      width: 24px;
+      height: 24px;
+      place-items: center;
+      border: 0;
+      border-radius: 3px;
+      background: transparent;
+      color: var(--color-light-1);
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .window-content {
+      display: flex;
+      flex: 1;
+      flex-flow: column nowrap;
+      gap: var(--spacer-16);
+      overflow: hidden;
+      padding: var(--spacer-16);
+      backdrop-filter: blur(4px);
+    }
+
+    .standard-form {
+      display: flex;
+      flex-direction: column;
+      flex-wrap: nowrap;
+      gap: var(--spacer-16);
+    }
+
+    fieldset {
+      display: flex;
+      flex-direction: column;
+      flex-wrap: nowrap;
+      gap: var(--spacer-16);
+      min-width: 0;
+      margin: 0;
+      border: 2px groove var(--color-fieldset-border);
+      border-radius: 8px;
+      padding: var(--spacer-16);
+      background: var(--dp-panel);
+    }
+
+    fieldset legend {
+      padding: 0 6px;
+      color: var(--color-light-2);
+      font-size: var(--font-size-15);
+      font-weight: 700;
+    }
+
+    .form-group {
+      display: flex;
+      flex-flow: row wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0;
+    }
+
+    .form-group > * {
+      flex: 2;
+    }
+
+    .form-group > label,
+    .form-group > .label {
+      flex: 1;
+      color: var(--color-form-label);
+      font-weight: 700;
+      line-height: var(--input-height);
+    }
+
+    .form-group:hover > label,
+    .form-group:hover > .label {
+      color: var(--color-form-label-hover);
+    }
+
+    .form-group.stacked > * {
+      flex: 0 0 100%;
+    }
+
+    .form-group.slim .form-fields {
+      flex: 1;
+    }
+
+    .form-group.slim .form-fields > label {
+      flex: none;
+      color: var(--color-light-5);
+      font-size: var(--font-size-12);
+      text-align: right;
+    }
+
+    .form-group.slim .form-fields > input[type="number"],
+    .form-group.slim .form-fields > input[type="text"] {
+      flex: 0 0 62px;
+      text-align: center;
+    }
+
+    .form-fields {
+      display: flex;
+      flex-flow: row wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.5rem;
+      width: 100%;
+    }
+
+    .form-fields > * {
+      flex: 1;
+    }
+
+    .form-fields > button,
+    .form-fields > label.check {
+      flex: none;
+    }
+
+    .hint {
+      flex: 0 0 100%;
+      margin: 0;
+      color: var(--color-form-hint);
+      font-size: var(--font-size-13);
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      min-height: var(--input-height);
+      border: 1px solid var(--input-border-color);
+      border-radius: 3px;
+      padding: 0.25rem 0.5rem;
+      background: var(--input-background-color);
+      color: var(--input-text-color);
+      font: inherit;
+    }
+
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: 2px solid var(--input-focus-outline-color);
+      outline-offset: -2px;
+    }
+
+    input[disabled],
+    select[disabled],
+    textarea[disabled] {
+      border-color: var(--color-cool-4);
+      background: var(--color-cool-5);
+      color: var(--color-light-4);
+    }
+
+    input[type="checkbox"] {
+      width: 15px;
+      min-height: 15px;
+      accent-color: var(--color-warm-1);
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: var(--input-height);
+      border: 1px solid var(--button-border-color);
+      border-radius: 3px;
+      padding: 0.25rem 0.7rem;
+      background: var(--button-background-color);
+      color: var(--button-text-color);
+      font: inherit;
+      line-height: 1.2;
+    }
+
+    button:hover:not(:disabled) {
+      border-color: var(--button-hover-border-color);
+      background: var(--button-hover-background-color);
+      color: var(--button-hover-text-color);
+    }
+
+    button:disabled {
+      border-color: transparent;
+      background: var(--color-cool-5);
+      color: var(--color-light-5);
+      opacity: 0.68;
+    }
+
+    button.primary,
+    button.bright {
+      border-color: var(--color-cool-5);
+      background: var(--color-warm-1);
+      color: var(--color-cool-5);
+      font-weight: 700;
+    }
+
+    button.primary:hover:not(:disabled),
+    button.bright:hover:not(:disabled) {
+      border-color: var(--color-warm-3);
+      background: #fda948;
+      color: #000;
+    }
+
+    .icon-button {
+      width: 28px;
+      min-width: 28px;
+      padding-inline: 0;
+    }
+
+    .form-footer {
+      display: flex;
+      flex-flow: row wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.5rem;
+      border-top: 1px solid var(--dp-soft-border);
+      padding-top: 10px;
+    }
+
+    .manager-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr);
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .manager-main,
+    .preview-panel,
+    .players-preview-grid {
+      min-width: 0;
+    }
+
+    .manager-main {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .players-preview-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(310px, 1.1fr);
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .button-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-start;
+    }
+
+    .button-strip button {
+      min-height: 28px;
+      padding: 3px 8px;
+    }
+
+    .summary-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--dp-soft-border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: rgba(48, 40, 49, 0.44);
+      color: var(--color-light-3);
+      font-weight: 700;
+    }
+
+    .summary-bar .summary-thumb,
+    .bg-thumb {
+      display: inline-grid;
+      width: 38px;
+      height: 26px;
+      place-items: center;
+      overflow: hidden;
+      border: 1px solid rgba(238, 155, 58, 0.48);
+      border-radius: 3px;
+      background:
+        linear-gradient(135deg, rgba(88, 74, 117, 0.9), rgba(48, 40, 49, 0.95)),
+        linear-gradient(90deg, transparent 0 47%, rgba(238, 155, 58, 0.65) 47% 53%, transparent 53%);
+      color: var(--color-warm-1);
+      font-size: 12px;
+    }
+
+    .bg-preview {
+      position: relative;
+      display: grid;
+      min-height: 96px;
+      max-height: 132px;
+      place-items: center;
+      overflow: hidden;
+      border: 1px solid var(--dp-soft-border);
+      border-radius: 4px;
+      background:
+        linear-gradient(135deg, rgba(88, 74, 117, 0.52), rgba(48, 40, 49, 0.9)),
+        repeating-linear-gradient(90deg, transparent 0 22px, rgba(238, 155, 58, 0.18) 22px 24px);
+      color: var(--color-light-5);
+    }
+
+    .bg-preview::before {
+      content: "";
+      position: absolute;
+      width: 78%;
+      height: 64%;
+      border: 1px dashed rgba(238, 155, 58, 0.55);
+      transform: rotate(-2deg);
+    }
+
+    .players-fieldset {
+      gap: 10px;
+    }
+
+    .legend-muted {
+      margin-left: 6px;
+      color: var(--color-light-5);
+      font-size: var(--font-size-12);
+      font-weight: 400;
+    }
+
+    .player-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 0;
+    }
+
+    .player-row {
+      --row-status: var(--dp-status-cancelled);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      border: 1px solid transparent;
+      border-left: 2px solid var(--row-status);
+      border-radius: 4px;
+      padding: 7px 8px;
+      background: rgba(48, 40, 49, 0.42);
+    }
+
+    .player-row:hover,
+    .player-row.selected {
+      border-color: var(--dp-soft-border);
+      border-left-color: var(--row-status);
+      background: rgba(48, 40, 49, 0.7);
+    }
+
+    .player-row.selected {
+      box-shadow: inset 0 0 0 1px rgba(238, 155, 58, 0.24);
+    }
+
+    .player-row.pending {
+      --row-status: var(--dp-status-pending);
+    }
+
+    .player-row.opened {
+      --row-status: var(--dp-status-opened);
+    }
+
+    .player-row.submitted {
+      --row-status: var(--dp-status-submitted);
+    }
+
+    .player-row.rejected {
+      --row-status: var(--dp-status-rejected);
+    }
+
+    .player-row.cancelled {
+      --row-status: var(--dp-status-cancelled);
+    }
+
+    .player-row.offline {
+      --row-status: var(--dp-status-offline);
+      opacity: 0.7;
+    }
+
+    .row-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .status-dot {
+      flex: 0 0 8px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--row-status);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--row-status) 45%, transparent);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      max-width: 120px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--row-status) 65%, transparent);
+      border-radius: 999px;
+      padding: 1px 6px;
+      color: var(--row-status);
+      font-size: var(--font-size-11);
+      font-weight: 700;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .player-name {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .player-name strong,
+    .player-name span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .player-flags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-width: 0;
+      color: var(--color-light-5);
+      font-size: var(--font-size-11);
+    }
+
+    .player-flags span {
+      display: inline-flex;
+      max-width: 100%;
+      overflow: hidden;
+      border: 1px solid var(--dp-soft-border);
+      border-radius: 999px;
+      padding: 0 5px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .preview-panel fieldset {
+      height: 100%;
+    }
+
+    .preview-frame {
+      position: relative;
+      display: grid;
+      flex: 1 1 auto;
+      min-height: 230px;
+      place-items: center;
+      overflow: hidden;
+      border: 1px solid var(--color-fieldset-border);
+      border-radius: 4px;
+      outline: 1px solid rgba(238, 155, 58, 0.32);
+      outline-offset: 2px;
+      background-color: var(--dp-checker-b);
+      background-image:
+        linear-gradient(45deg, var(--dp-checker-a) 25%, transparent 25%),
+        linear-gradient(-45deg, var(--dp-checker-a) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, var(--dp-checker-a) 75%),
+        linear-gradient(-45deg, transparent 75%, var(--dp-checker-a) 75%);
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+      background-repeat: repeat;
+      background-size: 16px 16px;
+    }
+
+    .preview-frame svg {
+      display: block;
+      width: min(92%, 420px);
+      height: auto;
+      filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.32));
+    }
+
+    .submission-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .lock-hint {
+      flex: 0 0 100%;
+      color: var(--color-light-5);
+      font-size: var(--font-size-12);
+    }
+
+    .locked-fieldset {
+      position: relative;
+      overflow: hidden;
+      opacity: 0.54;
+      filter: saturate(0.45);
+    }
+
+    .locked-fieldset::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        repeating-linear-gradient(135deg, rgba(238, 155, 58, 0.13) 0 6px, rgba(11, 10, 19, 0.14) 6px 14px),
+        rgba(11, 10, 19, 0.22);
+    }
+
+    .locked-fieldset legend {
+      position: relative;
+      z-index: 1;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .lock-chip {
+      border: 1px solid rgba(238, 155, 58, 0.45);
+      border-radius: 999px;
+      padding: 1px 7px;
+      background: rgba(11, 10, 19, 0.85);
+      color: var(--color-warm-1);
+      font-size: var(--font-size-11);
+      font-weight: 700;
+      text-transform: none;
+    }
+
+    .accordion-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .accordion-bar,
+    .accordion-open {
+      border: 1px solid var(--dp-soft-border);
+      border-radius: 6px;
+      background: rgba(48, 40, 49, 0.42);
+    }
+
+    .accordion-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      color: var(--color-light-3);
+      font-weight: 700;
+    }
+
+    .accordion-bar span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .accordion-open {
+      padding: 10px;
+    }
+
+    .accordion-open header {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      color: var(--color-light-2);
+      font-weight: 700;
+    }
+
+    .readonly-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      color: var(--color-light-4);
+      font-size: var(--font-size-13);
+    }
+
+    .readonly-grid dt,
+    .readonly-grid dd {
+      margin: 0;
+    }
+
+    .readonly-grid dt {
+      color: var(--color-light-5);
+      font-weight: 700;
+    }
+
+    .option-a-window[data-mode="review"] .setup-mode,
+    .option-a-window[data-mode="setup"] .review-mode {
+      display: none;
+    }
+
+    .mode-caption {
+      margin: 0 0 8px;
+      color: var(--color-light-5);
+      font-size: var(--font-size-12);
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .toggle-note {
+      margin-right: auto;
+      color: var(--color-light-5);
+      font-size: var(--font-size-12);
+    }
+
+    .two-window-note {
+      color: var(--color-light-5);
+      font-size: var(--font-size-12);
+    }
+
+    .comparison {
+      max-width: 980px;
+      margin: 0 auto;
+      border: 1px solid var(--dp-soft-border);
+      border-radius: 6px;
+      overflow: hidden;
+      background: rgba(11, 10, 19, 0.5);
+    }
+
+    .comparison h2 {
+      margin: 0;
+      border-bottom: 1px solid var(--dp-soft-border);
+      padding: 12px;
+      color: var(--color-light-1);
+      font-size: 20px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      color: var(--color-light-3);
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid rgba(129, 107, 102, 0.38);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: rgba(48, 40, 49, 0.55);
+      color: var(--color-light-1);
+      font-size: var(--font-size-13);
+    }
+
+    tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .mobile-only {
+      display: none;
+    }
+
+    @media (max-width: 920px) {
+      .window-pair,
+      .manager-grid,
+      .players-preview-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .application.compact,
+      .application.review-small {
+        width: min(980px, 100%);
+      }
+
+      .preview-frame {
+        min-height: 210px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .page {
+        width: min(100% - 18px, 1180px);
+        padding-top: 9px;
+      }
+
+      .toc {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .toc nav {
+        justify-content: flex-start;
+      }
+
+      .pros-cons {
+        grid-template-columns: 1fr;
+      }
+
+      .window-content {
+        padding: 12px;
+      }
+
+      fieldset {
+        padding: 12px;
+      }
+
+      .player-row {
+        grid-template-columns: auto minmax(0, 1fr);
+      }
+
+      .row-actions {
+        grid-column: 1 / -1;
+        justify-content: flex-start;
+      }
+
+      table,
+      thead,
+      tbody,
+      tr,
+      th,
+      td {
+        display: block;
+      }
+
+      thead {
+        display: none;
+      }
+
+      td {
+        border-bottom: 0;
+      }
+
+      tr {
+        border-bottom: 1px solid rgba(129, 107, 102, 0.38);
+      }
+
+      td::before {
+        content: attr(data-label);
+        display: block;
+        color: var(--color-light-5);
+        font-size: var(--font-size-12);
+        font-weight: 700;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="toc" aria-label="Page navigation">
+      <strong>Drawing Prompt Manager options</strong>
+      <nav>
+        <a href="#option-a">Option A</a>
+        <a href="#option-b">Option B</a>
+        <a href="#option-c">Option C</a>
+        <a href="#option-d">Option D</a>
+        <a href="#comparison">Comparison</a>
+      </nav>
+    </header>
+
+    <section id="option-a">
+      <div class="section-header">
+        <h2>Option A - Two-mode single window</h2>
+        <p>The same GM window has an explicit setup mode and review mode. Sending the prompt removes the editable form entirely, replaces it with a compact read-only summary, and moves players directly beside the live preview.</p>
+      </div>
+      <div class="pros-cons">
+        <div>
+          <h3>Pros</h3>
+          <ul>
+            <li>Lowest false-editable risk after Send because the form disappears.</li>
+            <li>Best players-to-preview proximity without adding another window.</li>
+            <li>Keeps reload and ownership behavior centered on one manager app.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Cons</h3>
+          <ul>
+            <li>Requires a real stage switch in render state and template structure.</li>
+            <li>GM cannot inspect every setup detail at full size unless the summary expands elsewhere.</li>
+            <li>Mode transition needs careful state preservation for draft prompts.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="stage-label">Single window, both states shown for comparison - click Send / Finish prompt to toggle</div>
+      <div class="window-stack">
+        <article class="application option-a-window" aria-label="Option A interactive mock window">
+          <header class="window-header">
+            <svg class="window-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="currentColor" d="M12 3a9 9 0 0 0 0 18h1.3a1.9 1.9 0 0 0 1.1-3.45 1.15 1.15 0 0 1 .72-2.05H17a4 4 0 0 0 0-8h-.55A8.96 8.96 0 0 0 12 3Zm-4.1 8.1a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4Zm3.1-3a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4Zm4 1.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4Zm-8.1 5a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4Z"/>
+            </svg>
+            <h3 class="window-title">Drawing Prompt Manager</h3>
+            <button class="header-control" type="button" aria-label="Close">×</button>
+          </header>
+          <div class="window-content standard-form">
+            <div class="setup-mode">
+              <p class="mode-caption">Setup mode</p>
+              <div class="manager-grid">
+                <div class="manager-main">
+                  <fieldset>
+                    <legend>Prompt</legend>
+                    <div class="form-group stacked">
+                      <label for="a-prompt-text">Prompt text</label>
+                      <div class="form-fields">
+                        <textarea id="a-prompt-text">Sketch the ambush plan you saw from the ridge</textarea>
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label for="a-drawing-name">Drawing name</label>
+                      <div class="form-fields">
+                        <input id="a-drawing-name" type="text" value="Ambush Plan">
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label for="a-timer">Timer</label>
+                      <div class="form-fields">
+                        <input id="a-timer" type="text" value="2:00">
+                      </div>
+                    </div>
+                    <div class="form-group slim">
+                      <span class="label">Dimensions</span>
+                      <div class="form-fields">
+                        <label for="a-width">W</label>
+                        <input id="a-width" type="number" value="1024">
+                        <label for="a-height">H</label>
+                        <input id="a-height" type="number" value="768">
+                      </div>
+                    </div>
+                  </fieldset>
+
+                  <fieldset>
+                    <legend>Background</legend>
+                    <div class="form-group">
+                      <span class="label">Source</span>
+                      <div class="form-fields button-strip">
+                        <button type="button">Folder</button>
+                        <button type="button">Token</button>
+                        <button type="button">Tile</button>
+                        <button type="button">Scene</button>
+                        <button type="button">Clear</button>
+                      </div>
+                      <p class="hint">Scene image selected: Ridge Lookout.webp</p>
+                    </div>
+                    <div class="form-group">
+                      <label for="a-fit">Fit mode</label>
+                      <div class="form-fields">
+                        <select id="a-fit">
+                          <option selected>Fit width</option>
+                          <option>Fit height</option>
+                          <option>Center / no resize</option>
+                          <option>Stretch</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="bg-preview"><span>Ridge Lookout.webp</span></div>
+                  </fieldset>
+
+                  <fieldset class="players-fieldset">
+                    <legend>Players <span class="legend-muted">3 selected</span></legend>
+                    <div class="player-list">
+                      <label class="player-row">
+                        <span class="row-control"><input type="checkbox" checked></span>
+                        <span class="player-name"><strong>Player2</strong><span class="player-flags">Ready to receive prompt</span></span>
+                        <span></span>
+                      </label>
+                      <label class="player-row">
+                        <span class="row-control"><input type="checkbox" checked></span>
+                        <span class="player-name"><strong>Player3</strong><span class="player-flags">Offline, prompt will wait</span></span>
+                        <span></span>
+                      </label>
+                      <label class="player-row">
+                        <span class="row-control"><input type="checkbox" checked></span>
+                        <span class="player-name"><strong>Player4</strong><span class="player-flags">Ready to receive prompt</span></span>
+                        <span></span>
+                      </label>
+                    </div>
+                  </fieldset>
+                </div>
+              </div>
+            </div>
+
+            <div class="review-mode">
+              <p class="mode-caption">Review mode</p>
+              <div class="summary-bar" aria-label="Prompt summary">
+                <span>"Sketch the ambush plan..."</span>
+                <span>·</span>
+                <span>Ambush Plan</span>
+                <span>·</span>
+                <span>1024×768</span>
+                <span>·</span>
+                <span>⏱ 2:00</span>
+                <span>·</span>
+                <span class="summary-thumb" aria-label="Background thumbnail">bg</span>
+              </div>
+              <div class="players-preview-grid">
+                <fieldset class="players-fieldset">
+                  <legend>Players <span class="legend-muted">live review</span></legend>
+                  <div class="player-list">
+                    <div class="player-row submitted selected">
+                      <span class="row-control"><span class="status-dot"></span><span class="status-badge">submitted</span></span>
+                      <span class="player-name"><strong>Player2</strong><span class="player-flags"><span>on time</span><span>saved pending</span></span></span>
+                      <span class="row-actions">
+                        <button class="icon-button" type="button" title="Reopen">↶</button>
+                        <button class="icon-button" type="button" title="Show player UI">↗</button>
+                      </span>
+                    </div>
+                    <div class="player-row opened offline">
+                      <span class="row-control"><span class="status-dot"></span><span class="status-badge">opened</span></span>
+                      <span class="player-name"><strong>Player3</strong><span class="player-flags"><span>offline</span><span>window was open</span></span></span>
+                      <span class="row-actions">
+                        <button class="icon-button" type="button" title="Resend">✉</button>
+                        <button class="icon-button" type="button" title="Cancel">⊘</button>
+                      </span>
+                    </div>
+                    <div class="player-row pending">
+                      <span class="row-control"><span class="status-dot"></span><span class="status-badge">pending</span></span>
+                      <span class="player-name"><strong>Player4</strong><span class="player-flags"><span>not opened</span></span></span>
+                      <span class="row-actions">
+                        <button class="icon-button" type="button" title="Resend">✉</button>
+                        <button class="icon-button" type="button" title="Cancel">⊘</button>
+                      </span>
+                    </div>
+                  </div>
+                </fieldset>
+
+                <aside class="preview-panel">
+                  <fieldset>
+                    <legend>Player2 preview</legend>
+                    <div class="preview-frame">
+                      <svg viewBox="0 0 512 384" role="img" aria-label="Fake ambush plan drawing preview">
+                        <rect x="56" y="48" width="400" height="288" rx="7" fill="rgba(247,243,232,0.83)" stroke="#302831" stroke-width="4"/>
+                        <path d="M94 262 C145 209 179 184 242 181 C315 178 357 132 412 92" fill="none" stroke="#584a75" stroke-width="12" stroke-linecap="round"/>
+                        <path d="M126 96 C154 134 170 156 218 160" fill="none" stroke="#b25454" stroke-width="9" stroke-linecap="round"/>
+                        <path d="M330 252 C368 226 396 210 425 203" fill="none" stroke="#56a06a" stroke-width="10" stroke-linecap="round"/>
+                        <g fill="#caa53d" stroke="#5d142b" stroke-width="4">
+                          <circle cx="154" cy="246" r="15"/>
+                          <circle cx="300" cy="154" r="14"/>
+                          <circle cx="394" cy="102" r="13"/>
+                        </g>
+                        <path d="M256 126 l24 20 l-30 10 z M352 226 l28 -9 l-10 29 z" fill="#302831"/>
+                        <text x="105" y="310" fill="#302831" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700">ridge</text>
+                      </svg>
+                    </div>
+                    <div class="submission-actions">
+                      <button type="button">Save</button>
+                      <button type="button" disabled>Place</button>
+                      <button type="button" disabled>Place hidden</button>
+                      <span class="lock-hint">Save first to enable placement.</span>
+                    </div>
+                  </fieldset>
+                </aside>
+              </div>
+            </div>
+
+            <footer class="form-footer setup-mode">
+              <span class="toggle-note">Setup mode: no response preview pane.</span>
+              <button type="button">Show preview</button>
+              <button class="primary" type="button" data-toggle-a>Send</button>
+            </footer>
+            <footer class="form-footer review-mode">
+              <button class="primary" type="button" data-toggle-a>Finish prompt</button>
+              <button type="button">Cancel all</button>
+              <button type="button">Resend all</button>
+            </footer>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="option-b">
+      <div class="section-header">
+        <h2>Option B - Stronger disabled styling</h2>
+        <p>This keeps the current single-view layout after Send, but makes the setup fieldsets unmistakably locked with desaturation, reduced opacity, lock chips in each legend, disabled controls, and a diagonal scrim.</p>
+      </div>
+      <div class="pros-cons">
+        <div>
+          <h3>Pros</h3>
+          <ul>
+            <li>Smallest code change and least disruption to the current template.</li>
+            <li>GMs can still see all setup details at a glance.</li>
+            <li>Strong lock treatment directly addresses the false-editable complaint.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Cons</h3>
+          <ul>
+            <li>Players and preview remain pushed below the setup fieldsets.</li>
+            <li>The locked form still consumes attention during review.</li>
+            <li>Heavy disabled styling can feel visually noisy in a compact Foundry window.</li>
+          </ul>
+        </div>
+      </div>
+
+      <article class="application" aria-label="Option B mock window">
+        <header class="window-header">
+          <svg class="window-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 0 0 18h1.3a1.9 1.9 0 0 0 1.1-3.45 1.15 1.15 0 0 1 .72-2.05H17a4 4 0 0 0 0-8h-.55A8.96 8.96 0 0 0 12 3Z"/></svg>
+          <h3 class="window-title">Drawing Prompt Manager</h3>
+          <button class="header-control" type="button" aria-label="Close">×</button>
+        </header>
+        <div class="window-content standard-form">
+          <div class="manager-grid">
+            <div class="manager-main">
+              <fieldset class="locked-fieldset" disabled>
+                <legend>Prompt <span class="lock-chip">locked while prompt is active</span></legend>
+                <div class="form-group stacked">
+                  <label>Prompt text</label>
+                  <div class="form-fields"><textarea disabled>Sketch the ambush plan you saw from the ridge</textarea></div>
+                </div>
+                <div class="form-group">
+                  <label>Drawing name</label>
+                  <div class="form-fields"><input type="text" value="Ambush Plan" disabled></div>
+                </div>
+                <div class="form-group">
+                  <label>Timer</label>
+                  <div class="form-fields"><input type="text" value="2:00" disabled></div>
+                </div>
+                <div class="form-group slim">
+                  <span class="label">Dimensions</span>
+                  <div class="form-fields">
+                    <label>W</label><input type="number" value="1024" disabled>
+                    <label>H</label><input type="number" value="768" disabled>
+                  </div>
+                </div>
+              </fieldset>
+
+              <fieldset class="locked-fieldset" disabled>
+                <legend>Background <span class="lock-chip">locked while prompt is active</span></legend>
+                <div class="form-group">
+                  <span class="label">Source</span>
+                  <div class="form-fields button-strip">
+                    <button type="button" disabled>Folder</button>
+                    <button type="button" disabled>Token</button>
+                    <button type="button" disabled>Tile</button>
+                    <button type="button" disabled>Scene</button>
+                    <button type="button" disabled>Clear</button>
+                  </div>
+                  <p class="hint">Scene image selected: Ridge Lookout.webp</p>
+                </div>
+                <div class="form-group">
+                  <label>Fit mode</label>
+                  <div class="form-fields"><select disabled><option>Fit width</option></select></div>
+                </div>
+                <div class="bg-preview"><span>Ridge Lookout.webp</span></div>
+              </fieldset>
+
+              <fieldset class="players-fieldset">
+                <legend>Players <span class="legend-muted">live review</span></legend>
+                <div class="player-list">
+                  <div class="player-row submitted selected">
+                    <span class="row-control"><span class="status-dot"></span><span class="status-badge">submitted</span></span>
+                    <span class="player-name"><strong>Player2</strong><span class="player-flags"><span>on time</span></span></span>
+                    <span class="row-actions"><button class="icon-button" type="button">↶</button><button class="icon-button" type="button">↗</button></span>
+                  </div>
+                  <div class="player-row opened offline">
+                    <span class="row-control"><span class="status-dot"></span><span class="status-badge">opened</span></span>
+                    <span class="player-name"><strong>Player3</strong><span class="player-flags"><span>offline</span></span></span>
+                    <span class="row-actions"><button class="icon-button" type="button">✉</button><button class="icon-button" type="button">⊘</button></span>
+                  </div>
+                  <div class="player-row pending">
+                    <span class="row-control"><span class="status-dot"></span><span class="status-badge">pending</span></span>
+                    <span class="player-name"><strong>Player4</strong><span class="player-flags"><span>not opened</span></span></span>
+                    <span class="row-actions"><button class="icon-button" type="button">✉</button><button class="icon-button" type="button">⊘</button></span>
+                  </div>
+                </div>
+              </fieldset>
+            </div>
+            <aside class="preview-panel">
+              <fieldset>
+                <legend>Player2 preview</legend>
+                <div class="preview-frame">
+                  <svg viewBox="0 0 512 384" aria-hidden="true">
+                    <rect x="56" y="48" width="400" height="288" rx="7" fill="rgba(247,243,232,0.83)" stroke="#302831" stroke-width="4"/>
+                    <path d="M94 262 C145 209 179 184 242 181 C315 178 357 132 412 92" fill="none" stroke="#584a75" stroke-width="12" stroke-linecap="round"/>
+                    <path d="M126 96 C154 134 170 156 218 160" fill="none" stroke="#b25454" stroke-width="9" stroke-linecap="round"/>
+                    <path d="M330 252 C368 226 396 210 425 203" fill="none" stroke="#56a06a" stroke-width="10" stroke-linecap="round"/>
+                    <circle cx="154" cy="246" r="15" fill="#caa53d" stroke="#5d142b" stroke-width="4"/>
+                  </svg>
+                </div>
+                <div class="submission-actions">
+                  <button type="button">Save</button>
+                  <button type="button" disabled>Place</button>
+                  <button type="button" disabled>Place hidden</button>
+                  <span class="lock-hint">Save first to enable placement.</span>
+                </div>
+              </fieldset>
+            </aside>
+          </div>
+          <footer class="form-footer">
+            <button class="primary" type="button">Finish prompt</button>
+            <button type="button">Cancel all</button>
+            <button type="button">Resend all</button>
+          </footer>
+        </div>
+      </article>
+    </section>
+
+    <section id="option-c">
+      <div class="section-header">
+        <h2>Option C - Collapsed summary accordion</h2>
+        <p>After Send, setup collapses into compact read-only accordion bars. The GM can expand a summary when needed, while the players list and preview still move up into the primary review area.</p>
+      </div>
+      <div class="pros-cons">
+        <div>
+          <h3>Pros</h3>
+          <ul>
+            <li>Balances review focus with access to setup details.</li>
+            <li>Significantly improves players-to-preview proximity.</li>
+            <li>Scales if more setup fields are added later.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Cons</h3>
+          <ul>
+            <li>More component states than Option B and less decisive than Option A.</li>
+            <li>Expanded accordions can reintroduce vertical push.</li>
+            <li>Needs clear affordance so GMs understand summaries are read-only.</li>
+          </ul>
+        </div>
+      </div>
+
+      <article class="application" aria-label="Option C mock window">
+        <header class="window-header">
+          <svg class="window-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 0 0 18h1.3a1.9 1.9 0 0 0 1.1-3.45 1.15 1.15 0 0 1 .72-2.05H17a4 4 0 0 0 0-8h-.55A8.96 8.96 0 0 0 12 3Z"/></svg>
+          <h3 class="window-title">Drawing Prompt Manager</h3>
+          <button class="header-control" type="button" aria-label="Close">×</button>
+        </header>
+        <div class="window-content standard-form">
+          <div class="accordion-list" aria-label="Read-only setup summaries">
+            <div class="accordion-bar">
+              <span>Prompt - "Sketch the ambush plan..." · Ambush Plan · 1024×768 · 2:00</span>
+              <span>▸</span>
+            </div>
+            <div class="accordion-open">
+              <header>
+                <span>Background - scene image · Fit width</span>
+                <span>▾ read-only</span>
+              </header>
+              <dl class="readonly-grid">
+                <dt>Source</dt>
+                <dd>Current Scene background image</dd>
+                <dt>File</dt>
+                <dd>Ridge Lookout.webp</dd>
+                <dt>Fit mode</dt>
+                <dd>Fit width</dd>
+                <dt>Canvas</dt>
+                <dd>1024×768</dd>
+              </dl>
+            </div>
+          </div>
+
+          <div class="players-preview-grid">
+            <fieldset class="players-fieldset">
+              <legend>Players <span class="legend-muted">live review</span></legend>
+              <div class="player-list">
+                <div class="player-row submitted selected">
+                  <span class="row-control"><span class="status-dot"></span><span class="status-badge">submitted</span></span>
+                  <span class="player-name"><strong>Player2</strong><span class="player-flags"><span>on time</span></span></span>
+                  <span class="row-actions"><button class="icon-button" type="button">↶</button><button class="icon-button" type="button">↗</button></span>
+                </div>
+                <div class="player-row opened offline">
+                  <span class="row-control"><span class="status-dot"></span><span class="status-badge">opened</span></span>
+                  <span class="player-name"><strong>Player3</strong><span class="player-flags"><span>offline</span><span>window was open</span></span></span>
+                  <span class="row-actions"><button class="icon-button" type="button">✉</button><button class="icon-button" type="button">⊘</button></span>
+                </div>
+                <div class="player-row pending">
+                  <span class="row-control"><span class="status-dot"></span><span class="status-badge">pending</span></span>
+                  <span class="player-name"><strong>Player4</strong><span class="player-flags"><span>not opened</span></span></span>
+                  <span class="row-actions"><button class="icon-button" type="button">✉</button><button class="icon-button" type="button">⊘</button></span>
+                </div>
+              </div>
+            </fieldset>
+            <aside class="preview-panel">
+              <fieldset>
+                <legend>Player2 preview</legend>
+                <div class="preview-frame">
+                  <svg viewBox="0 0 512 384" aria-hidden="true">
+                    <rect x="56" y="48" width="400" height="288" rx="7" fill="rgba(247,243,232,0.83)" stroke="#302831" stroke-width="4"/>
+                    <path d="M94 262 C145 209 179 184 242 181 C315 178 357 132 412 92" fill="none" stroke="#584a75" stroke-width="12" stroke-linecap="round"/>
+                    <path d="M126 96 C154 134 170 156 218 160" fill="none" stroke="#b25454" stroke-width="9" stroke-linecap="round"/>
+                    <path d="M330 252 C368 226 396 210 425 203" fill="none" stroke="#56a06a" stroke-width="10" stroke-linecap="round"/>
+                    <circle cx="154" cy="246" r="15" fill="#caa53d" stroke="#5d142b" stroke-width="4"/>
+                    <text x="105" y="310" fill="#302831" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700">ridge</text>
+                  </svg>
+                </div>
+                <div class="submission-actions">
+                  <button type="button">Save</button>
+                  <button type="button" disabled>Place</button>
+                  <button type="button" disabled>Place hidden</button>
+                  <span class="lock-hint">Save first to enable placement.</span>
+                </div>
+              </fieldset>
+            </aside>
+          </div>
+
+          <footer class="form-footer">
+            <button class="primary" type="button">Finish prompt</button>
+            <button type="button">Cancel all</button>
+            <button type="button">Resend all</button>
+          </footer>
+        </div>
+      </article>
+    </section>
+
+    <section id="option-d">
+      <div class="section-header">
+        <h2>Option D - Two separate windows</h2>
+        <p>Setup and review become distinct windows: a compact "New Drawing Prompt" composer and a focused "Prompt Review" monitor. This is clean conceptually, but has known costs in window juggling and ambiguity about which window should reopen after a reload.</p>
+      </div>
+      <div class="pros-cons">
+        <div>
+          <h3>Pros</h3>
+          <ul>
+            <li>Each window has one job and can be sized for that job.</li>
+            <li>Review window gives players and preview maximum room.</li>
+            <li>Setup can close after Send without implying active fields remain editable.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Cons</h3>
+          <ul>
+            <li>More window management for GMs during live play.</li>
+            <li>Reload behavior needs policy: reopen setup, review, or both?</li>
+            <li>More app lifecycle code, placement persistence, and user preference surface.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="window-pair">
+        <article class="application compact" aria-label="Option D setup window">
+          <header class="window-header">
+            <svg class="window-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 0 0 18h1.3a1.9 1.9 0 0 0 1.1-3.45 1.15 1.15 0 0 1 .72-2.05H17a4 4 0 0 0 0-8h-.55A8.96 8.96 0 0 0 12 3Z"/></svg>
+            <h3 class="window-title">New Drawing Prompt</h3>
+            <button class="header-control" type="button" aria-label="Close">×</button>
+          </header>
+          <div class="window-content standard-form">
+            <fieldset>
+              <legend>Prompt</legend>
+              <div class="form-group stacked">
+                <label>Prompt text</label>
+                <div class="form-fields"><textarea>Sketch the ambush plan you saw from the ridge</textarea></div>
+              </div>
+              <div class="form-group">
+                <label>Drawing name</label>
+                <div class="form-fields"><input type="text" value="Ambush Plan"></div>
+              </div>
+              <div class="form-group slim">
+                <span class="label">Dimensions</span>
+                <div class="form-fields">
+                  <label>W</label><input type="number" value="1024">
+                  <label>H</label><input type="number" value="768">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Timer</label>
+                <div class="form-fields"><input type="text" value="2:00"></div>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Background</legend>
+              <div class="button-strip">
+                <button type="button">Folder</button>
+                <button type="button">Token</button>
+                <button type="button">Tile</button>
+                <button type="button">Scene</button>
+              </div>
+              <div class="bg-preview"><span>Ridge Lookout.webp</span></div>
+            </fieldset>
+            <fieldset class="players-fieldset">
+              <legend>Players <span class="legend-muted">3 selected</span></legend>
+              <label class="player-row"><span class="row-control"><input type="checkbox" checked></span><span class="player-name"><strong>Player2</strong></span><span></span></label>
+              <label class="player-row"><span class="row-control"><input type="checkbox" checked></span><span class="player-name"><strong>Player3</strong><span class="player-flags">Offline, prompt will wait</span></span><span></span></label>
+              <label class="player-row"><span class="row-control"><input type="checkbox" checked></span><span class="player-name"><strong>Player4</strong></span><span></span></label>
+            </fieldset>
+            <footer class="form-footer">
+              <button type="button">Show preview</button>
+              <button class="primary" type="button">Send</button>
+            </footer>
+          </div>
+        </article>
+
+        <article class="application review-small" aria-label="Option D review window">
+          <header class="window-header">
+            <svg class="window-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 0 0 18h1.3a1.9 1.9 0 0 0 1.1-3.45 1.15 1.15 0 0 1 .72-2.05H17a4 4 0 0 0 0-8h-.55A8.96 8.96 0 0 0 12 3Z"/></svg>
+            <h3 class="window-title">Prompt Review</h3>
+            <button class="header-control" type="button" aria-label="Close">×</button>
+          </header>
+          <div class="window-content standard-form">
+            <div class="summary-bar">
+              <span>"Sketch the ambush plan..."</span>
+              <span>· Ambush Plan · 1024×768 · ⏱ 2:00</span>
+              <span class="summary-thumb">bg</span>
+            </div>
+            <div class="players-preview-grid">
+              <fieldset class="players-fieldset">
+                <legend>Players</legend>
+                <div class="player-list">
+                  <div class="player-row submitted selected"><span class="row-control"><span class="status-dot"></span><span class="status-badge">submitted</span></span><span class="player-name"><strong>Player2</strong><span class="player-flags"><span>on time</span></span></span><span></span></div>
+                  <div class="player-row opened offline"><span class="row-control"><span class="status-dot"></span><span class="status-badge">opened</span></span><span class="player-name"><strong>Player3</strong><span class="player-flags"><span>offline</span></span></span><span></span></div>
+                  <div class="player-row pending"><span class="row-control"><span class="status-dot"></span><span class="status-badge">pending</span></span><span class="player-name"><strong>Player4</strong><span class="player-flags"><span>not opened</span></span></span><span></span></div>
+                </div>
+              </fieldset>
+              <aside class="preview-panel">
+                <fieldset>
+                  <legend>Player2 preview</legend>
+                  <div class="preview-frame">
+                    <svg viewBox="0 0 512 384" aria-hidden="true">
+                      <rect x="56" y="48" width="400" height="288" rx="7" fill="rgba(247,243,232,0.83)" stroke="#302831" stroke-width="4"/>
+                      <path d="M94 262 C145 209 179 184 242 181 C315 178 357 132 412 92" fill="none" stroke="#584a75" stroke-width="12" stroke-linecap="round"/>
+                      <path d="M126 96 C154 134 170 156 218 160" fill="none" stroke="#b25454" stroke-width="9" stroke-linecap="round"/>
+                      <circle cx="154" cy="246" r="15" fill="#caa53d" stroke="#5d142b" stroke-width="4"/>
+                    </svg>
+                  </div>
+                  <div class="submission-actions">
+                    <button type="button">Save</button>
+                    <button type="button" disabled>Place</button>
+                    <button type="button" disabled>Place hidden</button>
+                    <span class="lock-hint">Save first.</span>
+                  </div>
+                </fieldset>
+              </aside>
+            </div>
+            <footer class="form-footer">
+              <span class="two-window-note">Review opens after Send; setup can close or remain available as draft history.</span>
+              <button class="primary" type="button">Finish prompt</button>
+              <button type="button">Cancel all</button>
+              <button type="button">Resend all</button>
+            </footer>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="comparison" class="comparison">
+      <h2>Comparison Table</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Option</th>
+            <th>False-editable risk</th>
+            <th>Players ↔ preview proximity</th>
+            <th>Code complexity</th>
+            <th>One-window consistency</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="Option">A - Two-mode single window</td>
+            <td data-label="False-editable risk">Low; setup form is removed during review.</td>
+            <td data-label="Players ↔ preview proximity">High; players sit directly beside the easel.</td>
+            <td data-label="Code complexity">Medium; template and render state split by mode.</td>
+            <td data-label="One-window consistency">High; one manager owns setup and review.</td>
+          </tr>
+          <tr>
+            <td data-label="Option">B - Stronger disabled styling</td>
+            <td data-label="False-editable risk">Medium-low; lock treatment is obvious but form remains visible.</td>
+            <td data-label="Players ↔ preview proximity">Low; current vertical distance mostly remains.</td>
+            <td data-label="Code complexity">Low; mostly CSS and disabled-state markup.</td>
+            <td data-label="One-window consistency">High; preserves the existing manager model.</td>
+          </tr>
+          <tr>
+            <td data-label="Option">C - Collapsed summary accordion</td>
+            <td data-label="False-editable risk">Low; summaries read as review state, not active inputs.</td>
+            <td data-label="Players ↔ preview proximity">High unless multiple summaries are expanded.</td>
+            <td data-label="Code complexity">Medium-high; needs accordion state and read-only summaries.</td>
+            <td data-label="One-window consistency">High; still one manager window.</td>
+          </tr>
+          <tr>
+            <td data-label="Option">D - Two separate windows</td>
+            <td data-label="False-editable risk">Low; setup and review are different surfaces.</td>
+            <td data-label="Players ↔ preview proximity">High in the review window.</td>
+            <td data-label="Code complexity">High; additional ApplicationV2 lifecycle and reload policy.</td>
+            <td data-label="One-window consistency">Low; deliberate split creates window juggling.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const optionA = document.querySelector(".option-a-window");
+      if (!optionA) return;
+      optionA.addEventListener("click", (event) => {
+        const toggle = event.target.closest("[data-toggle-a]");
+        if (!toggle) return;
+        const nextMode = optionA.dataset.mode === "review" ? "setup" : "review";
+        optionA.dataset.mode = nextMode;
+      });
+    })();
+  </script>
+</body>
+</html>

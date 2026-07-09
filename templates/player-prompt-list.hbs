@@ -1,0 +1,42 @@
+<section class="dp-list-shell">
+  <div class="dp-list">
+    {{#each assignments}}
+    <article class="dp-list-row {{this.statusClass}}">
+      <div class="dp-row-control">
+        <span class="dp-status-dot" inert></span>
+        <span class="dp-status-badge {{this.statusClass}}">{{this.statusLabel}}</span>
+      </div>
+      <div class="dp-list-main">
+        <header>
+          {{#if this.prompt.drawingName}}
+          <h2>{{this.prompt.drawingName}}</h2>
+          {{else}}
+          <h2>{{localize "DRAWING-PROMPTS.player.untitled"}}</h2>
+          {{/if}}
+        </header>
+        <p>{{this.promptText}}</p>
+        <dl class="dp-timestamps">
+          {{#if this.sentAt}}
+          <dt>{{localize "DRAWING-PROMPTS.list.sentAt"}}</dt>
+          <dd>{{this.sentAt}}</dd>
+          {{/if}}
+          {{#if this.openedAt}}
+          <dt>{{localize "DRAWING-PROMPTS.list.openedAt"}}</dt>
+          <dd>{{this.openedAt}}</dd>
+          {{/if}}
+          {{#if this.submittedAt}}
+          <dt>{{localize "DRAWING-PROMPTS.list.submittedAt"}}</dt>
+          <dd>{{this.submittedAt}}</dd>
+          {{/if}}
+        </dl>
+      </div>
+      <button type="button" data-action="openAssignment" data-assignment-id="{{this.assignment.id}}" {{#if this.canOpen}}{{else}}disabled{{/if}}>
+        <i class="fa-solid fa-up-right-from-square" inert></i>
+        <span>{{localize "DRAWING-PROMPTS.list.actions.open"}}</span>
+      </button>
+    </article>
+    {{else}}
+    <p class="dp-empty">{{localize "DRAWING-PROMPTS.list.empty"}}</p>
+    {{/each}}
+  </div>
+</section>

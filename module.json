@@ -1,0 +1,37 @@
+{
+  "id": "drawing-prompts",
+  "title": "Drawing Prompts",
+  "description": "A GM-to-player drawing prompt workflow for private tabletop sketch requests.",
+  "version": "0.1.0",
+  "compatibility": {
+    "minimum": "13",
+    "verified": "14.364"
+  },
+  "socket": true,
+  "esmodules": [
+    "scripts/module.mjs"
+  ],
+  "styles": [
+    "styles/module.css"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "relationships": {
+    "requires": [
+      {
+        "id": "socketlib",
+        "type": "module"
+      }
+    ]
+  },
+  "authors": [
+    {
+      "name": "Sean"
+    }
+  ]
+}

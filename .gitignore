@@ -1,0 +1,12 @@
+# Foundry runtime (local test install, not part of the module)
+FoundryVTT-WindowsPortable-*/
+*.zip
+
+# Node / build
+node_modules/
+dist/
+docs/
+
+# OS
+Thumbs.db
+.DS_Store

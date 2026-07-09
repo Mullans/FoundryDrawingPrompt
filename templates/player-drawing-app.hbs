@@ -1,0 +1,89 @@
+<div class="dp-player-shell">
+  <header class="dp-player-header">
+    <div>
+      {{#if prompt.drawingName}}
+      <h2>{{prompt.drawingName}}</h2>
+      {{else}}
+      <h2>{{localize "DRAWING-PROMPTS.player.untitled"}}</h2>
+      {{/if}}
+      <p>{{prompt.promptText}}</p>
+    </div>
+    {{#if hasDeadline}}
+    <div class="dp-timer">
+      <span>{{localize "DRAWING-PROMPTS.player.timer.label"}}</span>
+      <strong class="dp-timer-value">{{timerText}}</strong>
+    </div>
+    {{/if}}
+  </header>
+
+  <div class="dp-drawing-toolbar" role="toolbar" aria-label="{{localize "DRAWING-PROMPTS.player.toolbar.label"}}">
+    <div class="dp-tool-group">
+      {{#each toolButtons}}
+      <button type="button" data-action="setTool" data-tool="{{name}}" class="dp-tool-button {{#if active}}is-active{{/if}}" aria-pressed="{{active}}" data-tooltip aria-label="{{localize label}}">
+        <i class="{{icon}}" inert></i>
+        <span class="sr-only">{{localize label}}</span>
+      </button>
+      {{/each}}
+    </div>
+
+    <label class="dp-color-control">
+      <span>{{localize "DRAWING-PROMPTS.player.fields.color"}}</span>
+      <input type="color" class="dp-color-input" value="{{color}}">
+    </label>
+
+    <label class="dp-size-control">
+      <span>{{localize "DRAWING-PROMPTS.player.fields.brushSize"}}</span>
+      <input type="range" class="dp-size-input" min="1" max="128" step="1" value="{{brushSize}}">
+      <output class="dp-size-value">{{brushSize}}</output>
+    </label>
+
+    <label class="dp-size-control">
+      <span>{{localize "DRAWING-PROMPTS.player.fields.brushOpacity"}}</span>
+      <input type="range" class="dp-opacity-input" min="0.05" max="1" step="0.05" value="{{brushOpacity}}">
+      <output class="dp-opacity-value">{{brushOpacityPercent}}</output>
+    </label>
+
+    <div class="dp-tool-group">
+      <button type="button" data-action="clearLayer" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.actions.clear"}}">
+        <i class="fa-solid fa-trash" inert></i>
+        <span>{{localize "DRAWING-PROMPTS.player.actions.clear"}}</span>
+      </button>
+      <button type="button" data-action="undo" {{#unless canUndo}}disabled{{/unless}} data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.actions.undo"}}">
+        <i class="fa-solid fa-rotate-left" inert></i>
+        <span>{{localize "DRAWING-PROMPTS.player.actions.undo"}}</span>
+      </button>
+      <button type="button" data-action="redo" {{#unless canRedo}}disabled{{/unless}} data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.actions.redo"}}">
+        <i class="fa-solid fa-rotate-right" inert></i>
+        <span>{{localize "DRAWING-PROMPTS.player.actions.redo"}}</span>
+      </button>
+    </div>
+  </div>
+
+  <section class="dp-canvas-wrap">
+    <div class="dp-canvas-box" style="{{{canvasStyle}}}">
+      {{#if backgroundError}}
+      <p class="dp-canvas-error">{{backgroundError}}</p>
+      {{else}}
+      {{#if backgroundLoading}}
+      <p class="dp-canvas-note">{{localize "DRAWING-PROMPTS.player.canvas.loading"}}</p>
+      {{/if}}
+      <canvas class="dp-display-canvas tool-{{activeTool}}" width="{{prompt.canvasWidth}}" height="{{prompt.canvasHeight}}"></canvas>
+      {{/if}}
+    </div>
+  </section>
+
+  <footer class="dp-action-bar">
+    <button type="button" data-action="submit" {{#if isPreview}}disabled{{/if}}>
+      <i class="fa-solid fa-check" inert></i>
+      <span>{{localize "DRAWING-PROMPTS.player.actions.submit"}}</span>
+    </button>
+    <button type="button" data-action="reject" {{#if isPreview}}disabled{{/if}}>
+      <i class="fa-solid fa-ban" inert></i>
+      <span>{{localize "DRAWING-PROMPTS.player.actions.reject"}}</span>
+    </button>
+    <button type="button" data-action="closeWindow">
+      <i class="fa-solid fa-xmark" inert></i>
+      <span>{{localize "DRAWING-PROMPTS.player.actions.close"}}</span>
+    </button>
+  </footer>
+</div>
