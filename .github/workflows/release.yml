@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Rewrite release manifest
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const version = process.env.VERSION;
+          if (!version) {
+            throw new Error("VERSION is not set");
+          }
+
+          const manifest = JSON.parse(readFileSync("module.json", "utf8"));
+          manifest.version = version;
+          manifest.download = `https://github.com/Mullans/FoundryDrawingPrompt/releases/download/v${version}/module.zip`;
+          writeFileSync("module.json", `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+
+      - name: Run tests
+        run: node --test tests/
+
+      - name: Check script syntax
+        shell: bash
+        run: |
+          find scripts -name "*.mjs" -print0 | xargs -0 -n 1 node --check
+
+      - name: Build release archive
+        shell: pwsh
+        run: tools/build-release.ps1
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/module.zip
+            module.json
