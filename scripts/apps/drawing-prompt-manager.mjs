@@ -55,6 +55,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       showPlayerUi: DrawingPromptManager.#onShowPlayerUi,
       saveAssignment: DrawingPromptManager.#onSaveAssignment,
       openPlaceDialog: DrawingPromptManager.#onOpenPlaceDialog,
+      applyTransform: DrawingPromptManager.#onApplyTransform,
       finishPrompt: DrawingPromptManager.#onFinishPrompt,
       switchPrompt: DrawingPromptManager.#onSwitchPrompt
     }
@@ -235,7 +236,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: selectedAssignment.primaryImagePath })
         : "",
       selectedCanPlace: isSaveGateOpen(selectedAssignment),
-      saveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.manager.actions.saveFirst")
+      saveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.manager.actions.saveFirst"),
+      transformSaveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst")
     };
   }
 
@@ -675,6 +677,18 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const { PlaceDialog } = await import("./place-dialog.mjs");
     try {
       await PlaceDialog.open(assignment);
+    } catch (err) {
+      ui.notifications.warn(err.message);
+    }
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onApplyTransform(_event, target) {
+    const assignmentId = target.dataset.assignmentId || this.selectedAssignmentId;
+    if ( !assignmentId ) return;
+    const service = await import("../prompts/prompt-service.mjs");
+    try {
+      await service.applyAssignmentTransform(assignmentId);
     } catch (err) {
       ui.notifications.warn(err.message);
     }

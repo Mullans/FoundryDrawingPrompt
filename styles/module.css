@@ -483,6 +483,10 @@
   opacity: 0.6;
 }
 
+#token-hud .dp-token-transform-revert {
+  cursor: pointer;
+}
+
 .drawing-prompts .dp-submission-actions:not(.is-place-disabled) .dp-action-arrow {
   color: var(--dp-accent);
   opacity: 1;

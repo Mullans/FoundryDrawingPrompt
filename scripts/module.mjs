@@ -4,6 +4,7 @@ import { registerSettings } from "./settings.mjs";
 import { initSocket } from "./socket.mjs";
 import { getSocketHandlers, openPlayerPromptList, openPromptManager } from "./prompts/prompt-service.mjs";
 import { loadAllPrompts } from "./prompts/persistence-service.mjs";
+import { renderTokenTransformHUD } from "./foundry/token-transform-service.mjs";
 
 Hooks.once("init", () => {
   registerSettings();
@@ -43,6 +44,8 @@ Hooks.on("getSceneControlButtons", controls => {
     onChange: () => game.user.isGM ? openPromptManager() : openPlayerPromptList()
   };
 });
+
+Hooks.on("renderTokenHUD", renderTokenTransformHUD);
 
 /**
  * Refresh open Drawing Prompts applications after external user state changes.

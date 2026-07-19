@@ -141,6 +141,12 @@
                 <i class="fa-solid fa-map-pin" inert></i>
                 <span>{{localize "DRAWING-PROMPTS.manager.actions.place"}}</span>
               </button>
+              <span {{#unless selectedCanPlace}}data-tooltip="{{transformSaveFirstTooltip}}"{{/unless}}>
+                <button type="button" data-action="applyTransform" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
+                  <i class="fa-solid fa-paintbrush" inert></i>
+                  <span>{{localize "DRAWING-PROMPTS.transform.action"}}</span>
+                </button>
+              </span>
             </div>
           </div>
         </fieldset>

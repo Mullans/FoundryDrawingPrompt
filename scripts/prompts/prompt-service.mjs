@@ -436,6 +436,17 @@ export async function placeAssignmentAsToken(assignmentId, { mode, name = "", ac
 }
 
 /**
+ * Apply a saved assignment drawing to the GM's currently controlled tokens.
+ * @param {string} assignmentId Assignment id.
+ * @returns {Promise<object[]>} Token placeables that received the drawing.
+ */
+export async function applyAssignmentTransform(assignmentId) {
+  const { assignment } = requireTransformContext(assignmentId);
+  const { applyTransformToControlledTokens } = await import("../foundry/token-transform-service.mjs");
+  return applyTransformToControlledTokens(assignment);
+}
+
+/**
  * Cancel one assignment.
  * @param {string} assignmentId Assignment id.
  * @param {string|null} [userId] Optional user id guard.
@@ -953,6 +964,21 @@ function requirePlacementContext(assignmentId) {
   const scene = globalThis.canvas?.scene;
   if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));
   return { prompt, assignment, scene };
+}
+
+/**
+ * Validate common server-side transform requirements without requiring an active Scene.
+ * @param {string} assignmentId Assignment id.
+ * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment}}
+ */
+function requireTransformContext(assignmentId) {
+  assertGM();
+  const { prompt, assignment } = requirePromptAssignment(assignmentId);
+  assertPromptOwner(prompt);
+  if ( !assignment.primaryImagePath || !isSaveGateOpen(assignment) ) {
+    throw new Error(game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst"));
+  }
+  return { prompt, assignment };
 }
 
 /**

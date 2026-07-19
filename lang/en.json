@@ -132,6 +132,14 @@
   "DRAWING-PROMPTS.manager.warnings.noFileUpload": "{names} cannot upload files - their submissions may be size-reduced in transfer. Grant \"Upload New Files\" (core permissions) to change this.",
   "DRAWING-PROMPTS.notifications.activePrompts": "{count} active drawing prompts - open the manager to resume.",
 
+  "DRAWING-PROMPTS.transform.action": "Apply Transform",
+  "DRAWING-PROMPTS.transform.saveFirst": "Save the submission before applying it to tokens.",
+  "DRAWING-PROMPTS.transform.noTargets": "Control at least one token to apply the transform.",
+  "DRAWING-PROMPTS.transform.confirm.title": "Apply Transform",
+  "DRAWING-PROMPTS.transform.confirm.content": "Apply to {count} tokens?",
+  "DRAWING-PROMPTS.transform.confirm.yes": "Apply",
+  "DRAWING-PROMPTS.transform.revertTooltip": "Revert drawing transform",
+
   "DRAWING-PROMPTS.placeDialog.title": "Place Drawing",
   "DRAWING-PROMPTS.placeDialog.name": "Name",
   "DRAWING-PROMPTS.placeDialog.modeLegend": "Place mode",
