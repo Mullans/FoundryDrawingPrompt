@@ -1,4 +1,5 @@
 import { FLAG_ORIGINAL_TEXTURE, MODULE_ID } from "../constants.mjs";
+import { assertGM } from "../prompts/socket-auth.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
 
 /**
@@ -115,14 +116,4 @@ export function renderTokenTransformHUD(hud, html) {
     }
   });
   column.append(button);
-}
-
-/**
- * Throw a localized GM-only error when the current user is not a GM.
- * @returns {void}
- */
-function assertGM() {
-  if ( !globalThis.game?.user?.isGM ) {
-    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
-  }
 }

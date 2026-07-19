@@ -1,12 +1,5 @@
 import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS } from "../constants.mjs";
-
-/**
- * Ensure the current user is a GM before writing files.
- * @returns {void}
- */
-function assertGM() {
-  if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
-}
+import { assertGM } from "./socket-auth.mjs";
 
 /**
  * Get the configured FilePicker implementation. Hosting services such as The

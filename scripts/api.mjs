@@ -1,5 +1,6 @@
 import { MODULE_ID } from "./constants.mjs";
 import {
+  applyAssignmentTransform,
   cancelAssignment,
   createPrompt,
   getAssignment,
@@ -22,6 +23,7 @@ export function registerAPI() {
     getPrompt,
     getAssignment,
     saveAssignment,
+    applyAssignmentTransform,
     placeAssignmentAsTile,
     placeAssignmentAsToken,
     reopenAssignment,

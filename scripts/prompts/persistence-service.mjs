@@ -1,16 +1,9 @@
 import { FLAG_PROMPT, MODULE_ID } from "../constants.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
+import { assertGM } from "./socket-auth.mjs";
 
 /** @type {Map<string, string>|null} */
 let assignmentIndex = null;
-
-/**
- * Ensure the current user is a GM before writing world data.
- * @returns {void}
- */
-function assertGM() {
-  if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
-}
 
 /**
  * Get the localized Journal folder name.

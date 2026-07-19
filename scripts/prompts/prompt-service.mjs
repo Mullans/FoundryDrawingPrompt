@@ -9,7 +9,7 @@ import { getAssignment as getClientAssignment, updateStatus, upsertAssignment } 
 import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
 import { defaultAssignmentAssetName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
-import { assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
+import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
 import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isSaveGateOpen, isValidSubmissionPayload } from "./transitions.mjs";
 import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
 import { isValidSnapshotDataUrl } from "./wire-validation.mjs";
@@ -20,11 +20,17 @@ const SUBMISSION_INDEX_KEY = "drawing-prompts.sub.index";
 const SUBMISSION_CACHE_LIMIT = 8 * 1024 * 1024;
 
 /**
- * Throw a localized GM-only error when the current user is not a GM.
- * @returns {void}
+ * Build Actor artwork data for a saved drawing.
+ * @param {string} name Actor name.
+ * @param {string} src Saved drawing path.
+ * @returns {object} Actor artwork data.
  */
-function assertGM() {
-  if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
+function buildActorArtData(name, src) {
+  return {
+    name: String(name).trim(),
+    img: src,
+    prototypeToken: { texture: { src } }
+  };
 }
 
 /**
@@ -346,7 +352,7 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false, name
   });
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
-  Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, tile);
+  Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, tile, { kind: "tile" });
   await refreshManager();
   return tile;
 }
@@ -374,22 +380,13 @@ export async function placeAssignmentAsToken(assignmentId, { mode, name = "", ac
   if ( mode === PLACE_MODES.NEW_ACTOR ) {
     const type = pickActorType(game.system.id, game.documentTypes.Actor);
     if ( !type ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noActorType"));
-    actor = await CONFIG.Actor.documentClass.create({
-      name: String(name).trim(),
-      type,
-      img: src,
-      prototypeToken: { texture: { src } }
-    });
+    actor = await CONFIG.Actor.documentClass.create({ type, ...buildActorArtData(name, src) });
     createdActor = true;
   } else {
     const sourceActor = findWorldActor(actorUuid);
     if ( !sourceActor ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.actorNotFound"));
     actor = mode === PLACE_MODES.COPY_ACTOR
-      ? await sourceActor.clone({
-        name: String(name).trim(),
-        img: src,
-        prototypeToken: { texture: { src } }
-      }, { save: true })
+      ? await sourceActor.clone(buildActorArtData(name, src), { save: true })
       : sourceActor;
     createdActor = mode === PLACE_MODES.COPY_ACTOR;
   }
@@ -430,7 +427,7 @@ export async function placeAssignmentAsToken(assignmentId, { mode, name = "", ac
   });
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
-  Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, token);
+  Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, token, { kind: "token" });
   await refreshManager();
   return token;
 }
