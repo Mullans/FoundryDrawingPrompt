@@ -9,6 +9,7 @@ const TEST_FILES = [
   "tests/drawing-engine.test.mjs",
   "tests/fill-tool.test.mjs",
   "tests/operation-log.test.mjs",
+  "tests/path-provider.test.mjs",
   "tests/phase-b-assets.test.mjs",
   "tests/phase-d-helpers.test.mjs",
   "tests/prompt-models.test.mjs",

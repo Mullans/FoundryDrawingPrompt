@@ -150,3 +150,13 @@ test("DrawingPrompt creates per-user assignments and round-trips JSON data", () 
   assert.equal(roundTrip.isActive, true);
   assert.equal(roundTrip.assignmentForUser("u2").userName, "Bert");
 });
+
+test("DrawingPrompt round-trips a nullable asset folder name without computing it", () => {
+  const legacy = DrawingPrompt.fromObject({ id: "p1", createdAt: 1000 });
+  assert.equal(legacy.assetFolderName, null);
+  assert.equal(legacy.toObject().assetFolderName, null);
+
+  const hydrated = DrawingPrompt.fromObject({ id: "p2", assetFolderName: "2026-07-19-draw-a-door-abcd" });
+  const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(hydrated.toObject())));
+  assert.equal(roundTrip.assetFolderName, "2026-07-19-draw-a-door-abcd");
+});

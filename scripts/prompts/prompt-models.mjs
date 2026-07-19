@@ -223,6 +223,7 @@ export class DrawingPrompt {
     this.gmUserId = data.gmUserId ?? globalThis.game?.user?.id ?? null;
     this.promptText = data.promptText ?? "";
     this.drawingName = data.drawingName ?? "";
+    this.assetFolderName = data.assetFolderName ?? null;
     this.canvasWidth = Number(data.canvasWidth ?? 1024);
     this.canvasHeight = Number(data.canvasHeight ?? 768);
     this.background = {
@@ -291,6 +292,7 @@ export class DrawingPrompt {
       gmUserId: this.gmUserId,
       promptText: this.promptText,
       drawingName: this.drawingName,
+      assetFolderName: this.assetFolderName,
       canvasWidth: this.canvasWidth,
       canvasHeight: this.canvasHeight,
       background: { ...this.background },

@@ -750,8 +750,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( !assignment ) return null;
     const fallback = assignment.assets?.name || defaultAssignmentAssetName({
       drawingName: this.activePrompt.drawingName,
-      promptText: this.activePrompt.promptText,
-      userName: assignment.userName
+      promptText: this.activePrompt.promptText
     });
     const state = {
       folder: normalizePath(setting(SETTINGS.LAST_SAVE_FOLDER, "") || defaultAssetFolder())

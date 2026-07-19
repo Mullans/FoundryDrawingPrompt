@@ -46,3 +46,56 @@ test("isAllowedPendingPath accepts only assignment pending overlay and merged fi
   assert.equal(isAllowedPendingPath("a1", `${pendingRoot}/../other/overlay.webp`, pendingRoot), false);
   assert.equal(isAllowedPendingPath("a1", "worlds/test/drawing-prompts/staging/a1-overlay.webp", pendingRoot), false);
 });
+
+test("Forge staged paths accept an HTTPS asset URL with one arbitrary account prefix", () => {
+  const root = "drawing-prompts/test-world/staging";
+  assert.equal(isAllowedStagedPath("a1", "https://assets.forge-vtt.com/account-9f8/drawing-prompts/test-world/staging/a1-overlay.webp", root, { forge: true }), true);
+  assert.equal(isAllowedStagedPath("a1", "https://assets.forge-vtt.com/another-account/drawing-prompts/test-world/staging/a1-merged.png", root, { forge: true }), true);
+});
+
+test("Forge pending paths accept only the assignment-scoped provider structure", () => {
+  const root = "drawing-prompts/test-world/pending/a1";
+  assert.equal(isAllowedPendingPath("a1", "https://assets.forge-vtt.com/account/drawing-prompts/test-world/pending/a1/overlay.webp", root, { forge: true }), true);
+  assert.equal(isAllowedPendingPath("a1", "https://assets.forge-vtt.com/account/drawing-prompts/test-world/pending/a1/merged.png", root, { forge: true }), true);
+});
+
+test("Forge allowlists reject wrong URL authority, assignment, structure, and traversal", () => {
+  const stagingRoot = "drawing-prompts/test-world/staging";
+  const rejected = [
+    "http://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a1-overlay.webp",
+    "https://evil.example/account/drawing-prompts/test-world/staging/a1-overlay.webp",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a2-overlay.webp",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/nested/a1-overlay.webp",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a1-overlay.jpg",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/../a1-overlay.webp",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/%2e%2e/a1-overlay.webp"
+  ];
+  for ( const path of rejected ) assert.equal(isAllowedStagedPath("a1", path, stagingRoot, { forge: true }), false, path);
+});
+
+test("Forge allowlists reject URL credentials, query, fragment, and empty pathname segments", () => {
+  const root = "drawing-prompts/test-world/staging";
+  const invalid = [
+    "https://user@assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a1-overlay.webp",
+    "https://user:secret@assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a1-overlay.webp",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a1-overlay.webp?download=1",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a1-overlay.webp#preview",
+    "https://assets.forge-vtt.com/account//drawing-prompts/test-world/staging/a1-overlay.webp",
+    "https://assets.forge-vtt.com//account/drawing-prompts/test-world/staging/a1-overlay.webp",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a1-overlay.webp/"
+  ];
+  for ( const path of invalid ) assert.equal(isAllowedStagedPath("a1", path, root, { forge: true }), false, path);
+
+  assert.equal(isAllowedStagedPath(
+    "a1",
+    "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/a1-overlay.webp",
+    root,
+    { forge: true }
+  ), true);
+});
+
+test("local allowlists retain exact root-relative path behavior when Forge is false", () => {
+  const root = "worlds/test-world/drawing-prompts/staging";
+  assert.equal(isAllowedStagedPath("a1", `${root}/a1-overlay.webp`, root, { forge: false }), true);
+  assert.equal(isAllowedStagedPath("a1", `https://assets.forge-vtt.com/account/${root}/a1-overlay.webp`, root, { forge: false }), false);
+});

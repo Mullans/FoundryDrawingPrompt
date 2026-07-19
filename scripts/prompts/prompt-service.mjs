@@ -2,15 +2,16 @@ import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS, STATUS } from "../constan
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
 import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { buildTileData } from "../foundry/tile-placement-service.mjs";
+import { isForge, resolvePromptAssetLocation } from "../foundry/path-provider.mjs";
 import { PLACE_MODES, buildTokenData, pickActorType, validatePlaceSelection } from "../foundry/token-placement-service.mjs";
 import { CALLS, emit } from "../socket.mjs";
 import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, pendingDir, stagingDir, uploadBlob, uploadDataUrl, uploadJson } from "./asset-service.mjs";
 import { getAssignment as getClientAssignment, updateStatus, upsertAssignment } from "./client-store.mjs";
 import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
-import { defaultAssignmentAssetName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
+import { defaultAssignmentAssetName, promptAssetFolderName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
-import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isSaveGateOpen, isValidSubmissionPayload } from "./transitions.mjs";
+import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isSaveGateOpen, validateSubmissionPayload } from "./transitions.mjs";
 import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
 import { isValidSnapshotDataUrl } from "./wire-validation.mjs";
 
@@ -158,7 +159,7 @@ export async function createAndSendPrompt(draft) {
     try {
       await ensureDir(stagingDir());
     } catch (err) {
-      console.warn(`${MODULE_ID} | could not pre-create staging directory`, err);
+      console.warn("drawing-prompts | could not pre-create staging directory", err);
     }
   }
 
@@ -279,11 +280,25 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   if ( !submission && !alreadySaved ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.pendingSubmissionLost"));
 
   if ( submission ) {
-    const dir = normalizePath(folder || assignment.assets?.folder || game.settings.get(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER) || defaultAssetFolder());
+    prompt.assetFolderName ??= promptAssetFolderName({
+      promptId: prompt.id,
+      promptText: prompt.promptText,
+      sentAt: prompt.sentAt,
+      createdAt: prompt.createdAt
+    });
+    const location = resolvePromptAssetLocation({
+      selectedParent: folder,
+      rememberedParent: game.settings.get(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER),
+      defaultParent: defaultAssetFolder(),
+      assignmentFolder: assignment.assets?.folder,
+      promptFolderName: prompt.assetFolderName
+    });
+    const dir = location.final;
     await ensureDir(dir);
     const hasMerged = hasMergedSubmission(submission);
     const filenames = uniqueDrawingAssetFilenames({
       name: resolvedName,
+      playerName: assignment.userName,
       extension: extensionFor(primarySubmissionFormat(submission, hasMerged)),
       hasMerged,
       existingFiles: await browseFiles(dir),
@@ -298,7 +313,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     assignment.assets.tileHeight = submissionTileHeight(submission, prompt);
     assignment.pendingSubmission = null;
     assignment.savedSubmissionTs = assignment.submittedAt;
-    await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, dir);
+    await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, location.parent);
     pendingSubmissions.delete(assignment.id);
     clearCachedSubmission(assignment.id);
   }
@@ -412,7 +427,7 @@ export async function placeAssignmentAsToken(assignmentId, { mode, name = "", ac
       try {
         await actor.delete();
       } catch (cleanupError) {
-        console.warn(`${MODULE_ID} | could not remove Actor after Token placement failed`, cleanupError);
+        console.warn("drawing-prompts | could not remove Actor after Token placement failed", cleanupError);
       }
     }
     throw err;
@@ -720,7 +735,7 @@ async function handleAssignmentOpened(assignmentId, userId) {
 async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
   const { assignment } = validateOwningGMSender(assignmentId, userId);
   if ( !isValidSnapshotDataUrl(snapshotDataUrl) ) {
-    console.debug("drawing-prompts | ignored invalid snapshot payload", assignmentId);
+    console.debug(`${MODULE_ID} | ignored invalid snapshot payload shape for assignment ${assignmentId}`);
     return;
   }
   const decision = evaluateSnapshot(assignment);
@@ -737,9 +752,10 @@ async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
  */
 async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
-  if ( !isValidSubmissionPayload(submissionPayload, submissionValidationContext(assignmentId)) ) {
+  const validation = validateSubmissionPayload(submissionPayload, submissionValidationContext(assignmentId));
+  if ( !validation.ok ) {
     ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidSubmissionPayload"));
-    console.warn("drawing-prompts | rejected invalid submission payload", assignmentId, submissionPayload);
+    console.warn(`${MODULE_ID} | rejected submission for assignment ${assignmentId}: ${validation.reason} check failed; ${validation.detail}`);
     return;
   }
   const decision = evaluateSubmission(assignment);
@@ -1007,13 +1023,14 @@ async function refreshPromptList() {
 /**
  * Build validation context for inbound submission payloads.
  * @param {string} assignmentId Assignment id.
- * @returns {{assignmentId: string, stagingRoot: string, pendingRoot: string}}
+ * @returns {{assignmentId: string, stagingRoot: string, pendingRoot: string, forge: boolean}}
  */
 function submissionValidationContext(assignmentId) {
   return {
     assignmentId,
     stagingRoot: stagingDir(),
-    pendingRoot: pendingDir(assignmentId)
+    pendingRoot: pendingDir(assignmentId),
+    forge: isForge()
   };
 }
 

@@ -1,5 +1,14 @@
 import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS } from "../constants.mjs";
+import {
+  buildPendingPath,
+  buildStagingPath,
+  createPathProvider,
+  isForge,
+  normalizePath
+} from "../foundry/path-provider.mjs";
 import { assertGM } from "./socket-auth.mjs";
+
+export { normalizePath } from "../foundry/path-provider.mjs";
 
 /**
  * Get the configured FilePicker implementation. Hosting services such as The
@@ -13,22 +22,12 @@ function getFilePicker() {
 }
 
 /**
- * Normalize data-source paths to forward-slash, no-edge-slash form.
- * @param {string} path Data-source path.
- * @returns {string}
- */
-export function normalizePath(path) {
-  return path.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
-}
-
-/**
  * Build the staging directory below a normalized base asset folder.
  * @param {string} baseFolder Base asset folder.
  * @returns {string} Staging directory.
  */
 export function buildStagingDir(baseFolder) {
-  const base = normalizePath(String(baseFolder ?? ""));
-  return base ? `${base}/staging` : "staging";
+  return buildStagingPath(baseFolder);
 }
 
 /**
@@ -36,8 +35,7 @@ export function buildStagingDir(baseFolder) {
  * @returns {string}
  */
 export function defaultAssetFolder() {
-  const configured = normalizePath(game.settings.get(MODULE_ID, SETTINGS.ASSET_FOLDER) || "");
-  return configured || `worlds/${game.world.id}/drawing-prompts`;
+  return runtimePathProvider().base;
 }
 
 /**
@@ -55,7 +53,7 @@ export function canStageUploads() {
  * @returns {string} Staging directory.
  */
 export function stagingDir() {
-  return buildStagingDir(defaultAssetFolder());
+  return runtimePathProvider().staging();
 }
 
 /**
@@ -65,9 +63,7 @@ export function stagingDir() {
  * @returns {string} Pending directory.
  */
 export function buildPendingDir(baseFolder, assignmentId) {
-  const base = normalizePath(String(baseFolder ?? ""));
-  const id = String(assignmentId || "assignment");
-  return base ? `${base}/pending/${id}` : `pending/${id}`;
+  return buildPendingPath(baseFolder, assignmentId);
 }
 
 /**
@@ -76,16 +72,19 @@ export function buildPendingDir(baseFolder, assignmentId) {
  * @returns {string} Pending directory.
  */
 export function pendingDir(assignmentId) {
-  return buildPendingDir(defaultAssetFolder(), assignmentId);
+  return runtimePathProvider().pending(assignmentId);
 }
 
 /**
- * Get the asset directory for a prompt.
- * @param {string} promptId Prompt id.
- * @returns {string}
+ * Create a provider from the current Foundry runtime state.
+ * @returns {ReturnType<typeof createPathProvider>}
  */
-export function promptAssetDir(promptId) {
-  return `${defaultAssetFolder()}/${promptId}`;
+function runtimePathProvider() {
+  return createPathProvider({
+    forge: isForge(),
+    worldId: game.world.id,
+    settingValue: game.settings.get(MODULE_ID, SETTINGS.ASSET_FOLDER)
+  });
 }
 
 /**
