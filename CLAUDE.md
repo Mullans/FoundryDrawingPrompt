@@ -35,3 +35,17 @@ CODEX="/c/Users/Sean/scoop/persist/fnm/node-versions/v24.12.0/installation/codex
 - **Codex runs as a separate sandbox user (`CodexSandboxOffline`). Never let Codex run `git init` or other git write operations** — the resulting `.git` is owned by the sandbox user and triggers "dubious ownership" errors for the real user. Codex handles all git operations directly.
 - If the path breaks (fnm node upgrade), relocate with:
   `ls ~/scoop/persist/fnm/node-versions/*/installation/codex` and update this file.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`Mullans/FoundryDrawingPrompt`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.
