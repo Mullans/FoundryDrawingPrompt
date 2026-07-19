@@ -9,6 +9,15 @@ const TEMPLATE_DIR = path.join(ROOT, "templates");
 const LANG_PATH = path.join(ROOT, "lang", "en.json");
 const MODULE_JSON = path.join(ROOT, "module.json");
 
+test("module opts into Foundry-native hot reload for rendered assets", () => {
+  const manifest = JSON.parse(fs.readFileSync(MODULE_JSON, "utf8"));
+
+  assert.deepEqual(manifest.flags?.hotReload, {
+    extensions: ["css", "hbs", "json"],
+    paths: ["styles", "templates", "lang"]
+  });
+});
+
 test("ApplicationV2 template part paths exist", () => {
   const scripts = readFiles(SCRIPT_DIR, file => file.endsWith(".mjs"));
   const templatePaths = new Set();

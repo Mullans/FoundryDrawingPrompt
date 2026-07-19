@@ -25,6 +25,20 @@
       "path": "lang/en.json"
     }
   ],
+  "flags": {
+    "hotReload": {
+      "extensions": [
+        "css",
+        "hbs",
+        "json"
+      ],
+      "paths": [
+        "styles",
+        "templates",
+        "lang"
+      ]
+    }
+  },
   "relationships": {
     "requires": [
       {
