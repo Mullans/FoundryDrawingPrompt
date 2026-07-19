@@ -138,7 +138,9 @@ test("DrawingPrompt creates per-user assignments and round-trips JSON data", () 
     timerSeconds: 60,
     createdAt: 1000,
     sentAt: 1100,
-    deadlineAt: 61000
+    timerStatus: "running",
+    deadlineAt: 61000,
+    remainingMs: null
   }, ["u1", "u2"]);
 
   assert.equal(Object.keys(prompt.assignments).length, 2);
@@ -149,6 +151,55 @@ test("DrawingPrompt creates per-user assignments and round-trips JSON data", () 
   assert.equal(roundTrip.promptText, "Draw a door");
   assert.equal(roundTrip.isActive, true);
   assert.equal(roundTrip.assignmentForUser("u2").userName, "Bert");
+  assert.deepEqual(roundTrip.timerState, {
+    timerStatus: "running",
+    deadlineAt: 61000,
+    remainingMs: null
+  });
+});
+
+test("DrawingPrompt round-trips paused overtime timer state", () => {
+  const prompt = DrawingPrompt.fromObject({
+    id: "p1",
+    timerSeconds: 300,
+    timerStatus: "paused",
+    deadlineAt: null,
+    remainingMs: -45_000
+  });
+
+  assert.deepEqual(DrawingPrompt.fromObject(JSON.parse(JSON.stringify(prompt.toObject()))).timerState, {
+    timerStatus: "paused",
+    deadlineAt: null,
+    remainingMs: -45_000
+  });
+});
+
+test("DrawingPrompt migrates legacy deadline state", () => {
+  assert.deepEqual(DrawingPrompt.fromObject({ id: "p1", deadlineAt: 61_000 }).timerState, {
+    timerStatus: "running",
+    deadlineAt: 61_000,
+    remainingMs: null
+  });
+  assert.deepEqual(DrawingPrompt.fromObject({ id: "p2", deadlineAt: null }).timerState, {
+    timerStatus: "none",
+    deadlineAt: null,
+    remainingMs: null
+  });
+  assert.deepEqual(DrawingPrompt.fromObject({ id: "p3" }).timerState, {
+    timerStatus: "none",
+    deadlineAt: null,
+    remainingMs: null
+  });
+});
+
+test("DrawingPrompt timerState setter keeps serialization canonical", () => {
+  const prompt = DrawingPrompt.fromObject({ id: "p1", deadlineAt: 61_000 });
+  prompt.timerState = { timerStatus: "none", deadlineAt: 61_000, remainingMs: -10_000 };
+
+  const serialized = prompt.toObject();
+  assert.equal(serialized.timerStatus, "none");
+  assert.equal(serialized.deadlineAt, null);
+  assert.equal(serialized.remainingMs, null);
 });
 
 test("DrawingPrompt round-trips a nullable asset folder name without computing it", () => {

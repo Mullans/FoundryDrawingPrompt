@@ -6,16 +6,19 @@ import { isForge, resolvePromptAssetLocation } from "../foundry/path-provider.mj
 import { PLACE_MODES, buildTokenData, pickActorType, validatePlaceSelection } from "../foundry/token-placement-service.mjs";
 import { CALLS, emit } from "../socket.mjs";
 import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, pendingDir, stagingDir, uploadBlob, uploadDataUrl, uploadJson } from "./asset-service.mjs";
-import { getAssignment as getClientAssignment, updateStatus, upsertAssignment } from "./client-store.mjs";
+import { getAssignment as getClientAssignment, updateStatus, updateTimerState, upsertAssignment } from "./client-store.mjs";
 import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
 import { defaultAssignmentAssetName, promptAssetFolderName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
+import { adjustTimer, evaluateSubmissionTiming, normalizeTimerState, pauseTimer, resetTimer, resumeTimer, stopTimer } from "./timer-service.mjs";
+import { TimerUpdateQueue } from "./timer-update-queue.mjs";
 import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isSaveGateOpen, validateSubmissionPayload } from "./transitions.mjs";
 import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
 import { isValidSnapshotDataUrl } from "./wire-validation.mjs";
 
 const pendingSubmissions = new Map();
+const timerUpdateQueue = new TimerUpdateQueue();
 const SUBMISSION_KEY_PREFIX = "drawing-prompts.sub.";
 const SUBMISSION_INDEX_KEY = "drawing-prompts.sub.index";
 const SUBMISSION_CACHE_LIMIT = 8 * 1024 * 1024;
@@ -107,7 +110,7 @@ function payloadFor(prompt, assignment) {
       background: { ...prompt.background },
       sentAt: prompt.sentAt,
       timerSeconds: prompt.timerSeconds,
-      deadlineAt: prompt.deadlineAt
+      ...prompt.timerState
     }
   };
 }
@@ -120,6 +123,7 @@ export function getSocketHandlers() {
   return {
     [CALLS.OPEN]: handleOpenPrompt,
     [CALLS.REOPEN]: handleReopenPrompt,
+    [CALLS.TIMER_UPDATED]: handleTimerUpdated,
     [CALLS.CANCEL]: handleCancelPrompt,
     [CALLS.SHOW]: handleShowPrompt,
     [CALLS.REQUEST_SNAPSHOT]: handleRequestSnapshot,
@@ -148,7 +152,9 @@ export async function createAndSendPrompt(draft) {
     background: { ...draft.background },
     timerSeconds,
     sentAt,
-    deadlineAt: timerSeconds ? sentAt + (timerSeconds * 1000) : null
+    timerStatus: timerSeconds > 0 ? "running" : "none",
+    deadlineAt: timerSeconds > 0 ? sentAt + (timerSeconds * 1000) : null,
+    remainingMs: null
   }, draft.selectedUserIds);
 
   await createPromptEntry(prompt);
@@ -166,6 +172,88 @@ export async function createAndSendPrompt(draft) {
   const deliveries = deliverPromptAssignments(prompt);
   if ( draft.awaitDeliveries ) await deliveries;
   return prompt;
+}
+
+/**
+ * Pause a prompt timer at its current value, including overtime.
+ * @param {string} promptId Prompt id.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function pausePromptTimer(promptId) {
+  return updatePromptTimer(promptId, (state, prompt, now) => pauseTimer(state, now));
+}
+
+/**
+ * Resume a paused prompt timer without counting paused time.
+ * @param {string} promptId Prompt id.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function resumePromptTimer(promptId) {
+  return updatePromptTimer(promptId, (state, prompt, now) => resumeTimer(state, now));
+}
+
+/**
+ * Shift a prompt's running deadline or paused remaining time.
+ * @param {string} promptId Prompt id.
+ * @param {number} deltaMs Signed adjustment in milliseconds.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function adjustPromptTimer(promptId, deltaMs) {
+  return updatePromptTimer(promptId, (state, prompt, now) => adjustTimer(state, deltaMs, now));
+}
+
+/**
+ * Restart a prompt timer from its original configured duration.
+ * @param {string} promptId Prompt id.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function resetPromptTimer(promptId) {
+  return updatePromptTimer(promptId, (state, prompt, now) => resetTimer(state, prompt.timerSeconds, now));
+}
+
+/**
+ * Stop a prompt timer and make the prompt untimed.
+ * @param {string} promptId Prompt id.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function stopPromptTimer(promptId) {
+  return updatePromptTimer(promptId, state => stopTimer(state));
+}
+
+/**
+ * Apply, persist, and deliver one GM-owned timer transition.
+ * @param {string} promptId Prompt id.
+ * @param {Function} transition Pure timer transition.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+function updatePromptTimer(promptId, transition) {
+  return timerUpdateQueue.enqueue(promptId, async () => {
+    assertGM();
+    const prompt = loadPrompt(promptId);
+    if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+    assertPromptOwner(prompt);
+    prompt.timerState = transition(prompt.timerState, prompt, Date.now());
+    await savePrompt(prompt, { timerOnly: true });
+    Hooks.callAll("drawing-prompts.timerUpdated", prompt, prompt.timerState);
+    await broadcastTimerState(prompt);
+    await refreshManager();
+    return prompt;
+  });
+}
+
+/**
+ * Deliver the current timer state to every online assigned player.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<void>}
+ */
+async function broadcastTimerState(prompt) {
+  const deliveries = Object.values(prompt.assignments)
+    .filter(assignment => game.users.get(assignment.userId)?.active)
+    .map(assignment => emit.timerUpdated(assignment.userId, assignment.id, prompt.timerState));
+  const results = await Promise.allSettled(deliveries);
+  for ( const result of results ) {
+    if ( result.status === "rejected" ) console.warn("drawing-prompts | timer update delivery failed", result.reason);
+  }
 }
 
 /**
@@ -655,6 +743,26 @@ async function handleReopenPrompt(payload) {
 }
 
 /**
+ * Handle a persisted GM timer change on an assigned player client.
+ * @param {string} assignmentId Assignment id.
+ * @param {object} timerState Canonical timer state.
+ * @returns {Promise<void>}
+ */
+async function handleTimerUpdated(assignmentId, timerState) {
+  let payload;
+  try {
+    payload = validateKnownPlayerAssignment(assignmentId);
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored timer update", err);
+    return;
+  }
+  const state = normalizeTimerState(timerState);
+  updateTimerState(assignmentId, state);
+  await PlayerDrawingApp.updateTimer(assignmentId, state);
+}
+
+/**
  * Handle prompt cancellation on the player client.
  * @param {string} assignmentId Assignment id.
  * @returns {Promise<void>}
@@ -762,9 +870,8 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   if ( !decision.apply ) return debugIgnoredTransition("submitted", assignment, decision.reason);
   const now = Date.now();
   if ( assignment.status === STATUS.PENDING ) assignment.markOpened(now);
-  const late = prompt.deadlineAt ? now > prompt.deadlineAt : false;
-  const overtimeMs = late ? now - prompt.deadlineAt : null;
-  assignment.markSubmitted({ ts: now, late, overtimeMs });
+  const timing = evaluateSubmissionTiming(prompt.timerState, now);
+  assignment.markSubmitted({ ts: now, ...timing });
   let receivedSubmission = { ...submissionPayload, receiptTs: now };
   if ( !isStagedSubmission(receivedSubmission) ) {
     try {

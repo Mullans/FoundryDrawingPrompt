@@ -48,3 +48,21 @@ export function updateStatus(assignmentId, status) {
   assignments.set(assignmentId, payload);
   return payload;
 }
+
+/**
+ * Update the canonical timer state for a stored assignment payload.
+ * @param {string} assignmentId Assignment id.
+ * @param {{timerStatus: string, deadlineAt: number|null, remainingMs: number|null}} state Timer state.
+ * @returns {{assignment: object, prompt: object}|null}
+ */
+export function updateTimerState(assignmentId, state) {
+  const payload = getAssignment(assignmentId);
+  if ( !payload ) return null;
+  Object.assign(payload.prompt, {
+    timerStatus: state.timerStatus,
+    deadlineAt: state.deadlineAt,
+    remainingMs: state.remainingMs
+  });
+  assignments.set(assignmentId, payload);
+  return payload;
+}

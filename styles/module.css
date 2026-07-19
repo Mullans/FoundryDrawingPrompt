@@ -210,6 +210,7 @@
 
 .drawing-prompts .dp-button-strip,
 .drawing-prompts .dp-action-bar,
+.drawing-prompts .dp-timer-controls,
 .drawing-prompts .dp-row-actions,
 .drawing-prompts .dp-submission-actions,
 .drawing-prompts .dp-tool-group {
@@ -351,6 +352,11 @@
   color: var(--dp-status-rejected);
 }
 
+.drawing-prompts .dp-summary-timer.is-paused:not(.is-overtime) {
+  border-color: color-mix(in srgb, var(--dp-text-muted) 62%, transparent);
+  color: var(--dp-text-muted);
+}
+
 .drawing-prompts .dp-summary-countdown {
   color: var(--dp-text);
   font-weight: 600;
@@ -358,6 +364,31 @@
 
 .drawing-prompts .dp-summary-countdown.is-overtime {
   color: var(--dp-status-rejected);
+}
+
+.drawing-prompts .dp-timer-controls {
+  flex: 0 0 auto;
+  align-items: center;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--dp-panel-bg-raised) 68%, transparent);
+}
+
+.drawing-prompts .dp-timer-controls button {
+  min-height: 28px;
+  padding: 3px 8px;
+}
+
+.drawing-prompts .dp-timer-adjustments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.drawing-prompts .dp-timer-adjustments button {
+  min-width: 3.5rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .drawing-prompts .dp-summary-background {

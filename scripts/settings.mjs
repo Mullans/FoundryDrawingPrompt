@@ -46,6 +46,42 @@ export function registerSettings() {
     range: { min: 0, max: 3600, step: 30 }
   });
 
+  game.settings.register(MODULE_ID, SETTINGS.TIMER_EXTEND_SHORT, {
+    ...common,
+    name: `${PREFIX}.timerExtendShort.name`,
+    hint: `${PREFIX}.timerExtendShort.hint`,
+    type: Number,
+    default: 30,
+    range: { min: 0, max: 3600, step: 1 }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.TIMER_EXTEND_LONG, {
+    ...common,
+    name: `${PREFIX}.timerExtendLong.name`,
+    hint: `${PREFIX}.timerExtendLong.hint`,
+    type: Number,
+    default: 120,
+    range: { min: 0, max: 3600, step: 1 }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.TIMER_REDUCE_SHORT, {
+    ...common,
+    name: `${PREFIX}.timerReduceShort.name`,
+    hint: `${PREFIX}.timerReduceShort.hint`,
+    type: Number,
+    default: 30,
+    range: { min: 0, max: 3600, step: 1 }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.TIMER_REDUCE_LONG, {
+    ...common,
+    name: `${PREFIX}.timerReduceLong.name`,
+    hint: `${PREFIX}.timerReduceLong.hint`,
+    type: Number,
+    default: 120,
+    range: { min: 0, max: 3600, step: 1 }
+  });
+
   game.settings.register(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE, {
     ...common,
     name: `${PREFIX}.defaultFitMode.name`,

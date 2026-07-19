@@ -14,7 +14,7 @@ import { defaultAssignmentAssetName } from "../prompts/naming-service.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
-import { formatClock, formatTimerChip } from "../utils/timer-chip.mjs";
+import { formatClock, formatTimerAdjustment, formatTimerState } from "../utils/timer-chip.mjs";
 
 const { ApplicationV2, DialogV2, HandlebarsApplicationMixin } = foundry.applications.api;
 const SNAPSHOT_KEY_PREFIX = "drawing-prompts.snap.";
@@ -45,6 +45,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       useSceneBackground: DrawingPromptManager.#onUseSceneBackground,
       clearBackground: DrawingPromptManager.#onClearBackground,
       sendPrompt: DrawingPromptManager.#onSendPrompt,
+      toggleTimer: DrawingPromptManager.#onToggleTimer,
+      resetTimer: DrawingPromptManager.#onResetTimer,
+      stopTimer: DrawingPromptManager.#onStopTimer,
+      adjustTimer: DrawingPromptManager.#onAdjustTimer,
       cancelAll: DrawingPromptManager.#onCancelAll,
       resendAll: DrawingPromptManager.#onResendAll,
       showPreview: DrawingPromptManager.#onShowPreview,
@@ -219,6 +223,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       mode: hasActivePrompt ? "review" : "setup",
       hasActivePrompt,
       summary: this.#summaryContext(),
+      timerControls: this.#timerControlsContext(),
       maxCanvasDim: INTERNAL.MAX_CANVAS_DIM,
       fitModes: this.#fitModeOptions(),
       selectedSnapshot: selectedPreview.src,
@@ -274,7 +279,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.draft.drawingName = String(data.get("drawingName") ?? "");
     this.draft.canvasWidth = normalizeNumber(data.get("canvasWidth"));
     this.draft.canvasHeight = normalizeNumber(data.get("canvasHeight"));
-    this.draft.timerSeconds = normalizeNumber(data.get("timerSeconds"));
+    this.draft.timerSeconds = Number(data.get("timerSeconds"));
     this.draft.background.fitMode = String(data.get("fitMode") ?? this.draft.background.fitMode);
     this.draft.selectedUserIds = new Set(data.getAll("selectedUserIds").map(String));
   }
@@ -321,6 +326,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #validateDraft(draft) {
     if ( !draft.promptText ) return warn("DRAWING-PROMPTS.manager.validation.promptText");
     if ( !draft.selectedUserIds.length ) return warn("DRAWING-PROMPTS.manager.validation.users");
+    if ( !validTimerSeconds(draft.timerSeconds) ) return warn("DRAWING-PROMPTS.manager.validation.timerSeconds");
     if ( !validDimension(draft.canvasWidth) || !validDimension(draft.canvasHeight) ) {
       return warn("DRAWING-PROMPTS.manager.validation.dimensions", { max: INTERNAL.MAX_CANVAS_DIM });
     }
@@ -381,7 +387,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const promptText = String(this.activePrompt.promptText ?? "");
     const truncated = truncateText(promptText, 90);
     const timerSeconds = Number(this.activePrompt.timerSeconds || 0);
-    const timerCountdown = formatTimerChip(this.activePrompt.deadlineAt, Date.now(), {
+    const timerCountdown = formatTimerState(this.activePrompt.timerState, Date.now(), {
       left: game.i18n.localize("DRAWING-PROMPTS.manager.timer.left"),
       over: game.i18n.localize("DRAWING-PROMPTS.manager.timer.over")
     });
@@ -393,15 +399,59 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       drawingName: this.activePrompt.drawingName || game.i18n.localize("DRAWING-PROMPTS.player.untitled"),
       canvasWidth: this.activePrompt.canvasWidth,
       canvasHeight: this.activePrompt.canvasHeight,
-      hasTimer: timerSeconds > 0,
+      hasTimer: this.activePrompt.timerStatus !== "none",
       timerDuration: formatClock(timerSeconds * 1000),
       timerCountdownText: timerCountdown.text,
       timerOvertime: timerCountdown.overtime,
+      timerPaused: this.activePrompt.timerStatus === "paused",
       hasBackground,
       backgroundPath: hasBackground ? this.activePrompt.background.path : "",
       backgroundLabel: hasBackground
         ? game.i18n.format("DRAWING-PROMPTS.manager.summary.backgroundTooltip", { path: this.activePrompt.background.path })
         : ""
+    };
+  }
+
+  /**
+   * Build GM timer control labels and signed adjustment values.
+   * @returns {object|null}
+   */
+  #timerControlsContext() {
+    if ( !this.activePrompt ) return null;
+    const paused = this.activePrompt.timerStatus === "paused";
+    const disabled = this.activePrompt.timerStatus === "none";
+    const extendShort = timerSettingSeconds(SETTINGS.TIMER_EXTEND_SHORT, 30);
+    const extendLong = timerSettingSeconds(SETTINGS.TIMER_EXTEND_LONG, 120);
+    const reduceShort = timerSettingSeconds(SETTINGS.TIMER_REDUCE_SHORT, 30);
+    const reduceLong = timerSettingSeconds(SETTINGS.TIMER_REDUCE_LONG, 120);
+    return {
+      disabled,
+      paused,
+      toggleLabel: game.i18n.localize(paused
+        ? "DRAWING-PROMPTS.manager.actions.resumeTimer"
+        : "DRAWING-PROMPTS.manager.actions.pauseTimer"),
+      adjustments: [
+        {
+          deltaMs: extendShort * 1000,
+          label: formatTimerAdjustment(extendShort, 1),
+          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.extend")
+        },
+        {
+          deltaMs: extendLong * 1000,
+          label: formatTimerAdjustment(extendLong, 1),
+          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.extend")
+        },
+        {
+          deltaMs: -reduceShort * 1000,
+          label: formatTimerAdjustment(reduceShort, -1),
+          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.reduce")
+        },
+        {
+          deltaMs: -reduceLong * 1000,
+          label: formatTimerAdjustment(reduceLong, -1),
+          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.reduce")
+        }
+      ]
     };
   }
 
@@ -462,7 +512,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const now = Date.now();
     const selected = this.draft.selectedUserIds.has(user.id);
     const status = assignment?.status ?? "unselected";
-    const isExpired = assignment?.isExpired(this.activePrompt?.deadlineAt ?? null, now) ?? false;
+    const isExpired = this.activePrompt?.timerStatus === "running"
+      ? assignment?.isExpired(this.activePrompt.deadlineAt, now) ?? false
+      : false;
     return {
       user,
       userId: user.id,
@@ -555,6 +607,38 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.activePrompt = await service.createAndSendPrompt(draft);
     this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
     await this.render({ parts: ["body"] });
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onToggleTimer() {
+    if ( !this.activePrompt || this.activePrompt.timerStatus === "none" ) return;
+    const service = await import("../prompts/prompt-service.mjs");
+    this.activePrompt = this.activePrompt.timerStatus === "paused"
+      ? await service.resumePromptTimer(this.activePrompt.id)
+      : await service.pausePromptTimer(this.activePrompt.id);
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onResetTimer() {
+    if ( !this.activePrompt || this.activePrompt.timerStatus === "none" ) return;
+    const service = await import("../prompts/prompt-service.mjs");
+    this.activePrompt = await service.resetPromptTimer(this.activePrompt.id);
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onStopTimer() {
+    if ( !this.activePrompt || this.activePrompt.timerStatus === "none" ) return;
+    const service = await import("../prompts/prompt-service.mjs");
+    this.activePrompt = await service.stopPromptTimer(this.activePrompt.id);
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onAdjustTimer(_event, target) {
+    if ( !this.activePrompt || this.activePrompt.timerStatus === "none" ) return;
+    const deltaMs = Number(target.dataset.deltaMs);
+    if ( !Number.isFinite(deltaMs) ) return;
+    const service = await import("../prompts/prompt-service.mjs");
+    this.activePrompt = await service.adjustPromptTimer(this.activePrompt.id, deltaMs);
   }
 
   /**
@@ -1010,7 +1094,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #refreshExpiryTicker() {
-    const shouldTick = Boolean(this.activePrompt?.deadlineAt && Object.values(this.activePrompt.assignments).some(a => a.isActive));
+    const shouldTick = Boolean(
+      this.activePrompt?.timerStatus === "running"
+      && Number.isFinite(this.activePrompt.deadlineAt)
+    );
     this.#updateTimerChip();
     if ( shouldTick && !this.#expiryTimerId ) {
       this.#expiryStateSignature = this.#expirySignature();
@@ -1041,14 +1128,16 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    */
   #updateTimerChip() {
     const chip = this.element?.querySelector("[data-dp-timer-countdown]");
-    if ( !chip || !this.activePrompt?.deadlineAt ) return;
-    const timer = formatTimerChip(this.activePrompt.deadlineAt, Date.now(), {
+    if ( !chip || !this.activePrompt ) return;
+    const timer = formatTimerState(this.activePrompt.timerState, Date.now(), {
       left: game.i18n.localize("DRAWING-PROMPTS.manager.timer.left"),
       over: game.i18n.localize("DRAWING-PROMPTS.manager.timer.over")
     });
     chip.textContent = timer.text;
     chip.classList.toggle("is-overtime", timer.overtime);
-    chip.closest(".dp-summary-timer")?.classList.toggle("is-overtime", timer.overtime);
+    const summary = chip.closest(".dp-summary-timer");
+    summary?.classList.toggle("is-overtime", timer.overtime);
+    summary?.classList.toggle("is-paused", this.activePrompt.timerStatus === "paused");
   }
 
   /**
@@ -1056,7 +1145,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {string}
    */
   #expirySignature() {
-    if ( !this.activePrompt?.deadlineAt ) return "";
+    if ( this.activePrompt?.timerStatus !== "running" || !Number.isFinite(this.activePrompt.deadlineAt) ) return "";
     const now = Date.now();
     return Object.values(this.activePrompt.assignments)
       .filter(assignment => assignment.isActive)
@@ -1084,6 +1173,27 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 function setting(key, fallback) {
   const value = game.settings.get(MODULE_ID, key);
   return value === undefined || value === null ? fallback : value;
+}
+
+/**
+ * Read a timer adjustment setting as nonnegative whole seconds.
+ * @param {string} key Setting key.
+ * @param {number} fallback Fallback seconds.
+ * @returns {number}
+ */
+function timerSettingSeconds(key, fallback) {
+  const seconds = Number(setting(key, fallback));
+  return Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : fallback;
+}
+
+/**
+ * Test whether a draft timer is a nonnegative whole number of seconds.
+ * @param {*} value Draft timer value.
+ * @returns {boolean}
+ */
+function validTimerSeconds(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && Number.isInteger(seconds) && seconds >= 0;
 }
 
 /**

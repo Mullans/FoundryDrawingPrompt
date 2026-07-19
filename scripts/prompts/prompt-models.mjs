@@ -1,4 +1,5 @@
 import { BG_SOURCE, FIT_MODE, STATUS } from "../constants.mjs";
+import { normalizeTimerState } from "./timer-service.mjs";
 
 const TERMINAL_STATUSES = new Set([STATUS.SUBMITTED, STATUS.REJECTED, STATUS.CANCELLED]);
 
@@ -236,7 +237,7 @@ export class DrawingPrompt {
     this.timerSeconds = data.timerSeconds ?? null;
     this.createdAt = data.createdAt ?? Date.now();
     this.sentAt = data.sentAt ?? null;
-    this.deadlineAt = data.deadlineAt ?? null;
+    this.timerState = data;
     this.assignments = {};
 
     for ( const [id, assignment] of Object.entries(data.assignments ?? {}) ) {
@@ -299,9 +300,34 @@ export class DrawingPrompt {
       timerSeconds: this.timerSeconds,
       createdAt: this.createdAt,
       sentAt: this.sentAt,
+      timerStatus: this.timerStatus,
       deadlineAt: this.deadlineAt,
+      remainingMs: this.remainingMs,
       assignments: Object.fromEntries(Object.entries(this.assignments).map(([id, assignment]) => [id, assignment.toObject()]))
     };
+  }
+
+  /**
+   * Canonical timer state for transitions and wire payloads.
+   * @returns {{timerStatus: "none"|"running"|"paused", deadlineAt: number|null, remainingMs: number|null}}
+   */
+  get timerState() {
+    return {
+      timerStatus: this.timerStatus,
+      deadlineAt: this.deadlineAt,
+      remainingMs: this.remainingMs
+    };
+  }
+
+  /**
+   * Replace the canonical timer state.
+   * @param {object} state Timer state.
+   */
+  set timerState(state) {
+    const timer = normalizeTimerState(state);
+    this.timerStatus = timer.timerStatus;
+    this.deadlineAt = timer.deadlineAt;
+    this.remainingMs = timer.remainingMs;
   }
 
   /**

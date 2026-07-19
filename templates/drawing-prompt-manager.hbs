@@ -33,7 +33,7 @@
 
       {{#if summary.hasTimer}}
       <span class="dp-summary-separator" aria-hidden="true"></span>
-      <span class="dp-summary-timer {{#if summary.timerOvertime}}is-overtime{{/if}}" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.timer'}}">
+      <span class="dp-summary-timer {{#if summary.timerOvertime}}is-overtime{{/if}} {{#if summary.timerPaused}}is-paused{{/if}}" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.timer'}}">
         <i class="fa-regular fa-clock" inert></i>
         <span>{{summary.timerDuration}}</span>
         {{#if summary.timerCountdownText}}
@@ -52,6 +52,26 @@
         </div>
       </details>
       {{/if}}
+    </div>
+
+    <div class="dp-timer-controls" aria-label="{{localize 'DRAWING-PROMPTS.manager.timer.controls'}}">
+      <button type="button" data-action="toggleTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+        <i class="fa-solid {{#if timerControls.paused}}fa-play{{else}}fa-pause{{/if}}" inert></i>
+        <span>{{timerControls.toggleLabel}}</span>
+      </button>
+      <button type="button" data-action="resetTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+        <i class="fa-solid fa-rotate" inert></i>
+        <span>{{localize "DRAWING-PROMPTS.manager.actions.resetTimer"}}</span>
+      </button>
+      <button type="button" data-action="stopTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+        <i class="fa-solid fa-stop" inert></i>
+        <span>{{localize "DRAWING-PROMPTS.manager.actions.stopTimer"}}</span>
+      </button>
+      <span class="dp-timer-adjustments">
+        {{#each timerControls.adjustments}}
+        <button type="button" data-action="adjustTimer" data-delta-ms="{{this.deltaMs}}" data-tooltip="{{this.tooltip}}" {{#if ../timerControls.disabled}}disabled{{/if}}>{{this.label}}</button>
+        {{/each}}
+      </span>
     </div>
 
     <div class="dp-players-preview-grid">

@@ -6,6 +6,7 @@ import { canStageUploads, stageSubmissionImages } from "../prompts/asset-service
 import { updateStatus } from "../prompts/client-store.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { createLeadingTrailingThrottle } from "../utils/throttle.mjs";
+import { formatClock, formatTimerState } from "../utils/timer-chip.mjs";
 
 const { ApplicationV2, DialogV2, HandlebarsApplicationMixin } = foundry.applications.api;
 
@@ -54,6 +55,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     const assignmentId = assignmentPayload.assignment.id;
     let app = this.#registry.get(assignmentId);
     if ( app ) {
+      app.assignmentPayload = assignmentPayload;
       await app.render({ force: true });
       app.bringToFront();
       return app;
@@ -63,6 +65,22 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     await app.render({ force: true });
     app.bringToFront();
     return app;
+  }
+
+  /**
+   * Apply a GM timer update to an open assignment window.
+   * @param {string} assignmentId Assignment id.
+   * @param {object} timerState Canonical timer state.
+   * @returns {Promise<void>}
+   */
+  static async updateTimer(assignmentId, timerState) {
+    const app = this.#registry.get(assignmentId);
+    if ( !app ) return;
+    const wasVisible = app.assignmentPayload.prompt.timerStatus !== "none";
+    Object.assign(app.assignmentPayload.prompt, timerState);
+    const isVisible = app.assignmentPayload.prompt.timerStatus !== "none";
+    if ( wasVisible !== isVisible ) await app.render({ force: true });
+    else app.#startTimer();
   }
 
   /**
@@ -129,7 +147,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       prompt,
       mode: this.mode,
       isPreview: this.mode === "preview",
-      hasDeadline: Boolean(prompt.deadlineAt || (this.mode === "preview" && prompt.timerSeconds)),
+      hasTimer: this.mode === "preview" ? Number(prompt.timerSeconds) > 0 : prompt.timerStatus !== "none",
       timerText: this.#timerText(),
       canvasStyle: `aspect-ratio: ${width} / ${height};`,
       backgroundError: this.#backgroundError,
@@ -486,13 +504,15 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @returns {void}
    */
   #startTimer() {
-    if ( this.#timerId || !this.element?.querySelector(".dp-timer-value") ) return;
+    if ( this.#timerId ) window.clearInterval(this.#timerId);
+    this.#timerId = null;
+    if ( !this.element?.querySelector(".dp-timer-value") ) return;
     const update = () => {
       const el = this.element?.querySelector(".dp-timer-value");
       if ( el ) el.textContent = this.#timerText();
     };
     update();
-    if ( this.mode === "preview" ) return;
+    if ( this.mode === "preview" || this.assignmentPayload.prompt.timerStatus !== "running" ) return;
     this.#timerId = window.setInterval(update, 1000);
   }
 
@@ -502,11 +522,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   #timerText() {
     const prompt = this.assignmentPayload.prompt;
-    if ( this.mode === "preview" ) return formatDuration(Number(prompt.timerSeconds ?? 0) * 1000);
-    if ( !prompt.deadlineAt ) return "";
-    const remaining = Number(prompt.deadlineAt) - Date.now();
-    if ( remaining >= 0 ) return formatDuration(remaining);
-    return game.i18n.format("DRAWING-PROMPTS.player.timer.overtime", { time: formatDuration(Math.abs(remaining)) });
+    if ( this.mode === "preview" ) return formatClock(Number(prompt.timerSeconds ?? 0) * 1000);
+    return formatTimerState(prompt, Date.now(), { left: "", over: "" }).text.trim();
   }
 
   /**
@@ -573,18 +590,6 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   static async #onCloseWindow() {
     return this.close();
   }
-}
-
-/**
- * Format milliseconds as mm:ss.
- * @param {number} ms Milliseconds.
- * @returns {string}
- */
-function formatDuration(ms) {
-  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 /**
