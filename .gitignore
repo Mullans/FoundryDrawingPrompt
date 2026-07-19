@@ -15,6 +15,10 @@ Thumbs.db
 # Generic ignore files
 ignore__*
 
+.claude/settings.local.json
+.agents/
+.claude/
+
 # Dev-only Playwright install for tools/e2e-smoke.mjs
 tools/package.json
 tools/package-lock.json

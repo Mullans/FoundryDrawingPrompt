@@ -60,6 +60,18 @@ test("DrawingAssignment tolerates missing serialized fields", () => {
   });
   assert.equal(serialized.pendingSubmission, null);
   assert.deepEqual(serialized.placements, []);
+  assert.equal(serialized.savedSubmissionTs, null);
+});
+
+test("DrawingAssignment round-trips savedSubmissionTs", () => {
+  const assignment = DrawingAssignment.fromObject({
+    id: "a1", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 100, savedSubmissionTs: 150
+  });
+  const roundTrip = DrawingAssignment.fromObject(JSON.parse(JSON.stringify(assignment.toObject())));
+  assert.equal(roundTrip.savedSubmissionTs, 150);
+
+  const legacy = DrawingAssignment.fromObject({ id: "a2", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED });
+  assert.equal(legacy.savedSubmissionTs, null);
 });
 
 test("DrawingAssignment primaryImagePath prefers merged assets and falls back to overlay", () => {

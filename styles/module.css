@@ -466,6 +466,26 @@
 
 .drawing-prompts .dp-submission-actions {
   flex: 0 0 auto;
+  align-items: center;
+}
+
+.drawing-prompts .dp-placement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.drawing-prompts .dp-action-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dp-text-muted);
+  opacity: 0.6;
+}
+
+.drawing-prompts .dp-submission-actions:not(.is-place-disabled) .dp-action-arrow {
+  color: var(--dp-accent);
+  opacity: 1;
 }
 
 .drawing-prompts .dp-saved-indicator {

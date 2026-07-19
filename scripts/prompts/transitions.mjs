@@ -47,6 +47,20 @@ export function evaluateSnapshot(assignment) {
 }
 
 /**
+ * Decide whether the GM manager's placement actions are unlocked for an assignment: the GM
+ * must have saved the assignment's *current* submission. A later resubmission re-arms the
+ * gate automatically because the new submission's timestamp exceeds the previously recorded
+ * saved-submission timestamp, without any explicit re-locking step.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @returns {boolean} Whether the save gate is open (placement unlocked).
+ */
+export function isSaveGateOpen(assignment) {
+  if ( assignment?.status !== STATUS.SUBMITTED ) return false;
+  if ( !Number.isFinite(assignment.savedSubmissionTs) ) return false;
+  return assignment.savedSubmissionTs >= assignment.submittedAt;
+}
+
+/**
  * Validate a drawing submission payload without touching Foundry globals.
  * @param {object} payload Submission payload.
  * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string}} [options] Context for path allowlists.

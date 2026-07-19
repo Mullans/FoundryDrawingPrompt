@@ -12,6 +12,7 @@ import {
 } from "../foundry/background-source-service.mjs";
 import { defaultAssignmentAssetName } from "../prompts/naming-service.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
+import { isSaveGateOpen } from "../prompts/transitions.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { formatClock, formatTimerChip } from "../utils/timer-chip.mjs";
 
@@ -229,12 +230,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       canResendAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
       canFinishPrompt: Boolean(this.activePrompt),
       promptQueue: this.#promptQueueContext(),
-      selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !selectedAssignment.primaryImagePath,
+      selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !isSaveGateOpen(selectedAssignment),
       selectedIsSaved: Boolean(selectedAssignment?.primaryImagePath),
       selectedSavedTooltip: selectedAssignment?.primaryImagePath
         ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: selectedAssignment.primaryImagePath })
         : "",
-      selectedCanPlace: Boolean(selectedAssignment?.primaryImagePath),
+      selectedCanPlace: isSaveGateOpen(selectedAssignment),
       saveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.manager.actions.saveFirst")
     };
   }

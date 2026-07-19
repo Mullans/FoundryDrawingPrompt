@@ -9,6 +9,7 @@ import {
   evaluateRejection,
   evaluateSnapshot,
   evaluateSubmission,
+  isSaveGateOpen,
   isValidSubmissionPayload
 } from "../scripts/prompts/transitions.mjs";
 
@@ -78,6 +79,35 @@ test("evaluateSnapshot displays only while pending or opened", () => {
   for ( const status of STATUSES ) {
     assert.deepEqual(evaluateSnapshot(assignmentWithStatus(status)), expected[status], status);
   }
+});
+
+test("isSaveGateOpen requires the GM to have saved the assignment's current submission", () => {
+  const noSubmission = assignmentWithStatus(STATUS.OPENED);
+  assert.equal(isSaveGateOpen(noSubmission), false, "no submission -> closed");
+
+  const pending = assignmentWithStatus(STATUS.PENDING);
+  assert.equal(isSaveGateOpen(pending), false, "pending -> closed");
+
+  const newSubmission = DrawingAssignment.fromObject({
+    id: "a-new", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 100
+  });
+  assert.equal(isSaveGateOpen(newSubmission), false, "new submission, not yet saved -> closed");
+
+  const saved = DrawingAssignment.fromObject({
+    id: "a-saved", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 100, savedSubmissionTs: 100
+  });
+  assert.equal(isSaveGateOpen(saved), true, "saved current submission -> open");
+
+  const resubmittedAfterSave = DrawingAssignment.fromObject({
+    id: "a-resubmit", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 200, savedSubmissionTs: 100
+  });
+  assert.equal(isSaveGateOpen(resubmittedAfterSave), false, "resubmission after save re-arms the gate -> closed");
+
+  const legacyWithoutField = DrawingAssignment.fromObject({
+    id: "a-legacy", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 100
+  });
+  assert.equal(legacyWithoutField.savedSubmissionTs, null);
+  assert.equal(isSaveGateOpen(legacyWithoutField), false, "legacy data without the field -> closed");
 });
 
 test("buildStagingDir normalizes asset folders and appends staging", () => {

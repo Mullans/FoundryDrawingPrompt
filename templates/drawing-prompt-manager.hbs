@@ -128,19 +128,24 @@
           </div>
           {{/if}}
 
-          <div class="dp-submission-actions {{#unless selectedCanPlace}}is-place-disabled{{/unless}}" {{#unless selectedCanPlace}}data-tooltip="{{saveFirstTooltip}}"{{/unless}}>
+          <div class="dp-submission-actions {{#unless selectedCanPlace}}is-place-disabled{{/unless}}">
             <button type="button" data-action="saveAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanSave}}disabled{{/unless}}>
               <i class="fa-solid fa-floppy-disk" inert></i>
-              <span>{{localize "DRAWING-PROMPTS.manager.actions.saveOnly"}}</span>
+              <span>{{localize "DRAWING-PROMPTS.manager.actions.save"}}</span>
             </button>
-            <button type="button" data-action="placeAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
-              <i class="fa-solid fa-map-pin" inert></i>
-              <span>{{localize "DRAWING-PROMPTS.manager.actions.placeTile"}}</span>
-            </button>
-            <button type="button" data-action="placeHiddenAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
-              <i class="fa-solid fa-eye-slash" inert></i>
-              <span>{{localize "DRAWING-PROMPTS.manager.actions.placeHiddenTile"}}</span>
-            </button>
+            <span class="dp-action-arrow" aria-hidden="true">
+              <i class="fa-solid fa-arrow-right" inert></i>
+            </span>
+            <div class="dp-placement-actions" {{#unless selectedCanPlace}}data-tooltip="{{saveFirstTooltip}}"{{/unless}}>
+              <button type="button" data-action="placeAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
+                <i class="fa-solid fa-map-pin" inert></i>
+                <span>{{localize "DRAWING-PROMPTS.manager.actions.placeTile"}}</span>
+              </button>
+              <button type="button" data-action="placeHiddenAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
+                <i class="fa-solid fa-eye-slash" inert></i>
+                <span>{{localize "DRAWING-PROMPTS.manager.actions.placeHiddenTile"}}</span>
+              </button>
+            </div>
           </div>
         </fieldset>
       </aside>

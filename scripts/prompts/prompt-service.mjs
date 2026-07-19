@@ -9,7 +9,7 @@ import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAll
 import { defaultAssignmentAssetName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
-import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isValidSubmissionPayload } from "./transitions.mjs";
+import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isSaveGateOpen, isValidSubmissionPayload } from "./transitions.mjs";
 import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
 import { isValidSnapshotDataUrl } from "./wire-validation.mjs";
 
@@ -290,6 +290,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     assignment.assets.tileWidth = submissionTileWidth(submission, prompt);
     assignment.assets.tileHeight = submissionTileHeight(submission, prompt);
     assignment.pendingSubmission = null;
+    assignment.savedSubmissionTs = assignment.submittedAt;
     await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, dir);
     pendingSubmissions.delete(assignment.id);
     clearCachedSubmission(assignment.id);
@@ -314,6 +315,7 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
   if ( !assignment.primaryImagePath ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
+  if ( !isSaveGateOpen(assignment) ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
 
   const scene = globalThis.canvas?.scene;
   if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));

@@ -22,6 +22,7 @@ export class DrawingAssignment {
     this.late = Boolean(data.late);
     this.overtimeMs = data.overtimeMs ?? null;
     this.reopenedCount = Number(data.reopenedCount ?? 0);
+    this.savedSubmissionTs = data.savedSubmissionTs ?? null;
     this.assets = {
       name: data.assets?.name ?? null,
       overlayPath: data.assets?.overlayPath ?? null,
@@ -86,6 +87,7 @@ export class DrawingAssignment {
       late: this.late,
       overtimeMs: this.overtimeMs,
       reopenedCount: this.reopenedCount,
+      savedSubmissionTs: this.savedSubmissionTs,
       assets: { ...this.assets },
       placements: this.placements.map(placement => ({ ...placement })),
       pendingSubmission: this.pendingSubmission ? JSON.parse(JSON.stringify(this.pendingSubmission)) : null
