@@ -16,7 +16,8 @@ const TEST_FILES = [
   "tests/wire-size.test.mjs",
   "tests/wire-validation.test.mjs",
   "tests/socket-auth.test.mjs",
-  "tests/timer-chip.test.mjs"
+  "tests/timer-chip.test.mjs",
+  "tests/token-placement.test.mjs"
 ];
 
 test("repository test suite", () => {

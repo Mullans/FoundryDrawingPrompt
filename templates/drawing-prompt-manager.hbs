@@ -137,13 +137,9 @@
               <i class="fa-solid fa-arrow-right" inert></i>
             </span>
             <div class="dp-placement-actions" {{#unless selectedCanPlace}}data-tooltip="{{saveFirstTooltip}}"{{/unless}}>
-              <button type="button" data-action="placeAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
+              <button type="button" data-action="openPlaceDialog" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
                 <i class="fa-solid fa-map-pin" inert></i>
-                <span>{{localize "DRAWING-PROMPTS.manager.actions.placeTile"}}</span>
-              </button>
-              <button type="button" data-action="placeHiddenAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
-                <i class="fa-solid fa-eye-slash" inert></i>
-                <span>{{localize "DRAWING-PROMPTS.manager.actions.placeHiddenTile"}}</span>
+                <span>{{localize "DRAWING-PROMPTS.manager.actions.place"}}</span>
               </button>
             </div>
           </div>

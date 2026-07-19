@@ -54,8 +54,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       reopenAssignment: DrawingPromptManager.#onReopenAssignment,
       showPlayerUi: DrawingPromptManager.#onShowPlayerUi,
       saveAssignment: DrawingPromptManager.#onSaveAssignment,
-      placeAssignment: DrawingPromptManager.#onPlaceAssignment,
-      placeHiddenAssignment: DrawingPromptManager.#onPlaceHiddenAssignment,
+      openPlaceDialog: DrawingPromptManager.#onOpenPlaceDialog,
       finishPrompt: DrawingPromptManager.#onFinishPrompt,
       switchPrompt: DrawingPromptManager.#onSwitchPrompt
     }
@@ -669,13 +668,16 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /** @this {DrawingPromptManager} */
-  static async #onPlaceAssignment(_event, target) {
-    await this.#placeAssignment(target.dataset.assignmentId || this.selectedAssignmentId, { hidden: false });
-  }
-
-  /** @this {DrawingPromptManager} */
-  static async #onPlaceHiddenAssignment(_event, target) {
-    await this.#placeAssignment(target.dataset.assignmentId || this.selectedAssignmentId, { hidden: true });
+  static async #onOpenPlaceDialog(_event, target) {
+    const assignmentId = target.dataset.assignmentId || this.selectedAssignmentId;
+    const assignment = this.activePrompt?.getAssignment(assignmentId);
+    if ( !assignment ) return;
+    const { PlaceDialog } = await import("./place-dialog.mjs");
+    try {
+      await PlaceDialog.open(assignment);
+    } catch (err) {
+      ui.notifications.warn(err.message);
+    }
   }
 
   /** @this {DrawingPromptManager} */
@@ -719,22 +721,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       if ( adoption.adopted ) {
         ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.adoptedNext", { count: adoption.remaining }));
       }
-    } catch (err) {
-      ui.notifications.warn(err.message);
-    }
-  }
-
-  /**
-   * Place an already-saved assignment.
-   * @param {string} assignmentId Assignment id.
-   * @param {{hidden: boolean}} options Placement options.
-   * @returns {Promise<void>}
-   */
-  async #placeAssignment(assignmentId, { hidden }) {
-    if ( !assignmentId ) return;
-    const service = await import("../prompts/prompt-service.mjs");
-    try {
-      await service.placeAssignmentAsTile(assignmentId, { hidden });
     } catch (err) {
       ui.notifications.warn(err.message);
     }

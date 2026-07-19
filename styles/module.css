@@ -890,3 +890,59 @@
   border-color: color-mix(in srgb, var(--dp-status-rejected) 70%, transparent);
   background: color-mix(in srgb, var(--dp-status-rejected) 20%, var(--dp-control-bg));
 }
+
+.drawing-prompts .dp-place-shell,
+.drawing-prompts .dp-clone-source-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.drawing-prompts .dp-place-modes {
+  display: grid;
+  gap: 8px;
+}
+
+.drawing-prompts .dp-place-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--dp-panel-bg);
+  color: var(--dp-text);
+  cursor: pointer;
+}
+
+.drawing-prompts .dp-place-mode-card.is-selected {
+  border-color: var(--dp-accent);
+  background: color-mix(in srgb, var(--dp-accent) 12%, var(--dp-panel-bg-raised));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dp-accent) 40%, transparent);
+}
+
+.drawing-prompts .dp-place-mode-card.is-disabled {
+  background: color-mix(in srgb, var(--dp-control-bg) 55%, transparent);
+  color: var(--dp-text-muted);
+}
+
+.drawing-prompts .dp-place-mode-card.is-disabled :is(input:not([type="radio"]), select) {
+  opacity: 0.45;
+}
+
+.drawing-prompts .dp-place-mode-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawing-prompts .dp-place-mode-heading input {
+  width: auto;
+  margin: 0;
+}
+
+.drawing-prompts .dp-place-mode-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}

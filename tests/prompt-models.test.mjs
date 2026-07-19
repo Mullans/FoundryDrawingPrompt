@@ -74,6 +74,39 @@ test("DrawingAssignment round-trips savedSubmissionTs", () => {
   assert.equal(legacy.savedSubmissionTs, null);
 });
 
+test("DrawingAssignment preserves tile and token placement identities", () => {
+  const assignment = DrawingAssignment.fromObject({
+    id: "a1",
+    promptId: "p1",
+    userId: "u1",
+    placements: [
+      { tileId: "tile1", sceneId: "scene1", hidden: false, placedAt: 100 },
+      { kind: "token", tokenId: "token1", actorId: "actor1", sceneId: "scene1", hidden: true, placedAt: 200 }
+    ]
+  });
+
+  assert.deepEqual(assignment.toObject().placements, [
+    {
+      kind: "tile",
+      tileId: "tile1",
+      tokenId: null,
+      actorId: null,
+      sceneId: "scene1",
+      hidden: false,
+      placedAt: 100
+    },
+    {
+      kind: "token",
+      tileId: null,
+      tokenId: "token1",
+      actorId: "actor1",
+      sceneId: "scene1",
+      hidden: true,
+      placedAt: 200
+    }
+  ]);
+});
+
 test("DrawingAssignment primaryImagePath prefers merged assets and falls back to overlay", () => {
   const overlayOnly = DrawingAssignment.fromObject({
     id: "a1",

@@ -34,7 +34,10 @@ export class DrawingAssignment {
       tileHeight: data.assets?.tileHeight ?? null
     };
     this.placements = Array.isArray(data.placements) ? data.placements.map(placement => ({
+      kind: placement?.kind ?? (placement?.tokenId ? "token" : "tile"),
       tileId: placement?.tileId ?? null,
+      tokenId: placement?.tokenId ?? null,
+      actorId: placement?.actorId ?? null,
       sceneId: placement?.sceneId ?? null,
       hidden: Boolean(placement?.hidden),
       placedAt: placement?.placedAt ?? null

@@ -49,6 +49,7 @@ export const SETTINGS = Object.freeze({
   WEBP_QUALITY: "webpQuality",
   DEFAULT_PERMISSIONS: "defaultPermissions",
   ASSET_FOLDER: "assetFolder",
+  DEFAULT_CLONE_SOURCE_ACTOR_UUID: "defaultCloneSourceActorUuid",
   LAST_SAVE_FOLDER: "lastSaveFolder",
   LAST_BRUSH_COLOR: "lastBrushColor",
   AUTO_OPEN_PLAYER_WINDOW: "autoOpenPlayerWindow",

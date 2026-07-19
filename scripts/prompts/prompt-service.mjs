@@ -2,6 +2,7 @@ import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS, STATUS } from "../constan
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
 import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { buildTileData } from "../foundry/tile-placement-service.mjs";
+import { PLACE_MODES, buildTokenData, pickActorType, validatePlaceSelection } from "../foundry/token-placement-service.mjs";
 import { CALLS, emit } from "../socket.mjs";
 import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, pendingDir, stagingDir, uploadBlob, uploadDataUrl, uploadJson } from "./asset-service.mjs";
 import { getAssignment as getClientAssignment, updateStatus, upsertAssignment } from "./client-store.mjs";
@@ -307,18 +308,11 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
 /**
  * Place an assignment as a Scene Tile.
  * @param {string} assignmentId Assignment id.
- * @param {{hidden?: boolean}} [options] Placement options.
+ * @param {{hidden?: boolean, name?: string}} [options] Placement options.
  * @returns {Promise<object>}
  */
-export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {}) {
-  assertGM();
-  const { prompt, assignment } = requirePromptAssignment(assignmentId);
-  assertPromptOwner(prompt);
-  if ( !assignment.primaryImagePath ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
-  if ( !isSaveGateOpen(assignment) ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
-
-  const scene = globalThis.canvas?.scene;
-  if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));
+export async function placeAssignmentAsTile(assignmentId, { hidden = false, name = "" } = {}) {
+  const { prompt, assignment, scene } = requirePlacementContext(assignmentId);
   const submission = getPendingSubmission(assignmentId);
   const tileWidth = assignment.assets.tileWidth ?? submissionTileWidth(submission, prompt);
   const tileHeight = assignment.assets.tileHeight ?? submissionTileHeight(submission, prompt);
@@ -330,7 +324,7 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {
   }
   const tileData = buildTileData({
     src: assignment.primaryImagePath,
-    name: assignment.assets.name,
+    name: String(name || assignment.assets.name || "").trim(),
     width: tileWidth,
     height: tileHeight,
     center: {
@@ -344,6 +338,7 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {
   if ( !CONFIG.Tile.documentClass.schema.fields.name ) delete tileData.name;
   const [tile] = await scene.createEmbeddedDocuments("Tile", [tileData]);
   assignment.placements.push({
+    kind: "tile",
     tileId: tile?.id ?? tile?._id ?? null,
     sceneId: scene.id,
     hidden: Boolean(hidden),
@@ -354,6 +349,90 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {
   Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, tile);
   await refreshManager();
   return tile;
+}
+
+/**
+ * Place an assignment as a Token using a new, copied, or existing world Actor.
+ * @param {string} assignmentId Assignment id.
+ * @param {object} options Placement options.
+ * @param {string} options.mode Place mode.
+ * @param {string} [options.name] Actor name for New Actor or Copy Actor.
+ * @param {string} [options.actorUuid] Source world Actor UUID.
+ * @param {boolean} [options.hidden=false] Whether the Token is hidden.
+ * @returns {Promise<object>}
+ */
+export async function placeAssignmentAsToken(assignmentId, { mode, name = "", actorUuid = "", hidden = false } = {}) {
+  const { prompt, assignment, scene } = requirePlacementContext(assignmentId);
+  const validationError = mode === PLACE_MODES.TILE ? "invalidMode" : validatePlaceSelection({ mode, name, actorUuid });
+  if ( validationError ) {
+    throw new Error(game.i18n.localize(`DRAWING-PROMPTS.placeDialog.validation.${validationError}`));
+  }
+
+  const src = assignment.primaryImagePath;
+  let actor;
+  let createdActor = false;
+  if ( mode === PLACE_MODES.NEW_ACTOR ) {
+    const type = pickActorType(game.system.id, game.documentTypes.Actor);
+    if ( !type ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noActorType"));
+    actor = await CONFIG.Actor.documentClass.create({
+      name: String(name).trim(),
+      type,
+      img: src,
+      prototypeToken: { texture: { src } }
+    });
+    createdActor = true;
+  } else {
+    const sourceActor = findWorldActor(actorUuid);
+    if ( !sourceActor ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.actorNotFound"));
+    actor = mode === PLACE_MODES.COPY_ACTOR
+      ? await sourceActor.clone({
+        name: String(name).trim(),
+        img: src,
+        prototypeToken: { texture: { src } }
+      }, { save: true })
+      : sourceActor;
+    createdActor = mode === PLACE_MODES.COPY_ACTOR;
+  }
+
+  let token;
+  try {
+    const tokenOverrides = buildTokenData({
+      actorId: actor.id,
+      src,
+      center: {
+        x: globalThis.canvas.stage?.pivot?.x ?? (Number(scene.width) / 2),
+        y: globalThis.canvas.stage?.pivot?.y ?? (Number(scene.height) / 2)
+      },
+      scene: { width: scene.width, height: scene.height },
+      gridSize: scene.grid?.size ?? globalThis.canvas.dimensions?.size ?? 1,
+      hidden
+    });
+    const tokenDocument = await actor.getTokenDocument(tokenOverrides, { parent: scene });
+    [token] = await scene.createEmbeddedDocuments("Token", [tokenDocument.toObject()]);
+    if ( !token ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.tokenPlacementFailed"));
+  } catch (err) {
+    if ( createdActor && actor?.id ) {
+      try {
+        await actor.delete();
+      } catch (cleanupError) {
+        console.warn(`${MODULE_ID} | could not remove Actor after Token placement failed`, cleanupError);
+      }
+    }
+    throw err;
+  }
+  assignment.placements.push({
+    kind: "token",
+    tokenId: token?.id ?? token?._id ?? null,
+    actorId: actor.id,
+    sceneId: scene.id,
+    hidden: Boolean(hidden),
+    placedAt: Date.now()
+  });
+  await savePrompt(prompt);
+  Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
+  Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, token);
+  await refreshManager();
+  return token;
 }
 
 /**
@@ -857,6 +936,32 @@ function evictSubmissionCache(index) {
  */
 function assertPromptOwner(prompt) {
   if ( prompt.gmUserId !== game.user.id ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notPromptOwner"));
+}
+
+/**
+ * Validate common server-side placement requirements.
+ * @param {string} assignmentId Assignment id.
+ * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment, scene: object}}
+ */
+function requirePlacementContext(assignmentId) {
+  assertGM();
+  const { prompt, assignment } = requirePromptAssignment(assignmentId);
+  assertPromptOwner(prompt);
+  if ( !assignment.primaryImagePath || !isSaveGateOpen(assignment) ) {
+    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
+  }
+  const scene = globalThis.canvas?.scene;
+  if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));
+  return { prompt, assignment, scene };
+}
+
+/**
+ * Resolve a world Actor by UUID.
+ * @param {string} uuid Actor UUID.
+ * @returns {object|null}
+ */
+function findWorldActor(uuid) {
+  return Array.from(game.actors ?? []).find(actor => actor.uuid === uuid) ?? null;
 }
 
 /**

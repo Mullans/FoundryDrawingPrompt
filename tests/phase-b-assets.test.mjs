@@ -28,7 +28,9 @@ test("ApplicationV2 template part paths exist", () => {
   }
 
   assert.deepEqual([...templatePaths].sort(), [
+    "modules/drawing-prompts/templates/clone-source-settings.hbs",
     "modules/drawing-prompts/templates/drawing-prompt-manager.hbs",
+    "modules/drawing-prompts/templates/place-dialog.hbs",
     "modules/drawing-prompts/templates/player-drawing-app.hbs",
     "modules/drawing-prompts/templates/player-prompt-list.hbs"
   ]);

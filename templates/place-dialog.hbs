@@ -1,0 +1,77 @@
+<div class="dp-place-shell">
+  <div class="form-group">
+    <label for="dp-place-name">{{localize "DRAWING-PROMPTS.placeDialog.name"}}</label>
+    <div class="form-fields">
+      <input id="dp-place-name" type="text" name="name" value="{{name}}">
+    </div>
+  </div>
+
+  <fieldset class="dp-place-modes">
+    <legend>{{localize "DRAWING-PROMPTS.placeDialog.modeLegend"}}</legend>
+
+    <div class="dp-place-mode-card is-selected" data-dp-place-mode="tile">
+      <label class="dp-place-mode-heading" for="dp-place-mode-tile">
+        <input id="dp-place-mode-tile" type="radio" name="mode" value="tile" checked>
+        <strong>{{localize "DRAWING-PROMPTS.placeDialog.modes.tile.name"}}</strong>
+      </label>
+      <span class="hint">{{localize "DRAWING-PROMPTS.placeDialog.modes.tile.hint"}}</span>
+    </div>
+
+    <div class="dp-place-mode-card is-disabled" data-dp-place-mode="newActor">
+      <label class="dp-place-mode-heading" for="dp-place-mode-new-actor">
+        <input id="dp-place-mode-new-actor" type="radio" name="mode" value="newActor">
+        <strong>{{localize "DRAWING-PROMPTS.placeDialog.modes.newActor.name"}}</strong>
+      </label>
+      <span class="hint">{{localize "DRAWING-PROMPTS.placeDialog.modes.newActor.hint"}}</span>
+    </div>
+
+    <div class="dp-place-mode-card is-disabled" data-dp-place-mode="copyActor">
+      <label class="dp-place-mode-heading" for="dp-place-mode-copy-actor">
+        <input id="dp-place-mode-copy-actor" type="radio" name="mode" value="copyActor">
+        <strong>{{localize "DRAWING-PROMPTS.placeDialog.modes.copyActor.name"}}</strong>
+      </label>
+      <span class="hint">{{localize "DRAWING-PROMPTS.placeDialog.modes.copyActor.hint"}}</span>
+      <span class="dp-place-mode-controls">
+        <input type="search" name="copyActorSearch" placeholder="{{localize 'DRAWING-PROMPTS.placeDialog.actorSearch'}}" disabled>
+        <select name="copyActorUuid" aria-label="{{localize 'DRAWING-PROMPTS.placeDialog.actor'}}" disabled>
+          <option value="">{{localize "DRAWING-PROMPTS.placeDialog.chooseActor"}}</option>
+          {{#each copyActors}}
+          <option value="{{this.uuid}}" {{#if this.selected}}selected{{/if}}>{{this.name}}</option>
+          {{/each}}
+        </select>
+      </span>
+    </div>
+
+    <div class="dp-place-mode-card is-disabled" data-dp-place-mode="existingActor">
+      <label class="dp-place-mode-heading" for="dp-place-mode-existing-actor">
+        <input id="dp-place-mode-existing-actor" type="radio" name="mode" value="existingActor">
+        <strong>{{localize "DRAWING-PROMPTS.placeDialog.modes.existingActor.name"}}</strong>
+      </label>
+      <span class="hint">{{localize "DRAWING-PROMPTS.placeDialog.modes.existingActor.hint"}}</span>
+      <span class="dp-place-mode-controls">
+        <input type="search" name="existingActorSearch" placeholder="{{localize 'DRAWING-PROMPTS.placeDialog.actorSearch'}}" disabled>
+        <select name="existingActorUuid" aria-label="{{localize 'DRAWING-PROMPTS.placeDialog.actor'}}" disabled>
+          <option value="">{{localize "DRAWING-PROMPTS.placeDialog.chooseActor"}}</option>
+          {{#each existingActors}}
+          <option value="{{this.uuid}}">{{this.name}}</option>
+          {{/each}}
+        </select>
+      </span>
+    </div>
+  </fieldset>
+
+  <footer class="dp-action-bar form-footer">
+    <button class="primary" type="button" data-action="place">
+      <i class="fa-solid fa-map-pin" inert></i>
+      <span>{{localize "DRAWING-PROMPTS.placeDialog.actions.place"}}</span>
+    </button>
+    <button type="button" data-action="placeHidden">
+      <i class="fa-solid fa-eye-slash" inert></i>
+      <span>{{localize "DRAWING-PROMPTS.placeDialog.actions.placeHidden"}}</span>
+    </button>
+    <button type="button" data-action="cancel">
+      <i class="fa-solid fa-xmark" inert></i>
+      <span>{{localize "DRAWING-PROMPTS.placeDialog.actions.cancel"}}</span>
+    </button>
+  </footer>
+</div>

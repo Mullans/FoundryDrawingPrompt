@@ -6,6 +6,7 @@ import {
   getPrompt,
   openPromptManager,
   placeAssignmentAsTile,
+  placeAssignmentAsToken,
   reopenAssignment,
   saveAssignment
 } from "./prompts/prompt-service.mjs";
@@ -22,6 +23,7 @@ export function registerAPI() {
     getAssignment,
     saveAssignment,
     placeAssignmentAsTile,
+    placeAssignmentAsToken,
     reopenAssignment,
     cancelAssignment
   };
