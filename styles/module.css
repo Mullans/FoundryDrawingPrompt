@@ -17,11 +17,19 @@
   --dp-status-rejected: #b25454;
   --dp-status-cancelled: #8a887d;
   --dp-status-offline: #6f6d64;
+  --dp-grid-col-primary: minmax(320px, 420px);
+  --dp-grid-col-secondary: minmax(280px, 1fr);
 }
 
 .drawing-prompts.application {
   min-height: 0;
   color: var(--dp-text);
+}
+
+/* Fluid manager window: fill available width, but never let it get crushed. */
+.drawing-prompts.drawing-prompts-manager.application {
+  min-width: 700px;
+  min-height: 520px;
 }
 
 .drawing-prompts .window-content {
@@ -45,16 +53,12 @@
 .drawing-prompts .dp-manager-grid {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  /* Form column stays a stable, readable width; preview column absorbs any extra window width. */
+  grid-template-columns: var(--dp-grid-col-primary) var(--dp-grid-col-secondary);
   gap: 12px;
   min-height: 0;
   overflow: auto;
   padding-right: 2px;
-}
-
-.drawing-prompts .dp-manager-grid-setup {
-  grid-template-columns: minmax(0, 640px);
-  justify-content: center;
 }
 
 .drawing-prompts .dp-manager-main,
@@ -79,7 +83,8 @@
 .drawing-prompts .dp-players-preview-grid {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: minmax(0, 1fr) minmax(310px, 1.1fr);
+  /* Players column stays a stable, readable width; preview column absorbs any extra window width. */
+  grid-template-columns: var(--dp-grid-col-primary) var(--dp-grid-col-secondary);
   gap: 12px;
   align-items: stretch;
   min-height: 0;
@@ -411,22 +416,24 @@
   background-size: 16px 16px;
 }
 
+/*
+ * The canvas element's width/height ATTRIBUTES (set in JS from the draft
+ * canvas dimensions) give it its intrinsic aspect ratio as a replaced
+ * element -- unlike a non-replaced div, a canvas shrinks to fit reliably
+ * across engines via width/height:auto + max-width/max-height:100%, with no
+ * dependence on the `aspect-ratio` property. The background is drawn into
+ * the canvas with the same `computeBackgroundLayout` math the player's
+ * DrawingEngine uses, so a blank background simply leaves the canvas
+ * transparent and the checkerboard backdrop shows through as the letterbox.
+ */
 .drawing-prompts .dp-background-preview {
-  position: relative;
-  display: grid;
-  place-items: center;
-  min-height: 96px;
-  max-height: 132px;
-  overflow: hidden;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   border: 1px solid var(--dp-panel-border-soft);
   border-radius: 4px;
-}
-
-.drawing-prompts .dp-background-preview img {
-  position: absolute;
-  max-width: none;
-  max-height: none;
-  object-fit: fill;
 }
 
 .drawing-prompts .dp-preview-frame {
@@ -721,6 +728,7 @@
   display: grid;
   place-items: center;
   width: 100%;
+  height: 100%;
   min-height: 180px;
   align-self: stretch;
   overflow: hidden;
@@ -728,10 +736,24 @@
   border-radius: 4px;
 }
 
+/*
+ * The canvas keeps its own intrinsic aspect ratio (from its width/height
+ * attributes, reinforced by the inline `aspect-ratio` style) and is only
+ * ever auto-sized down to fit within the box via max-width/max-height.
+ * This guarantees the element's own box (and therefore its
+ * getBoundingClientRect() used for pointer mapping) always matches the
+ * prompt's canvasWidth:canvasHeight ratio exactly -- never stretched to
+ * fill the box, never cropped. The surrounding .dp-canvas-box now fills
+ * the available area and centers the canvas, so any leftover space reads
+ * as a letterboxed gap (its checkerboard background) rather than
+ * distortion.
+ */
 .drawing-prompts .dp-display-canvas {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   touch-action: none;
 }
 

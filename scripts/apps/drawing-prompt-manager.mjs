@@ -118,8 +118,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       promptText: "",
       drawingName: "",
       selectedUserIds: new Set(),
-      canvasWidth: setting(SETTINGS.DEFAULT_CANVAS_WIDTH, 1024),
-      canvasHeight: setting(SETTINGS.DEFAULT_CANVAS_HEIGHT, 768),
+      canvasWidth: setting(SETTINGS.DEFAULT_CANVAS_WIDTH, 512),
+      canvasHeight: setting(SETTINGS.DEFAULT_CANVAS_HEIGHT, 512),
       timerSeconds: setting(SETTINGS.DEFAULT_TIMER_SECONDS, 0),
       background: blankBackground()
     };
@@ -134,10 +134,20 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #expiryTimerId;
   #expiryStateSignature;
   #formListenersAttached = false;
-  #onFormInput = () => this.#syncDraftFromForm();
+  /**
+   * Loaded (and taint-checked) `<img>` for the current draft background, cached
+   * alongside its path so {@link #updateBackgroundPreview} can redraw the preview
+   * canvas cheaply without refetching the image on every input/change event.
+   * @type {{path: string, img: HTMLImageElement}|null}
+   */
+  #previewBackgroundImage = null;
+  #onFormInput = () => {
+    this.#syncDraftFromForm();
+    this.#updateBackgroundPreview();
+  };
   #onFormChange = event => {
     this.#syncDraftFromForm();
-    if ( event.target?.name === "fitMode" ) this.render({ parts: ["body"] });
+    this.#updateBackgroundPreview();
     if ( event.target?.name === "selectedUserIds" ) this.#updateSelectedCount();
   };
 
@@ -238,6 +248,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       form.addEventListener("change", this.#onFormChange);
       this.#formListenersAttached = true;
     }
+    this.#updateBackgroundPreview();
     this.#refreshExpiryTicker();
   }
 
@@ -335,6 +346,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         naturalWidth: loaded.naturalWidth,
         naturalHeight: loaded.naturalHeight
       };
+      this.#previewBackgroundImage = { path: loaded.path, img: loaded.img };
       const dims = resolveCanvasSize(this.draft.canvasWidth, this.draft.canvasHeight, loaded.naturalWidth, loaded.naturalHeight);
       this.draft.canvasWidth = dims.width;
       this.draft.canvasHeight = dims.height;
@@ -350,14 +362,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {object}
    */
   #draftContext() {
-    const thumbnail = this.#backgroundThumbnailContext();
     return {
       ...this.draft,
       selectedCount: this.draft.selectedUserIds.size,
       hasBackground: Boolean(this.draft.background.path),
-      backgroundLabel: this.draft.background.path || game.i18n.localize("DRAWING-PROMPTS.background.blank"),
-      backgroundFrameStyle: thumbnail.frameStyle,
-      backgroundImageStyle: thumbnail.imageStyle
+      backgroundLabel: this.draft.background.path || game.i18n.localize("DRAWING-PROMPTS.background.blank")
     };
   }
 
@@ -404,32 +413,32 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Build inline styles for the background thumbnail frame and image.
-   * @returns {{frameStyle: string, imageStyle: string}}
+   * Live-repaint the WYSIWYG background preview canvas to match the current draft
+   * dimensions, fit mode, and background image without a full body rerender. The
+   * canvas element's width/height attributes are set to the draft canvas size, giving
+   * it a correct intrinsic aspect ratio as a replaced element (CSS max-width/max-height
+   * then letterboxes it reliably, unlike aspect-ratio on a non-replaced div). The
+   * background is composited with the same {@link computeBackgroundLayout} math
+   * {@link DrawingEngine#renderBackground} (drawing-engine.mjs) uses for the player
+   * canvas, so the two can never drift. A blank/missing background simply leaves the
+   * canvas transparent, letting the checkerboard CSS backdrop show through.
+   * @returns {void}
    */
-  #backgroundThumbnailContext() {
+  #updateBackgroundPreview() {
+    if ( this.activePrompt ) return;
+    const canvasEl = this.element?.querySelector("[data-dp-background-preview]");
+    if ( !canvasEl ) return;
     const canvasWidth = Math.max(1, Number(this.draft.canvasWidth) || 1);
     const canvasHeight = Math.max(1, Number(this.draft.canvasHeight) || 1);
-    const frameStyle = `aspect-ratio: ${canvasWidth} / ${canvasHeight};`;
-    if ( !this.draft.background.path ) return { frameStyle, imageStyle: "" };
-
-    const rect = computeBackgroundLayout(
-      canvasWidth,
-      canvasHeight,
-      this.draft.background.naturalWidth,
-      this.draft.background.naturalHeight,
-      this.draft.background.fitMode
-    );
-    const pct = (value, basis) => `${(Number(value) / Math.max(1, Number(basis))) * 100}%`;
-    return {
-      frameStyle,
-      imageStyle: [
-        `left: ${pct(rect.dx, canvasWidth)}`,
-        `top: ${pct(rect.dy, canvasHeight)}`,
-        `width: ${pct(rect.dw, canvasWidth)}`,
-        `height: ${pct(rect.dh, canvasHeight)}`
-      ].join("; ")
-    };
+    canvasEl.width = canvasWidth;
+    canvasEl.height = canvasHeight;
+    const ctx = canvasEl.getContext("2d");
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    const { path, naturalWidth, naturalHeight, fitMode } = this.draft.background;
+    const img = path && this.#previewBackgroundImage?.path === path ? this.#previewBackgroundImage.img : null;
+    if ( !img ) return;
+    const rect = computeBackgroundLayout(canvasWidth, canvasHeight, naturalWidth, naturalHeight, fitMode);
+    ctx.drawImage(img, rect.dx, rect.dy, rect.dw, rect.dh);
   }
 
   /**
@@ -531,6 +540,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   static async #onClearBackground() {
     this.#syncDraftFromForm();
     this.draft.background = blankBackground();
+    this.#previewBackgroundImage = null;
     await this.render({ parts: ["body"] });
   }
 
@@ -766,7 +776,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         </div>`,
       ok: { label: "DRAWING-PROMPTS.manager.saveDialog.confirm", icon: "fa-solid fa-floppy-disk" },
       rejectClose: false,
-      modal: true,
+      // Non-modal: a modal <dialog> traps the top layer, which leaves the folder FilePicker
+      // (opened from within this dialog) uninteractable underneath it.
+      modal: false,
       render: (_event, dialog) => {
         const input = dialog.element.querySelector("input[name='folder']");
         dialog.element.querySelector("[data-dp-choose-folder]")?.addEventListener("click", async event => {

@@ -14,7 +14,7 @@ export function registerSettings() {
     name: `${PREFIX}.defaultCanvasWidth.name`,
     hint: `${PREFIX}.defaultCanvasWidth.hint`,
     type: Number,
-    default: 1024,
+    default: 512,
     range: { min: 1, max: INTERNAL.MAX_CANVAS_DIM, step: 1 }
   });
 
@@ -23,7 +23,7 @@ export function registerSettings() {
     name: `${PREFIX}.defaultCanvasHeight.name`,
     hint: `${PREFIX}.defaultCanvasHeight.hint`,
     type: Number,
-    default: 768,
+    default: 512,
     range: { min: 1, max: INTERNAL.MAX_CANVAS_DIM, step: 1 }
   });
 

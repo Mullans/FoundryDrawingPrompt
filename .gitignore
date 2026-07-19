@@ -14,3 +14,8 @@ Thumbs.db
 
 # Generic ignore files
 ignore__*
+
+# Dev-only Playwright install for tools/e2e-smoke.mjs
+tools/package.json
+tools/package-lock.json
+.superpowers/

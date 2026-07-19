@@ -162,7 +162,7 @@
     </button>
   </footer>
   {{else}}
-  <div class="dp-manager-grid dp-manager-grid-setup">
+  <div class="dp-manager-grid">
     <div class="dp-manager-main">
       <fieldset>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.prompt"}}</legend>
@@ -239,14 +239,6 @@
             </select>
           </div>
         </div>
-
-        <div class="dp-background-preview" style="{{draft.backgroundFrameStyle}}">
-          {{#if draft.hasBackground}}
-          <img src="{{draft.background.path}}" style="{{draft.backgroundImageStyle}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.backgroundPreview'}}">
-          {{else}}
-          <span>{{localize "DRAWING-PROMPTS.background.blank"}}</span>
-          {{/if}}
-        </div>
       </fieldset>
 
       <fieldset class="dp-players-fieldset">
@@ -278,6 +270,18 @@
         </div>
       </fieldset>
     </div>
+
+    <aside class="dp-preview-panel">
+      <fieldset>
+        <legend>{{localize "DRAWING-PROMPTS.manager.sections.preview"}}</legend>
+
+        <div class="dp-preview-frame">
+          <canvas class="dp-background-preview" data-dp-background-preview
+                  width="{{draft.canvasWidth}}" height="{{draft.canvasHeight}}"
+                  aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.backgroundPreview'}}"></canvas>
+        </div>
+      </fieldset>
+    </aside>
   </div>
 
   <footer class="dp-action-bar form-footer">
