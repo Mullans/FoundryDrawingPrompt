@@ -5,8 +5,9 @@ FoundryVTT-WindowsPortable-*/
 # Node / build
 node_modules/
 dist/
-docs/*
-!docs/agents/
+docs/archive/
+docs/superpowers/plans/*
+docs/superpowers/specs/*
 
 # OS
 Thumbs.db
@@ -18,9 +19,20 @@ ignore__*
 .claude/settings.local.json
 .agents/
 .claude/
+.cursor/
+.planning/
+skills-lock.json
 
 # Dev-only Playwright install for tools/e2e-smoke.mjs
 tools/package.json
 tools/package-lock.json
 .superpowers/
 debug.log
+
+# design-sync (Claude Design) staged converter + generated output
+.ds-sync/
+ds-bundle/
+.design-sync/
+design-system
+# Git worktrees
+.worktrees/
