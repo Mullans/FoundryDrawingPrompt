@@ -144,8 +144,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * alongside its path so {@link #updateBackgroundPreview} can redraw the preview
    * canvas cheaply without refetching the image on every input/change event.
    * @type {{path: string, img: HTMLImageElement}|null}
-   */
+  */
   #previewBackgroundImage = null;
+  #previewBackgroundLoad = null;
   #onFormInput = () => {
     this.#syncDraftFromForm();
     this.#updateBackgroundPreview();
@@ -256,6 +257,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       this.#formListenersAttached = true;
     }
     this.#updateBackgroundPreview();
+    void this.#ensurePreviewBackgroundImage();
     this.#refreshExpiryTicker();
   }
 
@@ -491,6 +493,35 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( !img ) return;
     const rect = computeBackgroundLayout(canvasWidth, canvasHeight, naturalWidth, naturalHeight, fitMode);
     ctx.drawImage(img, rect.dx, rect.dy, rect.dw, rect.dh);
+  }
+
+  /**
+   * Load a persisted draft background that was not selected during this session.
+   * Concurrent renders share the same request, and stale completions cannot replace
+   * a newer background selection.
+   * @returns {Promise<void>}
+   */
+  async #ensurePreviewBackgroundImage() {
+    if ( this.activePrompt ) return;
+    const path = this.draft.background.path;
+    if ( !path || this.#previewBackgroundImage?.path === path ) return;
+    if ( this.#previewBackgroundLoad?.path === path ) return this.#previewBackgroundLoad.promise;
+
+    const request = loadBackgroundImage(path);
+    const promise = (async () => {
+      try {
+        const loaded = await request;
+        if ( this.#previewBackgroundLoad?.promise !== promise || this.draft.background.path !== path ) return;
+        this.#previewBackgroundImage = { path, img: loaded.img };
+        this.#updateBackgroundPreview();
+      } catch {
+        // Selection-time validation already reports load errors; keep restored drafts blank if the asset disappeared.
+      } finally {
+        if ( this.#previewBackgroundLoad?.promise === promise ) this.#previewBackgroundLoad = null;
+      }
+    })();
+    this.#previewBackgroundLoad = { path, promise };
+    return promise;
   }
 
   /**

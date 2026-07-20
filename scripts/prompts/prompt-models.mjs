@@ -34,6 +34,10 @@ export class DrawingAssignment {
       tileWidth: data.assets?.tileWidth ?? null,
       tileHeight: data.assets?.tileHeight ?? null
     };
+    // Legacy saved assignments predate savedSubmissionTs; infer it from their persisted image.
+    if ( this.status === STATUS.SUBMITTED && this.primaryImagePath && this.savedSubmissionTs == null ) {
+      this.savedSubmissionTs = this.submittedAt;
+    }
     this.placements = Array.isArray(data.placements) ? data.placements.map(placement => ({
       kind: placement?.kind ?? (placement?.tokenId ? "token" : "tile"),
       tileId: placement?.tileId ?? null,

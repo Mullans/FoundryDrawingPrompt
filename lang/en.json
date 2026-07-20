@@ -180,7 +180,6 @@
   "DRAWING-PROMPTS.player.title": "Drawing Prompt",
   "DRAWING-PROMPTS.player.untitled": "Untitled drawing",
   "DRAWING-PROMPTS.player.timer.label": "Timer",
-  "DRAWING-PROMPTS.player.timer.overtime": "+{time}",
   "DRAWING-PROMPTS.player.toolbar.label": "Drawing tools",
   "DRAWING-PROMPTS.player.canvas.loading": "Loading drawing surface...",
   "DRAWING-PROMPTS.player.tools.brush": "Brush",

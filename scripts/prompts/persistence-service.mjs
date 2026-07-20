@@ -105,15 +105,16 @@ export async function createPromptEntry(prompt) {
 
 /**
  * Save the full prompt state to its JournalEntry flag.
- * Timer-only saves merge into the latest persisted prompt. All other saves
- * preserve the latest persisted timer state, preventing stale assignment
- * models from moving the deadline back.
+ * Scoped saves merge into the latest persisted prompt. All other saves preserve
+ * the latest persisted timer state, preventing stale assignment models from
+ * moving the deadline back.
  * @param {DrawingPrompt} prompt Prompt model to save.
  * @param {object} [options] Save options.
  * @param {boolean} [options.timerOnly=false] Persist only the timer state.
+ * @param {string|null} [options.assignmentOnly=null] Persist only this assignment and the asset folder name.
  * @returns {Promise<JournalEntry>}
  */
-export async function savePrompt(prompt, { timerOnly = false } = {}) {
+export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = null } = {}) {
   assertGM();
   return promptSaveQueue.enqueue(prompt.id, async () => {
     const entry = game.journal.get(prompt.id);
@@ -125,6 +126,12 @@ export async function savePrompt(prompt, { timerOnly = false } = {}) {
       latest.timerState = prompt.timerState;
       savedPrompt = latest;
       prompt.assignments = latest.assignments;
+    } else if ( latest && assignmentOnly ) {
+      const assignment = prompt.getAssignment(assignmentOnly);
+      if ( !assignment ) throw new Error(`Assignment not found: ${assignmentOnly}`);
+      latest.assignments[assignmentOnly] = assignment;
+      latest.assetFolderName = prompt.assetFolderName ?? latest.assetFolderName;
+      savedPrompt = latest;
     } else if ( latest ) {
       prompt.timerState = latest.timerState;
     }

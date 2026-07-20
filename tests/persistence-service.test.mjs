@@ -75,3 +75,24 @@ test("timer-only saves preserve newer assignment state", async () => {
   assert.equal(storedPrompt.timerStatus, "paused");
   assert.equal(storedPrompt.remainingMs, 45_000);
 });
+
+test("assignment-scoped saves preserve interleaved sibling assignment updates", async () => {
+  storedPrompt.assignments.a2 = { id: "a2", promptId: "p1", userId: "u2", status: STATUS.OPENED };
+  const firstSave = DrawingPrompt.fromObject(structuredClone(storedPrompt));
+  const staleSecondSave = DrawingPrompt.fromObject(structuredClone(storedPrompt));
+
+  firstSave.getAssignment("a1").status = STATUS.SUBMITTED;
+  firstSave.getAssignment("a1").assets.overlayPath = "worlds/demo/drawing-prompts/a1.webp";
+  firstSave.assetFolderName = "drawing-prompts";
+  staleSecondSave.getAssignment("a2").status = STATUS.SUBMITTED;
+  staleSecondSave.getAssignment("a2").assets.overlayPath = "worlds/demo/drawing-prompts/a2.webp";
+
+  await savePrompt(firstSave, { assignmentOnly: "a1" });
+  await savePrompt(staleSecondSave, { assignmentOnly: "a2" });
+
+  assert.equal(storedPrompt.assignments.a1.status, STATUS.SUBMITTED);
+  assert.equal(storedPrompt.assignments.a1.assets.overlayPath, "worlds/demo/drawing-prompts/a1.webp");
+  assert.equal(storedPrompt.assignments.a2.status, STATUS.SUBMITTED);
+  assert.equal(storedPrompt.assignments.a2.assets.overlayPath, "worlds/demo/drawing-prompts/a2.webp");
+  assert.equal(storedPrompt.assetFolderName, "drawing-prompts");
+});

@@ -109,6 +109,17 @@ test("isSaveGateOpen requires the GM to have saved the assignment's current subm
   });
   assert.equal(legacyWithoutField.savedSubmissionTs, null);
   assert.equal(isSaveGateOpen(legacyWithoutField), false, "legacy data without the field -> closed");
+
+  const legacySavedDrawing = DrawingAssignment.fromObject({
+    id: "a-legacy-saved",
+    promptId: "p1",
+    userId: "u1",
+    status: STATUS.SUBMITTED,
+    submittedAt: 100,
+    assets: { overlayPath: "worlds/demo/drawing-prompts/legacy.webp" }
+  });
+  assert.equal(legacySavedDrawing.savedSubmissionTs, 100);
+  assert.equal(isSaveGateOpen(legacySavedDrawing), true, "legacy saved drawing -> open");
 });
 
 test("buildStagingDir normalizes asset folders and appends staging", () => {

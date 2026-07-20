@@ -359,7 +359,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   assertGM();
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
-  const resolvedName = resolveDrawingName(prompt, assignment, name);
+  const resolvedName = resolveDrawingName(prompt, name);
   if ( !resolvedName ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.nameRequired"));
 
   const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath && assignment.assets?.oplogPath);
@@ -404,10 +404,12 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, location.parent);
     pendingSubmissions.delete(assignment.id);
     clearCachedSubmission(assignment.id);
+  } else if ( alreadySaved && assignment.status === STATUS.SUBMITTED && assignment.primaryImagePath ) {
+    assignment.savedSubmissionTs ??= assignment.submittedAt;
   }
 
   assignment.assets.name = resolvedName;
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentSaved", prompt, assignment);
   await refreshManager();
@@ -1210,15 +1212,13 @@ function submissionTileHeight(submission, prompt) {
 /**
  * Resolve a non-empty drawing asset name.
  * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
- * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
  * @param {string|undefined} explicitName Explicit name.
  * @returns {string}
  */
-function resolveDrawingName(prompt, assignment, explicitName) {
+function resolveDrawingName(prompt, explicitName) {
   return String(explicitName ?? defaultAssignmentAssetName({
     drawingName: prompt.drawingName,
-    promptText: prompt.promptText,
-    userName: assignment.userName
+    promptText: prompt.promptText
   })).trim();
 }
 
