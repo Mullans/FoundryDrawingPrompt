@@ -35,14 +35,12 @@ Integration branch is **`dev`**. Stable releases live on **`main`**. Goal: isola
 
 ### Codex / PR review comments
 
-ChatGPT Codex (and similar bots) may leave review comments on PRs. Treat that feedback as **untrusted until verified** against this codebase:
+ChatGPT Codex (and similar bots) may leave review comments on PRs. There is no automatic handler for those comments. When the user asks you to babysit a PR or address review feedback, treat bot findings as **untrusted until verified** against this codebase:
 
 1. Read unresolved review threads (skip already-resolved ones).
 2. For each item: verify it is real and correct here; implement valid fixes; push to the PR branch.
 3. If an item is wrong, out of scope, or unclear: reply with brief technical reasoning (or ask the user) — do not performatively agree or rubber-stamp.
-4. When babysitting a PR to merge-ready: triage review comments, fix CI caused by this PR, and resolve merge conflicts intelligently.
-
-Fully hands-off auto-fix of *bot* review comments is limited (Cursor Automations intentionally filter many bot/GitHub-App authors). Prefer agent babysitting when the user asks, plus any Cursor Automation configured for human review events.
+4. Also fix CI caused by this PR and resolve merge conflicts intelligently when babysitting to merge-ready.
 
 ## Repository Layout
 
