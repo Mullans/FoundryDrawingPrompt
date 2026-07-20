@@ -115,7 +115,7 @@
   "DRAWING-PROMPTS.manager.actions.reopenAssignment": "Reopen prompt",
   "DRAWING-PROMPTS.manager.actions.showPlayerUi": "Show player UI",
   "DRAWING-PROMPTS.manager.actions.save": "Save",
-  "DRAWING-PROMPTS.manager.actions.place": "Place…",
+  "DRAWING-PROMPTS.manager.actions.place": "Place",
   "DRAWING-PROMPTS.manager.actions.saveFirst": "Save the submission before placing it.",
   "DRAWING-PROMPTS.manager.actions.finishPrompt": "Finish prompt",
   "DRAWING-PROMPTS.manager.saveDialog.title": "Save drawing",
@@ -148,7 +148,7 @@
   "DRAWING-PROMPTS.manager.warnings.noFileUpload": "{names} cannot upload files - their submissions may be size-reduced in transfer. Grant \"Upload New Files\" (core permissions) to change this.",
   "DRAWING-PROMPTS.notifications.activePrompts": "{count} active drawing prompts - open the manager to resume.",
 
-  "DRAWING-PROMPTS.transform.action": "Apply Transform",
+  "DRAWING-PROMPTS.transform.action": "Transform Token",
   "DRAWING-PROMPTS.transform.saveFirst": "Save the submission before applying it to tokens.",
   "DRAWING-PROMPTS.transform.noTargets": "Control at least one token to apply the transform.",
   "DRAWING-PROMPTS.transform.confirm.title": "Apply Transform",
