@@ -42,6 +42,26 @@ A temporary, revertible art override on canvas-selected tokens using a saved dra
 **Revert**:
 The token HUD action that restores a Transformed token's original art and clears the Transform flag.
 
+## Background
+
+**Fit mode**:
+How a Prompt's background image is scaled and placed on the drawing canvas.
+
+**Fit mode — Center**:
+Places the background at its natural size, centered. The only fit mode that does not scale.
+
+**Fit mode — Fit width**:
+Scales the background (up or down) so its width matches the canvas width, preserving aspect ratio, then centers it.
+
+**Fit mode — Fit height**:
+Scales the background (up or down) so its height matches the canvas height, preserving aspect ratio, then centers it.
+
+**Fit mode — Fit canvas**:
+Scales the background (up or down) by the minimum factor that fits the entire image inside the canvas, preserving aspect ratio, then centers it. Behaves like Fit width when the image is relatively wider, and like Fit height when it is relatively taller.
+
+**Fit mode — Stretch**:
+Scales the background to exactly fill the canvas, ignoring aspect ratio.
+
 ## Timer
 
 **Deadline**:

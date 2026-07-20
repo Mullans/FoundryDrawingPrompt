@@ -17,12 +17,14 @@ styles/          scoped CSS
 templates/       Handlebars templates
 lang/            localization (en.json)
 tools/           dev scripts (e.g. link-module.ps1 to junction into Foundry Data/modules)
-foundry_research.md   deep-research primer on Foundry module development — read before architectural work
+docs/            documentation and local resource map — see docs/LAYOUT.md
 ```
+
+Documentation and ignored local resource folders (skill-tied vs personal archive) are inventoried in `docs/LAYOUT.md`. Local Foundry research primer (untracked): `docs/archive/foundry_research.md`.
 
 ## Foundry Development Conventions
 
-Target: **Foundry v14 first** (current stable 14.364), keep v13 compatibility where cheap. Derived from `foundry_research.md`:
+Target: **Foundry v14 first** (current stable 14.364), keep v13 compatibility where cheap. Derived from `docs/archive/foundry_research.md` when present:
 
 - **ES modules only** (`esmodules` in manifest), never legacy `scripts`.
 - **Hooks-first**: prefer public hooks (`init`, `ready`, `getSceneControlButtons`), registered settings, document APIs, and applications. Never monkey-patch core; if a patch is truly unavoidable, use libWrapper.
@@ -45,3 +47,33 @@ No build step (plain ESM). Use this lifecycle for each verification batch:
 4. Always clean up in a `finally` block: `if ($foundryProcess -and -not $foundryProcess.HasExited) { Stop-Process -Id $foundryProcess.Id }`. Stop only the PID started for the current batch.
 
 **Wedged-server rule:** a long-running headless test server can silently wedge — static file fetches hang (dynamic `import()` awaits forever with no rejection) and socket relays drop, which perfectly mimics impossible module bugs with symptoms that move between runs. Before deep-diving any shifting-symptom failure, kill and restart the test server and re-run the repro twice; only debug the module if the failure survives a fresh server. Prefer one fresh server per verification batch.
+
+## Agent Skills
+
+### Issue tracker
+
+Issues are maintained in GitHub Issues for `Mullans/FoundryDrawingPrompt` through the `gh` CLI.
+
+See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-label vocabulary:
+
+* `needs-triage`
+* `needs-info`
+* `ready-for-agent`
+* `ready-for-human`
+* `wontfix`
+
+See `docs/agents/triage-labels.md`.
+
+### Domain documentation
+
+The repository uses `CONTEXT.md` and `docs/adr/` as its primary domain and architectural context.
+
+See `docs/agents/domain.md`.
+
+### Documentation layout
+
+See `docs/LAYOUT.md` for the map of tracked docs, personal archives, and skill-tied local folders.
