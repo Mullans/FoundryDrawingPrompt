@@ -1,4 +1,12 @@
 /**
+ * Throw a localized GM-only error when the current user is not a GM.
+ * @returns {void}
+ */
+export function assertGM() {
+  if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
+}
+
+/**
  * Resolve the socketlib initiator user id from handler context.
  * @param {object} socketContext Handler `this` context.
  * @returns {string|null} Initiator user id.

@@ -4,6 +4,7 @@ import { assertGmInitiator } from "./prompts/socket-auth.mjs";
 export const CALLS = Object.freeze({
   OPEN: "openDrawingPrompt",
   REOPEN: "reopenDrawingPrompt",
+  TIMER_UPDATED: "timerUpdated",
   CANCEL: "cancelDrawingPrompt",
   SHOW: "showDrawingPrompt",
   REQUEST_SNAPSHOT: "requestSnapshot",
@@ -60,6 +61,7 @@ function wrapPlayerGmHandler(callName, handler) {
 const PLAYER_GM_INITIATED_CALLS = new Set([
   CALLS.OPEN,
   CALLS.REOPEN,
+  CALLS.TIMER_UPDATED,
   CALLS.CANCEL,
   CALLS.SHOW,
   CALLS.REQUEST_SNAPSHOT
@@ -101,6 +103,17 @@ export const emit = {
    */
   reopenDrawingPrompt(userId, payload) {
     return requireSocket().executeAsUser(CALLS.REOPEN, userId, payload);
+  },
+
+  /**
+   * Send a prompt timer change to an assigned player.
+   * @param {string} userId Target user id.
+   * @param {string} assignmentId Assignment id used to validate prompt ownership.
+   * @param {object} timerState Canonical timer state.
+   * @returns {Promise<*>}
+   */
+  timerUpdated(userId, assignmentId, timerState) {
+    return requireSocket().executeAsUser(CALLS.TIMER_UPDATED, userId, assignmentId, timerState);
   },
 
   /**

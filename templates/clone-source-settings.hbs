@@ -1,0 +1,30 @@
+<div class="dp-clone-source-shell">
+  <div class="form-group stacked">
+    <label for="dp-clone-source-search">{{localize "DRAWING-PROMPTS.settings.cloneSource.search"}}</label>
+    <div class="form-fields">
+      <input id="dp-clone-source-search" type="search" name="cloneSourceSearch" placeholder="{{localize 'DRAWING-PROMPTS.settings.cloneSource.searchPlaceholder'}}">
+    </div>
+  </div>
+
+  <div class="form-group stacked">
+    <label for="dp-clone-source-actor">{{localize "DRAWING-PROMPTS.settings.cloneSource.actor"}}</label>
+    <div class="form-fields">
+      <select id="dp-clone-source-actor" name="actorUuid">
+        <option value="">{{localize "DRAWING-PROMPTS.settings.cloneSource.none"}}</option>
+        {{#each actors}}
+        <option value="{{this.uuid}}" {{#if this.selected}}selected{{/if}}>{{this.name}}</option>
+        {{/each}}
+      </select>
+    </div>
+    <p class="hint">{{localize "DRAWING-PROMPTS.settings.cloneSource.formHint"}}</p>
+  </div>
+
+  <footer class="dp-action-bar form-footer">
+    {{#each buttons}}
+    <button type="{{this.type}}">
+      <i class="{{this.icon}}" inert></i>
+      <span>{{localize this.label}}</span>
+    </button>
+    {{/each}}
+  </footer>
+</div>

@@ -1,4 +1,5 @@
 import { BG_SOURCE, FIT_MODE, STATUS } from "../constants.mjs";
+import { normalizeTimerState } from "./timer-service.mjs";
 
 const TERMINAL_STATUSES = new Set([STATUS.SUBMITTED, STATUS.REJECTED, STATUS.CANCELLED]);
 
@@ -22,6 +23,7 @@ export class DrawingAssignment {
     this.late = Boolean(data.late);
     this.overtimeMs = data.overtimeMs ?? null;
     this.reopenedCount = Number(data.reopenedCount ?? 0);
+    this.savedSubmissionTs = data.savedSubmissionTs ?? null;
     this.assets = {
       name: data.assets?.name ?? null,
       overlayPath: data.assets?.overlayPath ?? null,
@@ -32,8 +34,15 @@ export class DrawingAssignment {
       tileWidth: data.assets?.tileWidth ?? null,
       tileHeight: data.assets?.tileHeight ?? null
     };
+    // Legacy saved assignments predate savedSubmissionTs; infer it from their persisted image.
+    if ( this.status === STATUS.SUBMITTED && this.primaryImagePath && this.savedSubmissionTs == null ) {
+      this.savedSubmissionTs = this.submittedAt;
+    }
     this.placements = Array.isArray(data.placements) ? data.placements.map(placement => ({
+      kind: placement?.kind ?? (placement?.tokenId ? "token" : "tile"),
       tileId: placement?.tileId ?? null,
+      tokenId: placement?.tokenId ?? null,
+      actorId: placement?.actorId ?? null,
       sceneId: placement?.sceneId ?? null,
       hidden: Boolean(placement?.hidden),
       placedAt: placement?.placedAt ?? null
@@ -86,6 +95,7 @@ export class DrawingAssignment {
       late: this.late,
       overtimeMs: this.overtimeMs,
       reopenedCount: this.reopenedCount,
+      savedSubmissionTs: this.savedSubmissionTs,
       assets: { ...this.assets },
       placements: this.placements.map(placement => ({ ...placement })),
       pendingSubmission: this.pendingSubmission ? JSON.parse(JSON.stringify(this.pendingSubmission)) : null
@@ -218,6 +228,7 @@ export class DrawingPrompt {
     this.gmUserId = data.gmUserId ?? globalThis.game?.user?.id ?? null;
     this.promptText = data.promptText ?? "";
     this.drawingName = data.drawingName ?? "";
+    this.assetFolderName = data.assetFolderName ?? null;
     this.canvasWidth = Number(data.canvasWidth ?? 1024);
     this.canvasHeight = Number(data.canvasHeight ?? 768);
     this.background = {
@@ -230,7 +241,7 @@ export class DrawingPrompt {
     this.timerSeconds = data.timerSeconds ?? null;
     this.createdAt = data.createdAt ?? Date.now();
     this.sentAt = data.sentAt ?? null;
-    this.deadlineAt = data.deadlineAt ?? null;
+    this.timerState = data;
     this.assignments = {};
 
     for ( const [id, assignment] of Object.entries(data.assignments ?? {}) ) {
@@ -286,15 +297,41 @@ export class DrawingPrompt {
       gmUserId: this.gmUserId,
       promptText: this.promptText,
       drawingName: this.drawingName,
+      assetFolderName: this.assetFolderName,
       canvasWidth: this.canvasWidth,
       canvasHeight: this.canvasHeight,
       background: { ...this.background },
       timerSeconds: this.timerSeconds,
       createdAt: this.createdAt,
       sentAt: this.sentAt,
+      timerStatus: this.timerStatus,
       deadlineAt: this.deadlineAt,
+      remainingMs: this.remainingMs,
       assignments: Object.fromEntries(Object.entries(this.assignments).map(([id, assignment]) => [id, assignment.toObject()]))
     };
+  }
+
+  /**
+   * Canonical timer state for transitions and wire payloads.
+   * @returns {{timerStatus: "none"|"running"|"paused", deadlineAt: number|null, remainingMs: number|null}}
+   */
+  get timerState() {
+    return {
+      timerStatus: this.timerStatus,
+      deadlineAt: this.deadlineAt,
+      remainingMs: this.remainingMs
+    };
+  }
+
+  /**
+   * Replace the canonical timer state.
+   * @param {object} state Timer state.
+   */
+  set timerState(state) {
+    const timer = normalizeTimerState(state);
+    this.timerStatus = timer.timerStatus;
+    this.deadlineAt = timer.deadlineAt;
+    this.remainingMs = timer.remainingMs;
   }
 
   /**

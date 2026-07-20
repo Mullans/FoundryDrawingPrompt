@@ -1,5 +1,6 @@
 export const MODULE_ID = "drawing-prompts";
 export const FLAG_PROMPT = "prompt";
+export const FLAG_ORIGINAL_TEXTURE = "originalTexture";
 export const FILES_UPLOAD_PERMISSION = "FILES_UPLOAD";
 
 export const STATUS = Object.freeze({
@@ -44,11 +45,16 @@ export const SETTINGS = Object.freeze({
   DEFAULT_CANVAS_WIDTH: "defaultCanvasWidth",
   DEFAULT_CANVAS_HEIGHT: "defaultCanvasHeight",
   DEFAULT_TIMER_SECONDS: "defaultTimerSeconds",
+  TIMER_EXTEND_SHORT: "timerExtendShort",
+  TIMER_EXTEND_LONG: "timerExtendLong",
+  TIMER_REDUCE_SHORT: "timerReduceShort",
+  TIMER_REDUCE_LONG: "timerReduceLong",
   DEFAULT_FIT_MODE: "defaultFitMode",
   EXPORT_FORMAT: "exportFormat",
   WEBP_QUALITY: "webpQuality",
   DEFAULT_PERMISSIONS: "defaultPermissions",
   ASSET_FOLDER: "assetFolder",
+  DEFAULT_CLONE_SOURCE_ACTOR_UUID: "defaultCloneSourceActorUuid",
   LAST_SAVE_FOLDER: "lastSaveFolder",
   LAST_BRUSH_COLOR: "lastBrushColor",
   AUTO_OPEN_PLAYER_WINDOW: "autoOpenPlayerWindow",

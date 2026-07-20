@@ -17,11 +17,19 @@
   --dp-status-rejected: #b25454;
   --dp-status-cancelled: #8a887d;
   --dp-status-offline: #6f6d64;
+  --dp-grid-col-primary: minmax(320px, 420px);
+  --dp-grid-col-secondary: minmax(280px, 1fr);
 }
 
 .drawing-prompts.application {
   min-height: 0;
   color: var(--dp-text);
+}
+
+/* Fluid manager window: fill available width, but never let it get crushed. */
+.drawing-prompts.drawing-prompts-manager.application {
+  min-width: 700px;
+  min-height: 520px;
 }
 
 .drawing-prompts .window-content {
@@ -45,16 +53,12 @@
 .drawing-prompts .dp-manager-grid {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  /* Form column stays a stable, readable width; preview column absorbs any extra window width. */
+  grid-template-columns: var(--dp-grid-col-primary) var(--dp-grid-col-secondary);
   gap: 12px;
   min-height: 0;
   overflow: auto;
   padding-right: 2px;
-}
-
-.drawing-prompts .dp-manager-grid-setup {
-  grid-template-columns: minmax(0, 640px);
-  justify-content: center;
 }
 
 .drawing-prompts .dp-manager-main,
@@ -79,7 +83,8 @@
 .drawing-prompts .dp-players-preview-grid {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: minmax(0, 1fr) minmax(310px, 1.1fr);
+  /* Players column stays a stable, readable width; preview column absorbs any extra window width. */
+  grid-template-columns: var(--dp-grid-col-primary) var(--dp-grid-col-secondary);
   gap: 12px;
   align-items: stretch;
   min-height: 0;
@@ -205,6 +210,7 @@
 
 .drawing-prompts .dp-button-strip,
 .drawing-prompts .dp-action-bar,
+.drawing-prompts .dp-timer-controls,
 .drawing-prompts .dp-row-actions,
 .drawing-prompts .dp-submission-actions,
 .drawing-prompts .dp-tool-group {
@@ -346,6 +352,11 @@
   color: var(--dp-status-rejected);
 }
 
+.drawing-prompts .dp-summary-timer.is-paused:not(.is-overtime) {
+  border-color: color-mix(in srgb, var(--dp-text-muted) 62%, transparent);
+  color: var(--dp-text-muted);
+}
+
 .drawing-prompts .dp-summary-countdown {
   color: var(--dp-text);
   font-weight: 600;
@@ -353,6 +364,31 @@
 
 .drawing-prompts .dp-summary-countdown.is-overtime {
   color: var(--dp-status-rejected);
+}
+
+.drawing-prompts .dp-timer-controls {
+  flex: 0 0 auto;
+  align-items: center;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--dp-panel-bg-raised) 68%, transparent);
+}
+
+.drawing-prompts .dp-timer-controls button {
+  min-height: 28px;
+  padding: 3px 8px;
+}
+
+.drawing-prompts .dp-timer-adjustments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.drawing-prompts .dp-timer-adjustments button {
+  min-width: 3.5rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .drawing-prompts .dp-summary-background {
@@ -411,22 +447,24 @@
   background-size: 16px 16px;
 }
 
+/*
+ * The canvas element's width/height ATTRIBUTES (set in JS from the draft
+ * canvas dimensions) give it its intrinsic aspect ratio as a replaced
+ * element -- unlike a non-replaced div, a canvas shrinks to fit reliably
+ * across engines via width/height:auto + max-width/max-height:100%, with no
+ * dependence on the `aspect-ratio` property. The background is drawn into
+ * the canvas with the same `computeBackgroundLayout` math the player's
+ * DrawingEngine uses, so a blank background simply leaves the canvas
+ * transparent and the checkerboard backdrop shows through as the letterbox.
+ */
 .drawing-prompts .dp-background-preview {
-  position: relative;
-  display: grid;
-  place-items: center;
-  min-height: 96px;
-  max-height: 132px;
-  overflow: hidden;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   border: 1px solid var(--dp-panel-border-soft);
   border-radius: 4px;
-}
-
-.drawing-prompts .dp-background-preview img {
-  position: absolute;
-  max-width: none;
-  max-height: none;
-  object-fit: fill;
 }
 
 .drawing-prompts .dp-preview-frame {
@@ -459,6 +497,30 @@
 
 .drawing-prompts .dp-submission-actions {
   flex: 0 0 auto;
+  align-items: center;
+}
+
+.drawing-prompts .dp-placement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.drawing-prompts .dp-action-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dp-text-muted);
+  opacity: 0.6;
+}
+
+#token-hud .dp-token-transform-revert {
+  cursor: pointer;
+}
+
+.drawing-prompts .dp-submission-actions:not(.is-place-disabled) .dp-action-arrow {
+  color: var(--dp-accent);
+  opacity: 1;
 }
 
 .drawing-prompts .dp-saved-indicator {
@@ -721,6 +783,7 @@
   display: grid;
   place-items: center;
   width: 100%;
+  height: 100%;
   min-height: 180px;
   align-self: stretch;
   overflow: hidden;
@@ -728,10 +791,24 @@
   border-radius: 4px;
 }
 
+/*
+ * The canvas keeps its own intrinsic aspect ratio (from its width/height
+ * attributes, reinforced by the inline `aspect-ratio` style) and is only
+ * ever auto-sized down to fit within the box via max-width/max-height.
+ * This guarantees the element's own box (and therefore its
+ * getBoundingClientRect() used for pointer mapping) always matches the
+ * prompt's canvasWidth:canvasHeight ratio exactly -- never stretched to
+ * fill the box, never cropped. The surrounding .dp-canvas-box now fills
+ * the available area and centers the canvas, so any leftover space reads
+ * as a letterboxed gap (its checkerboard background) rather than
+ * distortion.
+ */
 .drawing-prompts .dp-display-canvas {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   touch-action: none;
 }
 
@@ -847,4 +924,60 @@
 .drawing-prompts .dp-danger {
   border-color: color-mix(in srgb, var(--dp-status-rejected) 70%, transparent);
   background: color-mix(in srgb, var(--dp-status-rejected) 20%, var(--dp-control-bg));
+}
+
+.drawing-prompts .dp-place-shell,
+.drawing-prompts .dp-clone-source-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.drawing-prompts .dp-place-modes {
+  display: grid;
+  gap: 8px;
+}
+
+.drawing-prompts .dp-place-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--dp-panel-bg);
+  color: var(--dp-text);
+  cursor: pointer;
+}
+
+.drawing-prompts .dp-place-mode-card.is-selected {
+  border-color: var(--dp-accent);
+  background: color-mix(in srgb, var(--dp-accent) 12%, var(--dp-panel-bg-raised));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dp-accent) 40%, transparent);
+}
+
+.drawing-prompts .dp-place-mode-card.is-disabled {
+  background: color-mix(in srgb, var(--dp-control-bg) 55%, transparent);
+  color: var(--dp-text-muted);
+}
+
+.drawing-prompts .dp-place-mode-card.is-disabled :is(input:not([type="radio"]), select) {
+  opacity: 0.45;
+}
+
+.drawing-prompts .dp-place-mode-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawing-prompts .dp-place-mode-heading input {
+  width: auto;
+  margin: 0;
+}
+
+.drawing-prompts .dp-place-mode-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
 }

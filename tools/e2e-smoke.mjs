@@ -158,7 +158,10 @@ async function saveSubmittedDrawing(page) {
 }
 
 async function placeSavedTile(page) {
-  await page.locator(".drawing-prompts-manager button[data-action='placeAssignment']").click();
+  await page.locator(".drawing-prompts-manager button[data-action='openPlaceDialog']").click();
+  const placeDialog = page.locator(".drawing-prompts").filter({ has: page.locator("button[data-action='place']") }).last();
+  await placeDialog.locator("input[name='mode'][value='tile']").check();
+  await placeDialog.locator("button[data-action='place']").click();
   await page.waitForFunction(playerUser => {
     const prompt = game.journal
       .map(entry => entry.getFlag("drawing-prompts", "prompt"))

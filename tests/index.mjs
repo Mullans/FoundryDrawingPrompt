@@ -3,20 +3,28 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 const TEST_FILES = [
+  "tests/application-lifecycle.test.mjs",
   "tests/background-layout.test.mjs",
   "tests/background-source-service.test.mjs",
   "tests/client-store.test.mjs",
   "tests/drawing-engine.test.mjs",
   "tests/fill-tool.test.mjs",
   "tests/operation-log.test.mjs",
+  "tests/path-provider.test.mjs",
   "tests/phase-b-assets.test.mjs",
   "tests/phase-d-helpers.test.mjs",
+  "tests/persistence-service.test.mjs",
+  "tests/prompt-service.test.mjs",
   "tests/prompt-models.test.mjs",
   "tests/transitions.test.mjs",
   "tests/wire-size.test.mjs",
   "tests/wire-validation.test.mjs",
   "tests/socket-auth.test.mjs",
-  "tests/timer-chip.test.mjs"
+  "tests/timer-service.test.mjs",
+  "tests/timer-update-queue.test.mjs",
+  "tests/timer-chip.test.mjs",
+  "tests/token-placement.test.mjs",
+  "tests/token-transform.test.mjs"
 ];
 
 test("repository test suite", () => {

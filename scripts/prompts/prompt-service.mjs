@@ -2,28 +2,39 @@ import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS, STATUS } from "../constan
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
 import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { buildTileData } from "../foundry/tile-placement-service.mjs";
+import { isForge, resolvePromptAssetLocation } from "../foundry/path-provider.mjs";
+import { PLACE_MODES, buildTokenData, pickActorType, validatePlaceSelection } from "../foundry/token-placement-service.mjs";
 import { CALLS, emit } from "../socket.mjs";
 import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, pendingDir, stagingDir, uploadBlob, uploadDataUrl, uploadJson } from "./asset-service.mjs";
-import { getAssignment as getClientAssignment, updateStatus, upsertAssignment } from "./client-store.mjs";
+import { getAssignment as getClientAssignment, updateStatus, updateTimerState, upsertAssignment } from "./client-store.mjs";
 import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
-import { defaultAssignmentAssetName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
+import { defaultAssignmentAssetName, promptAssetFolderName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
-import { assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
-import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isValidSubmissionPayload } from "./transitions.mjs";
+import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
+import { adjustTimer, evaluateSubmissionTiming, normalizeTimerState, pauseTimer, resetTimer, resumeTimer, stopTimer } from "./timer-service.mjs";
+import { TimerUpdateQueue } from "./timer-update-queue.mjs";
+import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isSaveGateOpen, validateSubmissionPayload } from "./transitions.mjs";
 import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
 import { isValidSnapshotDataUrl } from "./wire-validation.mjs";
 
 const pendingSubmissions = new Map();
+const timerUpdateQueue = new TimerUpdateQueue();
 const SUBMISSION_KEY_PREFIX = "drawing-prompts.sub.";
 const SUBMISSION_INDEX_KEY = "drawing-prompts.sub.index";
 const SUBMISSION_CACHE_LIMIT = 8 * 1024 * 1024;
 
 /**
- * Throw a localized GM-only error when the current user is not a GM.
- * @returns {void}
+ * Build Actor artwork data for a saved drawing.
+ * @param {string} name Actor name.
+ * @param {string} src Saved drawing path.
+ * @returns {object} Actor artwork data.
  */
-function assertGM() {
-  if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
+function buildActorArtData(name, src) {
+  return {
+    name: String(name).trim(),
+    img: src,
+    prototypeToken: { texture: { src } }
+  };
 }
 
 /**
@@ -99,7 +110,7 @@ function payloadFor(prompt, assignment) {
       background: { ...prompt.background },
       sentAt: prompt.sentAt,
       timerSeconds: prompt.timerSeconds,
-      deadlineAt: prompt.deadlineAt
+      ...prompt.timerState
     }
   };
 }
@@ -112,6 +123,7 @@ export function getSocketHandlers() {
   return {
     [CALLS.OPEN]: handleOpenPrompt,
     [CALLS.REOPEN]: handleReopenPrompt,
+    [CALLS.TIMER_UPDATED]: handleTimerUpdated,
     [CALLS.CANCEL]: handleCancelPrompt,
     [CALLS.SHOW]: handleShowPrompt,
     [CALLS.REQUEST_SNAPSHOT]: handleRequestSnapshot,
@@ -140,10 +152,13 @@ export async function createAndSendPrompt(draft) {
     background: { ...draft.background },
     timerSeconds,
     sentAt,
-    deadlineAt: timerSeconds ? sentAt + (timerSeconds * 1000) : null
+    timerStatus: timerSeconds > 0 ? "running" : "none",
+    deadlineAt: timerSeconds > 0 ? sentAt + (timerSeconds * 1000) : null,
+    remainingMs: null
   }, draft.selectedUserIds);
 
   await createPromptEntry(prompt);
+  // Prompt creation requires a full save to establish prompt-level and all assignment state.
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.promptCreated", prompt);
 
@@ -151,13 +166,95 @@ export async function createAndSendPrompt(draft) {
     try {
       await ensureDir(stagingDir());
     } catch (err) {
-      console.warn(`${MODULE_ID} | could not pre-create staging directory`, err);
+      console.warn("drawing-prompts | could not pre-create staging directory", err);
     }
   }
 
   const deliveries = deliverPromptAssignments(prompt);
   if ( draft.awaitDeliveries ) await deliveries;
   return prompt;
+}
+
+/**
+ * Pause a prompt timer at its current value, including overtime.
+ * @param {string} promptId Prompt id.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function pausePromptTimer(promptId) {
+  return updatePromptTimer(promptId, (state, prompt, now) => pauseTimer(state, now));
+}
+
+/**
+ * Resume a paused prompt timer without counting paused time.
+ * @param {string} promptId Prompt id.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function resumePromptTimer(promptId) {
+  return updatePromptTimer(promptId, (state, prompt, now) => resumeTimer(state, now));
+}
+
+/**
+ * Shift a prompt's running deadline or paused remaining time.
+ * @param {string} promptId Prompt id.
+ * @param {number} deltaMs Signed adjustment in milliseconds.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function adjustPromptTimer(promptId, deltaMs) {
+  return updatePromptTimer(promptId, (state, prompt, now) => adjustTimer(state, deltaMs, now));
+}
+
+/**
+ * Restart a prompt timer from its original configured duration.
+ * @param {string} promptId Prompt id.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function resetPromptTimer(promptId) {
+  return updatePromptTimer(promptId, (state, prompt, now) => resetTimer(state, prompt.timerSeconds, now));
+}
+
+/**
+ * Stop a prompt timer and make the prompt untimed.
+ * @param {string} promptId Prompt id.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+export function stopPromptTimer(promptId) {
+  return updatePromptTimer(promptId, state => stopTimer(state));
+}
+
+/**
+ * Apply, persist, and deliver one GM-owned timer transition.
+ * @param {string} promptId Prompt id.
+ * @param {Function} transition Pure timer transition.
+ * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
+ */
+function updatePromptTimer(promptId, transition) {
+  return timerUpdateQueue.enqueue(promptId, async () => {
+    assertGM();
+    const prompt = loadPrompt(promptId);
+    if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+    assertPromptOwner(prompt);
+    prompt.timerState = transition(prompt.timerState, prompt, Date.now());
+    await savePrompt(prompt, { timerOnly: true });
+    Hooks.callAll("drawing-prompts.timerUpdated", prompt, prompt.timerState);
+    await broadcastTimerState(prompt);
+    await refreshManager();
+    return prompt;
+  });
+}
+
+/**
+ * Deliver the current timer state to every online assigned player.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<void>}
+ */
+async function broadcastTimerState(prompt) {
+  const deliveries = Object.values(prompt.assignments)
+    .filter(assignment => game.users.get(assignment.userId)?.active)
+    .map(assignment => emit.timerUpdated(assignment.userId, assignment.id, prompt.timerState));
+  const results = await Promise.allSettled(deliveries);
+  for ( const result of results ) {
+    if ( result.status === "rejected" ) console.warn("drawing-prompts | timer update delivery failed", result.reason);
+  }
 }
 
 /**
@@ -263,7 +360,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   assertGM();
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
-  const resolvedName = resolveDrawingName(prompt, assignment, name);
+  const resolvedName = resolveDrawingName(prompt, name);
   if ( !resolvedName ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.nameRequired"));
 
   const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath && assignment.assets?.oplogPath);
@@ -272,11 +369,25 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   if ( !submission && !alreadySaved ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.pendingSubmissionLost"));
 
   if ( submission ) {
-    const dir = normalizePath(folder || assignment.assets?.folder || game.settings.get(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER) || defaultAssetFolder());
+    prompt.assetFolderName ??= promptAssetFolderName({
+      promptId: prompt.id,
+      promptText: prompt.promptText,
+      sentAt: prompt.sentAt,
+      createdAt: prompt.createdAt
+    });
+    const location = resolvePromptAssetLocation({
+      selectedParent: folder,
+      rememberedParent: game.settings.get(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER),
+      defaultParent: defaultAssetFolder(),
+      assignmentFolder: assignment.assets?.folder,
+      promptFolderName: prompt.assetFolderName
+    });
+    const dir = location.final;
     await ensureDir(dir);
     const hasMerged = hasMergedSubmission(submission);
     const filenames = uniqueDrawingAssetFilenames({
       name: resolvedName,
+      playerName: assignment.userName,
       extension: extensionFor(primarySubmissionFormat(submission, hasMerged)),
       hasMerged,
       existingFiles: await browseFiles(dir),
@@ -290,13 +401,16 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     assignment.assets.tileWidth = submissionTileWidth(submission, prompt);
     assignment.assets.tileHeight = submissionTileHeight(submission, prompt);
     assignment.pendingSubmission = null;
-    await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, dir);
+    assignment.savedSubmissionTs = assignment.submittedAt;
+    await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, location.parent);
     pendingSubmissions.delete(assignment.id);
     clearCachedSubmission(assignment.id);
+  } else if ( alreadySaved && assignment.status === STATUS.SUBMITTED && assignment.primaryImagePath ) {
+    assignment.savedSubmissionTs ??= assignment.submittedAt;
   }
 
   assignment.assets.name = resolvedName;
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentSaved", prompt, assignment);
   await refreshManager();
@@ -306,17 +420,11 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
 /**
  * Place an assignment as a Scene Tile.
  * @param {string} assignmentId Assignment id.
- * @param {{hidden?: boolean}} [options] Placement options.
+ * @param {{hidden?: boolean, name?: string}} [options] Placement options.
  * @returns {Promise<object>}
  */
-export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {}) {
-  assertGM();
-  const { prompt, assignment } = requirePromptAssignment(assignmentId);
-  assertPromptOwner(prompt);
-  if ( !assignment.primaryImagePath ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
-
-  const scene = globalThis.canvas?.scene;
-  if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));
+export async function placeAssignmentAsTile(assignmentId, { hidden = false, name = "" } = {}) {
+  const { prompt, assignment, scene } = requirePlacementContext(assignmentId);
   const submission = getPendingSubmission(assignmentId);
   const tileWidth = assignment.assets.tileWidth ?? submissionTileWidth(submission, prompt);
   const tileHeight = assignment.assets.tileHeight ?? submissionTileHeight(submission, prompt);
@@ -328,7 +436,7 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {
   }
   const tileData = buildTileData({
     src: assignment.primaryImagePath,
-    name: assignment.assets.name,
+    name: String(name || assignment.assets.name || "").trim(),
     width: tileWidth,
     height: tileHeight,
     center: {
@@ -342,16 +450,103 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false } = {
   if ( !CONFIG.Tile.documentClass.schema.fields.name ) delete tileData.name;
   const [tile] = await scene.createEmbeddedDocuments("Tile", [tileData]);
   assignment.placements.push({
+    kind: "tile",
     tileId: tile?.id ?? tile?._id ?? null,
     sceneId: scene.id,
     hidden: Boolean(hidden),
     placedAt: Date.now()
   });
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
-  Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, tile);
+  Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, tile, { kind: "tile" });
   await refreshManager();
   return tile;
+}
+
+/**
+ * Place an assignment as a Token using a new, copied, or existing world Actor.
+ * @param {string} assignmentId Assignment id.
+ * @param {object} options Placement options.
+ * @param {string} options.mode Place mode.
+ * @param {string} [options.name] Actor name for New Actor or Copy Actor.
+ * @param {string} [options.actorUuid] Source world Actor UUID.
+ * @param {boolean} [options.hidden=false] Whether the Token is hidden.
+ * @returns {Promise<object>}
+ */
+export async function placeAssignmentAsToken(assignmentId, { mode, name = "", actorUuid = "", hidden = false } = {}) {
+  const { prompt, assignment, scene } = requirePlacementContext(assignmentId);
+  const validationError = mode === PLACE_MODES.TILE ? "invalidMode" : validatePlaceSelection({ mode, name, actorUuid });
+  if ( validationError ) {
+    throw new Error(game.i18n.localize(`DRAWING-PROMPTS.placeDialog.validation.${validationError}`));
+  }
+
+  const src = assignment.primaryImagePath;
+  let actor;
+  let createdActor = false;
+  if ( mode === PLACE_MODES.NEW_ACTOR ) {
+    const type = pickActorType(game.system.id, game.documentTypes.Actor);
+    if ( !type ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noActorType"));
+    actor = await CONFIG.Actor.documentClass.create({ type, ...buildActorArtData(name, src) });
+    createdActor = true;
+  } else {
+    const sourceActor = findWorldActor(actorUuid);
+    if ( !sourceActor ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.actorNotFound"));
+    actor = mode === PLACE_MODES.COPY_ACTOR
+      ? await sourceActor.clone(buildActorArtData(name, src), { save: true })
+      : sourceActor;
+    createdActor = mode === PLACE_MODES.COPY_ACTOR;
+  }
+
+  let token;
+  try {
+    const tokenOverrides = buildTokenData({
+      actorId: actor.id,
+      src,
+      center: {
+        x: globalThis.canvas.stage?.pivot?.x ?? (Number(scene.width) / 2),
+        y: globalThis.canvas.stage?.pivot?.y ?? (Number(scene.height) / 2)
+      },
+      scene: { width: scene.width, height: scene.height },
+      gridSize: scene.grid?.size ?? globalThis.canvas.dimensions?.size ?? 1,
+      hidden
+    });
+    const tokenDocument = await actor.getTokenDocument(tokenOverrides, { parent: scene });
+    [token] = await scene.createEmbeddedDocuments("Token", [tokenDocument.toObject()]);
+    if ( !token ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.tokenPlacementFailed"));
+  } catch (err) {
+    if ( createdActor && actor?.id ) {
+      try {
+        await actor.delete();
+      } catch (cleanupError) {
+        console.warn("drawing-prompts | could not remove Actor after Token placement failed", cleanupError);
+      }
+    }
+    throw err;
+  }
+  assignment.placements.push({
+    kind: "token",
+    tokenId: token?.id ?? token?._id ?? null,
+    actorId: actor.id,
+    sceneId: scene.id,
+    hidden: Boolean(hidden),
+    placedAt: Date.now()
+  });
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
+  Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
+  Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, token, { kind: "token" });
+  await refreshManager();
+  return token;
+}
+
+/**
+ * Apply a saved assignment drawing to the GM's currently controlled tokens.
+ * @param {string} assignmentId Assignment id.
+ * @returns {Promise<object[]>} Token placeables that received the drawing.
+ */
+export async function applyAssignmentTransform(assignmentId) {
+  const { assignment } = requireTransformContext(assignmentId);
+  const { applyTransformToControlledTokens } = await import("../foundry/token-transform-service.mjs");
+  return applyTransformToControlledTokens(assignment);
 }
 
 /**
@@ -366,7 +561,7 @@ export async function cancelAssignment(assignmentId, userId = null) {
   assertPromptOwner(prompt);
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
   assignment.markCancelled(Date.now());
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   if ( game.users.get(assignment.userId)?.active ) await emit.cancelDrawingPrompt(assignment.userId, assignment.id);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentCancelled", prompt, assignment);
@@ -431,7 +626,7 @@ export async function reopenAssignment(assignmentId, userId = null) {
   assignment.pendingSubmission = null;
   pendingSubmissions.delete(assignment.id);
   clearCachedSubmission(assignment.id);
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   if ( game.users.get(assignment.userId)?.active ) await emit.reopenDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentReopened", prompt, assignment);
@@ -449,7 +644,7 @@ export async function resendAssignment(assignmentId) {
   assertPromptOwner(prompt);
   if ( assignment.status === STATUS.CANCELLED ) {
     assignment.markResent();
-    await savePrompt(prompt);
+    await savePrompt(prompt, { assignmentOnly: assignment.id });
   } else if ( ![STATUS.PENDING, STATUS.OPENED].includes(assignment.status) ) {
     return;
   }
@@ -551,6 +746,26 @@ async function handleReopenPrompt(payload) {
 }
 
 /**
+ * Handle a persisted GM timer change on an assigned player client.
+ * @param {string} assignmentId Assignment id.
+ * @param {object} timerState Canonical timer state.
+ * @returns {Promise<void>}
+ */
+async function handleTimerUpdated(assignmentId, timerState) {
+  let payload;
+  try {
+    payload = validateKnownPlayerAssignment(assignmentId);
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored timer update", err);
+    return;
+  }
+  const state = normalizeTimerState(timerState);
+  updateTimerState(assignmentId, state);
+  await PlayerDrawingApp.updateTimer(assignmentId, state);
+}
+
+/**
  * Handle prompt cancellation on the player client.
  * @param {string} assignmentId Assignment id.
  * @returns {Promise<void>}
@@ -614,7 +829,7 @@ async function handleAssignmentOpened(assignmentId, userId) {
   const decision = evaluateOpened(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("opened", assignment, decision.reason);
   assignment.markOpened(Date.now());
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentOpened", prompt, assignment);
   await setManagerWindowOpen(assignment.id, true);
@@ -631,7 +846,7 @@ async function handleAssignmentOpened(assignmentId, userId) {
 async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
   const { assignment } = validateOwningGMSender(assignmentId, userId);
   if ( !isValidSnapshotDataUrl(snapshotDataUrl) ) {
-    console.debug("drawing-prompts | ignored invalid snapshot payload", assignmentId);
+    console.debug(`${MODULE_ID} | ignored invalid snapshot payload shape for assignment ${assignmentId}`);
     return;
   }
   const decision = evaluateSnapshot(assignment);
@@ -648,18 +863,18 @@ async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
  */
 async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
-  if ( !isValidSubmissionPayload(submissionPayload, submissionValidationContext(assignmentId)) ) {
+  const validation = validateSubmissionPayload(submissionPayload, submissionValidationContext(assignmentId));
+  if ( !validation.ok ) {
     ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidSubmissionPayload"));
-    console.warn("drawing-prompts | rejected invalid submission payload", assignmentId, submissionPayload);
+    console.warn(`${MODULE_ID} | rejected submission for assignment ${assignmentId}: ${validation.reason} check failed; ${validation.detail}`);
     return;
   }
   const decision = evaluateSubmission(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("submitted", assignment, decision.reason);
   const now = Date.now();
   if ( assignment.status === STATUS.PENDING ) assignment.markOpened(now);
-  const late = prompt.deadlineAt ? now > prompt.deadlineAt : false;
-  const overtimeMs = late ? now - prompt.deadlineAt : null;
-  assignment.markSubmitted({ ts: now, late, overtimeMs });
+  const timing = evaluateSubmissionTiming(prompt.timerState, now);
+  assignment.markSubmitted({ ts: now, ...timing });
   let receivedSubmission = { ...submissionPayload, receiptTs: now };
   if ( !isStagedSubmission(receivedSubmission) ) {
     try {
@@ -671,7 +886,7 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   pendingSubmissions.set(assignment.id, receivedSubmission);
   assignment.pendingSubmission = receivedSubmission;
   cacheSubmission(assignment.id, receivedSubmission);
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, receivedSubmission);
   const previewSrc = submissionPreviewSrc(receivedSubmission);
@@ -692,7 +907,7 @@ async function handleDrawingRejected(assignmentId, userId, reason) {
   const decision = evaluateRejection(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("rejected", assignment, decision.reason);
   assignment.markRejected(Date.now());
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentRejected", prompt, assignment, reason);
   await setManagerWindowOpen(assignment.id, false);
@@ -858,6 +1073,47 @@ function assertPromptOwner(prompt) {
 }
 
 /**
+ * Validate common server-side placement requirements.
+ * @param {string} assignmentId Assignment id.
+ * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment, scene: object}}
+ */
+function requirePlacementContext(assignmentId) {
+  assertGM();
+  const { prompt, assignment } = requirePromptAssignment(assignmentId);
+  assertPromptOwner(prompt);
+  if ( !assignment.primaryImagePath || !isSaveGateOpen(assignment) ) {
+    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
+  }
+  const scene = globalThis.canvas?.scene;
+  if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));
+  return { prompt, assignment, scene };
+}
+
+/**
+ * Validate common server-side transform requirements without requiring an active Scene.
+ * @param {string} assignmentId Assignment id.
+ * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment}}
+ */
+function requireTransformContext(assignmentId) {
+  assertGM();
+  const { prompt, assignment } = requirePromptAssignment(assignmentId);
+  assertPromptOwner(prompt);
+  if ( !assignment.primaryImagePath || !isSaveGateOpen(assignment) ) {
+    throw new Error(game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst"));
+  }
+  return { prompt, assignment };
+}
+
+/**
+ * Resolve a world Actor by UUID.
+ * @param {string} uuid Actor UUID.
+ * @returns {object|null}
+ */
+function findWorldActor(uuid) {
+  return Array.from(game.actors ?? []).find(actor => actor.uuid === uuid) ?? null;
+}
+
+/**
  * Notify a player if enabled.
  * @param {string} key Localization key.
  * @returns {void}
@@ -877,13 +1133,14 @@ async function refreshPromptList() {
 /**
  * Build validation context for inbound submission payloads.
  * @param {string} assignmentId Assignment id.
- * @returns {{assignmentId: string, stagingRoot: string, pendingRoot: string}}
+ * @returns {{assignmentId: string, stagingRoot: string, pendingRoot: string, forge: boolean}}
  */
 function submissionValidationContext(assignmentId) {
   return {
     assignmentId,
     stagingRoot: stagingDir(),
-    pendingRoot: pendingDir(assignmentId)
+    pendingRoot: pendingDir(assignmentId),
+    forge: isForge()
   };
 }
 
@@ -956,15 +1213,13 @@ function submissionTileHeight(submission, prompt) {
 /**
  * Resolve a non-empty drawing asset name.
  * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
- * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
  * @param {string|undefined} explicitName Explicit name.
  * @returns {string}
  */
-function resolveDrawingName(prompt, assignment, explicitName) {
+function resolveDrawingName(prompt, explicitName) {
   return String(explicitName ?? defaultAssignmentAssetName({
     drawingName: prompt.drawingName,
-    promptText: prompt.promptText,
-    userName: assignment.userName
+    promptText: prompt.promptText
   })).trim();
 }
 
@@ -1071,13 +1326,16 @@ function submissionPreviewSrc(submission) {
 }
 
 /**
- * Build a root-relative fetch URL for a staged asset.
+ * Build a fetch URL for a staged asset. Absolute URLs (e.g. Forge's Assets
+ * Library) are used as-is; local paths are treated as root-relative.
  * @param {string} path Asset path.
  * @param {number} receiptTs Receipt timestamp.
  * @returns {string} Fetch URL.
  */
-function stagedFetchUrl(path, receiptTs) {
-  return `/${encodeURI(normalizePath(path))}?ts=${encodeURIComponent(String(receiptTs ?? Date.now()))}`;
+export function stagedFetchUrl(path, receiptTs) {
+  const ts = `ts=${encodeURIComponent(String(receiptTs ?? Date.now()))}`;
+  if ( /^https?:\/\//i.test(path) ) return `${path}${path.includes("?") ? "&" : "?"}${ts}`;
+  return `/${encodeURI(normalizePath(path))}?${ts}`;
 }
 
 /**

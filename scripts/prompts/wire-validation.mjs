@@ -55,14 +55,16 @@ export function estimateOpLogWireBytes(opLog) {
  * @param {string} assignmentId Assignment id.
  * @param {string} path Asset path.
  * @param {string} stagingRoot Normalized staging directory.
+ * @param {{forge?: boolean, expectedKind?: "overlay"|"merged"|null}} [options] Runtime and optional role context.
  * @returns {boolean} Whether allowed.
  */
-export function isAllowedStagedPath(assignmentId, path, stagingRoot) {
-  const normalized = normalizePath(String(path ?? ""));
+export function isAllowedStagedPath(assignmentId, path, stagingRoot, { forge = false, expectedKind = null } = {}) {
+  const normalized = allowedPathCandidate(path, { forge });
   const root = normalizePath(String(stagingRoot ?? ""));
-  if ( !root || !normalized.startsWith(`${root}/`) ) return false;
+  if ( !root || !normalized || !normalized.startsWith(`${root}/`) ) return false;
   const basename = normalized.slice(root.length + 1);
-  return new RegExp(`^${escapeRegex(String(assignmentId))}-(overlay|merged)\\.(webp|png)$`).test(basename);
+  const kind = expectedKind === "overlay" || expectedKind === "merged" ? expectedKind : "(overlay|merged)";
+  return new RegExp(`^${escapeRegex(String(assignmentId))}-${kind}\\.(webp|png)$`).test(basename);
 }
 
 /**
@@ -70,14 +72,48 @@ export function isAllowedStagedPath(assignmentId, path, stagingRoot) {
  * @param {string} assignmentId Assignment id.
  * @param {string} path Asset path.
  * @param {string} pendingRoot Normalized pending directory for the assignment.
+ * @param {{forge?: boolean, expectedKind?: "overlay"|"merged"|null}} [options] Runtime and optional role context.
  * @returns {boolean} Whether allowed.
  */
-export function isAllowedPendingPath(assignmentId, path, pendingRoot) {
-  const normalized = normalizePath(String(path ?? ""));
+export function isAllowedPendingPath(assignmentId, path, pendingRoot, { forge = false, expectedKind = null } = {}) {
+  const normalized = allowedPathCandidate(path, { forge });
   const root = normalizePath(String(pendingRoot ?? ""));
-  if ( !root || !normalized.startsWith(`${root}/`) ) return false;
+  if ( !root || !normalized || !normalized.startsWith(`${root}/`) ) return false;
   const basename = normalized.slice(root.length + 1);
-  return /^(overlay|merged)\.(webp|png)$/.test(basename);
+  const kind = expectedKind === "overlay" || expectedKind === "merged" ? expectedKind : "(overlay|merged)";
+  return new RegExp(`^${kind}\\.(webp|png)$`).test(basename);
+}
+
+/**
+ * Convert an allowed local or Forge upload response into a provider-relative path.
+ * Forge asset URLs contain one opaque account path segment before the provider path.
+ * @param {*} path Candidate path.
+ * @param {{forge?: boolean}} options Runtime context.
+ * @returns {string|null} Comparable provider path, or null when unsafe.
+ */
+function allowedPathCandidate(path, { forge = false } = {}) {
+  const raw = String(path ?? "");
+  if ( !forge ) return normalizePath(raw);
+  if ( /\\|%(?:2e|2f|5c)/i.test(raw) ) return null;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch (_err) {
+    return null;
+  }
+  if ( url.protocol !== "https:" || url.origin !== "https://assets.forge-vtt.com" ) return null;
+  if ( url.username || url.password || url.search || url.hash ) return null;
+  const rawSegments = url.pathname.slice(1).split("/");
+  if ( rawSegments.some(segment => !segment) ) return null;
+  let segments;
+  try {
+    segments = rawSegments.map(segment => decodeURIComponent(segment));
+  } catch (_err) {
+    return null;
+  }
+  if ( segments.length < 2 || segments.some(segment => !segment || segment === "." || segment === ".." || /[\\/]/.test(segment)) ) return null;
+  segments.shift();
+  return segments.join("/");
 }
 
 /**

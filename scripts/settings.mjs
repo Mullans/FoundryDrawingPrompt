@@ -1,4 +1,5 @@
 import { FIT_MODE, INTERNAL, MODULE_ID, SETTINGS } from "./constants.mjs";
+import { CloneSourceSettings } from "./apps/clone-source-settings.mjs";
 
 const PREFIX = "DRAWING-PROMPTS.settings";
 
@@ -9,12 +10,21 @@ const PREFIX = "DRAWING-PROMPTS.settings";
 export function registerSettings() {
   const common = { scope: "world", config: true };
 
+  game.settings.registerMenu(MODULE_ID, "cloneSource", {
+    name: `${PREFIX}.cloneSource.menuName`,
+    label: `${PREFIX}.cloneSource.menuLabel`,
+    hint: `${PREFIX}.cloneSource.menuHint`,
+    icon: "fa-solid fa-user-group",
+    type: CloneSourceSettings,
+    restricted: true
+  });
+
   game.settings.register(MODULE_ID, SETTINGS.DEFAULT_CANVAS_WIDTH, {
     ...common,
     name: `${PREFIX}.defaultCanvasWidth.name`,
     hint: `${PREFIX}.defaultCanvasWidth.hint`,
     type: Number,
-    default: 1024,
+    default: 512,
     range: { min: 1, max: INTERNAL.MAX_CANVAS_DIM, step: 1 }
   });
 
@@ -23,7 +33,7 @@ export function registerSettings() {
     name: `${PREFIX}.defaultCanvasHeight.name`,
     hint: `${PREFIX}.defaultCanvasHeight.hint`,
     type: Number,
-    default: 768,
+    default: 512,
     range: { min: 1, max: INTERNAL.MAX_CANVAS_DIM, step: 1 }
   });
 
@@ -34,6 +44,42 @@ export function registerSettings() {
     type: Number,
     default: 0,
     range: { min: 0, max: 3600, step: 30 }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.TIMER_EXTEND_SHORT, {
+    ...common,
+    name: `${PREFIX}.timerExtendShort.name`,
+    hint: `${PREFIX}.timerExtendShort.hint`,
+    type: Number,
+    default: 30,
+    range: { min: 0, max: 3600, step: 1 }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.TIMER_EXTEND_LONG, {
+    ...common,
+    name: `${PREFIX}.timerExtendLong.name`,
+    hint: `${PREFIX}.timerExtendLong.hint`,
+    type: Number,
+    default: 120,
+    range: { min: 0, max: 3600, step: 1 }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.TIMER_REDUCE_SHORT, {
+    ...common,
+    name: `${PREFIX}.timerReduceShort.name`,
+    hint: `${PREFIX}.timerReduceShort.hint`,
+    type: Number,
+    default: 30,
+    range: { min: 0, max: 3600, step: 1 }
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.TIMER_REDUCE_LONG, {
+    ...common,
+    name: `${PREFIX}.timerReduceLong.name`,
+    hint: `${PREFIX}.timerReduceLong.hint`,
+    type: Number,
+    default: 120,
+    range: { min: 0, max: 3600, step: 1 }
   });
 
   game.settings.register(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE, {
@@ -88,6 +134,13 @@ export function registerSettings() {
     ...common,
     name: `${PREFIX}.assetFolder.name`,
     hint: `${PREFIX}.assetFolder.hint`,
+    type: String,
+    default: ""
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.DEFAULT_CLONE_SOURCE_ACTOR_UUID, {
+    scope: "world",
+    config: false,
     type: String,
     default: ""
   });

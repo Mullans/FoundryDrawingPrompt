@@ -9,6 +9,8 @@ import {
   evaluateRejection,
   evaluateSnapshot,
   evaluateSubmission,
+  isSaveGateOpen,
+  validateSubmissionPayload,
   isValidSubmissionPayload
 } from "../scripts/prompts/transitions.mjs";
 
@@ -78,6 +80,46 @@ test("evaluateSnapshot displays only while pending or opened", () => {
   for ( const status of STATUSES ) {
     assert.deepEqual(evaluateSnapshot(assignmentWithStatus(status)), expected[status], status);
   }
+});
+
+test("isSaveGateOpen requires the GM to have saved the assignment's current submission", () => {
+  const noSubmission = assignmentWithStatus(STATUS.OPENED);
+  assert.equal(isSaveGateOpen(noSubmission), false, "no submission -> closed");
+
+  const pending = assignmentWithStatus(STATUS.PENDING);
+  assert.equal(isSaveGateOpen(pending), false, "pending -> closed");
+
+  const newSubmission = DrawingAssignment.fromObject({
+    id: "a-new", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 100
+  });
+  assert.equal(isSaveGateOpen(newSubmission), false, "new submission, not yet saved -> closed");
+
+  const saved = DrawingAssignment.fromObject({
+    id: "a-saved", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 100, savedSubmissionTs: 100
+  });
+  assert.equal(isSaveGateOpen(saved), true, "saved current submission -> open");
+
+  const resubmittedAfterSave = DrawingAssignment.fromObject({
+    id: "a-resubmit", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 200, savedSubmissionTs: 100
+  });
+  assert.equal(isSaveGateOpen(resubmittedAfterSave), false, "resubmission after save re-arms the gate -> closed");
+
+  const legacyWithoutField = DrawingAssignment.fromObject({
+    id: "a-legacy", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED, submittedAt: 100
+  });
+  assert.equal(legacyWithoutField.savedSubmissionTs, null);
+  assert.equal(isSaveGateOpen(legacyWithoutField), false, "legacy data without the field -> closed");
+
+  const legacySavedDrawing = DrawingAssignment.fromObject({
+    id: "a-legacy-saved",
+    promptId: "p1",
+    userId: "u1",
+    status: STATUS.SUBMITTED,
+    submittedAt: 100,
+    assets: { overlayPath: "worlds/demo/drawing-prompts/legacy.webp" }
+  });
+  assert.equal(legacySavedDrawing.savedSubmissionTs, 100);
+  assert.equal(isSaveGateOpen(legacySavedDrawing), true, "legacy saved drawing -> open");
 });
 
 test("buildStagingDir normalizes asset folders and appends staging", () => {
@@ -155,4 +197,71 @@ test("isValidSubmissionPayload rejects staged paths outside allowlist", () => {
     height: 768,
     formats: { overlay: "webp", merged: null }
   }, { assignmentId, stagingRoot, pendingRoot }), true);
+});
+
+test("validateSubmissionPayload distinguishes malformed shape from a path allowlist failure", () => {
+  const shape = validateSubmissionPayload({ mode: "staged" });
+  assert.equal(shape.ok, false);
+  assert.equal(shape.reason, "shape");
+
+  const payload = {
+    mode: "staged",
+    staged: { overlayPath: "https://assets.forge-vtt.com/account/drawing-prompts/test-world/staging/wrong-overlay.webp", mergedPath: null },
+    opLog: { operations: [] },
+    width: 1024,
+    height: 768,
+    formats: { overlay: "webp", merged: null }
+  };
+  const decision = validateSubmissionPayload(payload, {
+    assignmentId: "a1",
+    stagingRoot: "drawing-prompts/test-world/staging",
+    pendingRoot: "drawing-prompts/test-world/pending/a1",
+    forge: true
+  });
+  assert.equal(decision.ok, false);
+  assert.equal(decision.reason, "path-allowlist");
+  assert.match(decision.detail, /wrong-overlay\.webp/);
+  assert.match(decision.detail, /drawing-prompts\/test-world\/staging/);
+});
+
+test("validateSubmissionPayload rejects role-swapped local staged paths", () => {
+  const decision = validateSubmissionPayload({
+    mode: "staged",
+    staged: {
+      overlayPath: "worlds/test/drawing-prompts/staging/a1-merged.webp",
+      mergedPath: "worlds/test/drawing-prompts/staging/a1-overlay.webp"
+    },
+    formats: { overlay: "webp", merged: "webp" },
+    width: 1024,
+    height: 768
+  }, {
+    assignmentId: "a1",
+    stagingRoot: "worlds/test/drawing-prompts/staging",
+    pendingRoot: "worlds/test/drawing-prompts/pending/a1",
+    forge: false
+  });
+  assert.equal(decision.ok, false);
+  assert.equal(decision.reason, "path-allowlist");
+  assert.match(decision.detail, /overlayPath/);
+  assert.match(decision.detail, /a1-overlay\.\(webp\|png\)/);
+});
+
+test("validateSubmissionPayload rejects duplicate-role Forge pending paths", () => {
+  const duplicateOverlay = "https://assets.forge-vtt.com/account/drawing-prompts/test-world/pending/a1/overlay.webp";
+  const decision = validateSubmissionPayload({
+    mode: "staged",
+    staged: { overlayPath: duplicateOverlay, mergedPath: duplicateOverlay },
+    formats: { overlay: "webp", merged: "webp" },
+    width: 1024,
+    height: 768
+  }, {
+    assignmentId: "a1",
+    stagingRoot: "drawing-prompts/test-world/staging",
+    pendingRoot: "drawing-prompts/test-world/pending/a1",
+    forge: true
+  });
+  assert.equal(decision.ok, false);
+  assert.equal(decision.reason, "path-allowlist");
+  assert.match(decision.detail, /mergedPath/);
+  assert.match(decision.detail, /merged\.\(webp\|png\)/);
 });

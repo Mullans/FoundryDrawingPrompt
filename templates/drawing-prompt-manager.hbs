@@ -33,7 +33,7 @@
 
       {{#if summary.hasTimer}}
       <span class="dp-summary-separator" aria-hidden="true"></span>
-      <span class="dp-summary-timer {{#if summary.timerOvertime}}is-overtime{{/if}}" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.timer'}}">
+      <span class="dp-summary-timer {{#if summary.timerOvertime}}is-overtime{{/if}} {{#if summary.timerPaused}}is-paused{{/if}}" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.timer'}}">
         <i class="fa-regular fa-clock" inert></i>
         <span>{{summary.timerDuration}}</span>
         {{#if summary.timerCountdownText}}
@@ -52,6 +52,26 @@
         </div>
       </details>
       {{/if}}
+    </div>
+
+    <div class="dp-timer-controls" aria-label="{{localize 'DRAWING-PROMPTS.manager.timer.controls'}}">
+      <button type="button" data-action="toggleTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+        <i class="fa-solid {{#if timerControls.paused}}fa-play{{else}}fa-pause{{/if}}" inert></i>
+        <span>{{timerControls.toggleLabel}}</span>
+      </button>
+      <button type="button" data-action="resetTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+        <i class="fa-solid fa-rotate" inert></i>
+        <span>{{localize "DRAWING-PROMPTS.manager.actions.resetTimer"}}</span>
+      </button>
+      <button type="button" data-action="stopTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+        <i class="fa-solid fa-stop" inert></i>
+        <span>{{localize "DRAWING-PROMPTS.manager.actions.stopTimer"}}</span>
+      </button>
+      <span class="dp-timer-adjustments">
+        {{#each timerControls.adjustments}}
+        <button type="button" data-action="adjustTimer" data-delta-ms="{{this.deltaMs}}" data-tooltip="{{this.tooltip}}" {{#if ../timerControls.disabled}}disabled{{/if}}>{{this.label}}</button>
+        {{/each}}
+      </span>
     </div>
 
     <div class="dp-players-preview-grid">
@@ -128,19 +148,26 @@
           </div>
           {{/if}}
 
-          <div class="dp-submission-actions {{#unless selectedCanPlace}}is-place-disabled{{/unless}}" {{#unless selectedCanPlace}}data-tooltip="{{saveFirstTooltip}}"{{/unless}}>
+          <div class="dp-submission-actions {{#unless selectedCanPlace}}is-place-disabled{{/unless}}">
             <button type="button" data-action="saveAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanSave}}disabled{{/unless}}>
               <i class="fa-solid fa-floppy-disk" inert></i>
-              <span>{{localize "DRAWING-PROMPTS.manager.actions.saveOnly"}}</span>
+              <span>{{localize "DRAWING-PROMPTS.manager.actions.save"}}</span>
             </button>
-            <button type="button" data-action="placeAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
-              <i class="fa-solid fa-map-pin" inert></i>
-              <span>{{localize "DRAWING-PROMPTS.manager.actions.placeTile"}}</span>
-            </button>
-            <button type="button" data-action="placeHiddenAssignment" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
-              <i class="fa-solid fa-eye-slash" inert></i>
-              <span>{{localize "DRAWING-PROMPTS.manager.actions.placeHiddenTile"}}</span>
-            </button>
+            <span class="dp-action-arrow" aria-hidden="true">
+              <i class="fa-solid fa-arrow-right" inert></i>
+            </span>
+            <div class="dp-placement-actions" {{#unless selectedCanPlace}}data-tooltip="{{saveFirstTooltip}}"{{/unless}}>
+              <button type="button" data-action="openPlaceDialog" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
+                <i class="fa-solid fa-map-pin" inert></i>
+                <span>{{localize "DRAWING-PROMPTS.manager.actions.place"}}</span>
+              </button>
+              <span {{#unless selectedCanPlace}}data-tooltip="{{transformSaveFirstTooltip}}"{{/unless}}>
+                <button type="button" data-action="applyTransform" data-assignment-id="{{selectedAssignmentId}}" {{#unless selectedCanPlace}}disabled{{/unless}}>
+                  <i class="fa-solid fa-paintbrush" inert></i>
+                  <span>{{localize "DRAWING-PROMPTS.transform.action"}}</span>
+                </button>
+              </span>
+            </div>
           </div>
         </fieldset>
       </aside>
@@ -162,7 +189,7 @@
     </button>
   </footer>
   {{else}}
-  <div class="dp-manager-grid dp-manager-grid-setup">
+  <div class="dp-manager-grid">
     <div class="dp-manager-main">
       <fieldset>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.prompt"}}</legend>
@@ -239,14 +266,6 @@
             </select>
           </div>
         </div>
-
-        <div class="dp-background-preview" style="{{draft.backgroundFrameStyle}}">
-          {{#if draft.hasBackground}}
-          <img src="{{draft.background.path}}" style="{{draft.backgroundImageStyle}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.backgroundPreview'}}">
-          {{else}}
-          <span>{{localize "DRAWING-PROMPTS.background.blank"}}</span>
-          {{/if}}
-        </div>
       </fieldset>
 
       <fieldset class="dp-players-fieldset">
@@ -278,6 +297,18 @@
         </div>
       </fieldset>
     </div>
+
+    <aside class="dp-preview-panel">
+      <fieldset>
+        <legend>{{localize "DRAWING-PROMPTS.manager.sections.preview"}}</legend>
+
+        <div class="dp-preview-frame">
+          <canvas class="dp-background-preview" data-dp-background-preview
+                  width="{{draft.canvasWidth}}" height="{{draft.canvasHeight}}"
+                  aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.backgroundPreview'}}"></canvas>
+        </div>
+      </fieldset>
+    </aside>
   </div>
 
   <footer class="dp-action-bar form-footer">

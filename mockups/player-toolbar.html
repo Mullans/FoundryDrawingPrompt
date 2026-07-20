@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Player toolbar mockup — Drawing Prompts</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <style>
+    :root {
+      --dp-bg: #1a1824;
+      --dp-panel: #221f2e;
+      --dp-border: #5a5668;
+      --dp-border-soft: rgba(90, 86, 104, 0.55);
+      --dp-text: #c9c7b8;
+      --dp-text-muted: #9b998c;
+      --dp-accent: #ee9b3a;
+      --dp-control: #2a2736;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: start center;
+      padding: 48px 24px;
+      background: #0d0c12;
+      color: var(--dp-text);
+      font: 12px/1.4 "Signika", "Segoe UI", sans-serif;
+    }
+
+    .note {
+      width: min(820px, 100%);
+      margin-bottom: 16px;
+      color: var(--dp-text-muted);
+    }
+
+    /* Simulated Foundry window chrome — toolbar only */
+    .window {
+      width: min(820px, 100%);
+      background: var(--dp-panel);
+      border: 1px solid var(--dp-border);
+      border-radius: 4px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      padding: 10px 12px;
+    }
+
+    .dp-drawing-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: nowrap;
+    }
+
+    .dp-toolbar-zone {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+
+    .dp-toolbar-zone + .dp-toolbar-zone {
+      padding-left: 10px;
+      border-left: 1px solid var(--dp-border-soft);
+    }
+
+    .dp-toolbar-zone.is-history {
+      margin-left: auto;
+    }
+
+    button {
+      display: inline-grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--dp-border-soft);
+      border-radius: 3px;
+      background: var(--dp-control);
+      color: var(--dp-text);
+      cursor: default;
+    }
+
+    button.is-active {
+      border-color: var(--dp-accent);
+      background: color-mix(in srgb, var(--dp-accent) 24%, var(--dp-control));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dp-accent) 45%, transparent);
+    }
+
+    button:disabled {
+      opacity: 0.45;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+
+    /* Stroke: color + stacked short sliders */
+    .dp-stroke-zone {
+      align-items: center;
+      gap: 8px;
+    }
+
+    .dp-color-swatch {
+      width: 30px;
+      height: 30px;
+      padding: 2px;
+      border: 1px solid var(--dp-border-soft);
+      border-radius: 3px;
+      background: var(--dp-control);
+    }
+
+    .dp-color-swatch input {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      cursor: default;
+    }
+
+    .dp-stroke-sliders {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .dp-slider-row {
+      display: grid;
+      grid-template-columns: 52px 80px 36px;
+      align-items: center;
+      gap: 6px;
+      color: var(--dp-text-muted);
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+    }
+
+    .dp-slider-row input[type="range"] {
+      width: 80px;
+      margin: 0;
+      accent-color: var(--dp-accent);
+    }
+
+    .dp-slider-row output {
+      font-variant-numeric: tabular-nums;
+      color: var(--dp-text);
+      text-align: right;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <p class="note">
+    Mock only — proposed player drawing toolbar (Tools | Stroke | History).
+    Stroke stacks Size over Opacity at ~80px track width so the bar stays one row.
+  </p>
+
+  <div class="window" aria-label="Drawing Prompt toolbar mockup">
+    <div class="dp-drawing-toolbar" role="toolbar" aria-label="Drawing tools">
+      <div class="dp-toolbar-zone" aria-label="Tools">
+        <button type="button" class="is-active" title="Brush" aria-pressed="true">
+          <i class="fa-solid fa-paintbrush" aria-hidden="true"></i>
+          <span class="sr-only">Brush</span>
+        </button>
+        <button type="button" title="Eraser" aria-pressed="false">
+          <i class="fa-solid fa-eraser" aria-hidden="true"></i>
+          <span class="sr-only">Eraser</span>
+        </button>
+        <button type="button" title="Fill" aria-pressed="false">
+          <i class="fa-solid fa-fill-drip" aria-hidden="true"></i>
+          <span class="sr-only">Fill</span>
+        </button>
+        <button type="button" title="Eyedropper" aria-pressed="false">
+          <i class="fa-solid fa-eye-dropper" aria-hidden="true"></i>
+          <span class="sr-only">Eyedropper</span>
+        </button>
+      </div>
+
+      <div class="dp-toolbar-zone dp-stroke-zone" aria-label="Stroke">
+        <div class="dp-color-swatch" title="Color">
+          <input type="color" value="#d4a017" aria-label="Color" tabindex="-1">
+        </div>
+        <div class="dp-stroke-sliders">
+          <label class="dp-slider-row">
+            <span>Size</span>
+            <input type="range" min="1" max="128" value="8" tabindex="-1">
+            <output>8</output>
+          </label>
+          <label class="dp-slider-row">
+            <span>Opacity</span>
+            <input type="range" min="5" max="100" value="100" tabindex="-1">
+            <output>100%</output>
+          </label>
+        </div>
+      </div>
+
+      <div class="dp-toolbar-zone is-history" aria-label="History">
+        <button type="button" title="Undo" disabled>
+          <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
+          <span class="sr-only">Undo</span>
+        </button>
+        <button type="button" title="Redo" disabled>
+          <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+          <span class="sr-only">Redo</span>
+        </button>
+        <button type="button" title="Clear">
+          <i class="fa-solid fa-trash" aria-hidden="true"></i>
+          <span class="sr-only">Clear</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

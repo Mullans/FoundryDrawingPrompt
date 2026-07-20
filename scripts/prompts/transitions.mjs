@@ -47,16 +47,46 @@ export function evaluateSnapshot(assignment) {
 }
 
 /**
+ * Decide whether the GM manager's placement actions are unlocked for an assignment: the GM
+ * must have saved the assignment's *current* submission. A later resubmission re-arms the
+ * gate automatically because the new submission's timestamp exceeds the previously recorded
+ * saved-submission timestamp, without any explicit re-locking step.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @returns {boolean} Whether the save gate is open (placement unlocked).
+ */
+export function isSaveGateOpen(assignment) {
+  if ( assignment?.status !== STATUS.SUBMITTED ) return false;
+  if ( !Number.isFinite(assignment.savedSubmissionTs) ) return false;
+  return assignment.savedSubmissionTs >= assignment.submittedAt;
+}
+
+/**
  * Validate a drawing submission payload without touching Foundry globals.
  * @param {object} payload Submission payload.
  * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string}} [options] Context for path allowlists.
  * @returns {boolean} Whether the payload is valid.
  */
 export function isValidSubmissionPayload(payload, options = {}) {
-  if ( !isPlainObject(payload) ) return false;
-  if ( payload.mode === "staged" ) return isValidStagedSubmissionPayload(payload, options);
-  if ( payload.mode !== undefined ) return false;
-  return isValidSocketSubmissionPayload(payload);
+  return validateSubmissionPayload(payload, options).ok;
+}
+
+/**
+ * Validate a drawing submission payload and explain the failed validation layer.
+ * @param {object} payload Submission payload.
+ * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string, forge?: boolean}} [options] Context for path allowlists.
+ * @returns {{ok: true}|{ok: false, reason: "shape"|"path-allowlist", detail: string}}
+ */
+export function validateSubmissionPayload(payload, options = {}) {
+  if ( !isPlainObject(payload) ) return invalidShape("submission must be an object");
+  if ( payload.mode === "staged" ) {
+    if ( !isValidStagedSubmissionShape(payload) ) return invalidShape("staged submission fields, formats, dimensions, or operation log are malformed");
+    const pathFailure = stagedPathFailure(payload, options);
+    return pathFailure ?? { ok: true };
+  }
+  if ( payload.mode !== undefined ) return invalidShape(`unknown submission mode ${String(payload.mode)}`);
+  return isValidSocketSubmissionPayload(payload)
+    ? { ok: true }
+    : invalidShape("socket submission image data, dimensions, or operation log are malformed");
 }
 
 /**
@@ -88,10 +118,9 @@ function isValidSocketSubmissionPayload(payload) {
 /**
  * Validate a staged submission shape.
  * @param {object} payload Submission payload.
- * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string}} options Path allowlist context.
  * @returns {boolean} Whether valid.
  */
-function isValidStagedSubmissionPayload(payload, options) {
+function isValidStagedSubmissionShape(payload) {
   if ( !isPlainObject(payload.staged) ) return false;
   if ( !nonEmptyString(payload.staged.overlayPath) ) return false;
   if ( payload.staged.mergedPath !== null && payload.staged.mergedPath !== undefined && !nonEmptyString(payload.staged.mergedPath) ) return false;
@@ -99,24 +128,30 @@ function isValidStagedSubmissionPayload(payload, options) {
   if ( payload.formats.merged !== null && payload.formats.merged !== undefined && !nonEmptyString(payload.formats.merged) ) return false;
   if ( !isValidDimensions(payload) ) return false;
   if ( payload.opLog !== undefined && !isValidOpLog(payload.opLog) ) return false;
-  return isAllowedStagedSubmissionPaths(payload, options);
+  return true;
 }
 
 /**
  * Validate staged asset paths against assignment-scoped allowlists.
  * @param {object} payload Submission payload.
  * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string}} options Path allowlist context.
- * @returns {boolean} Whether paths are allowed.
+ * @returns {{ok: false, reason: "path-allowlist", detail: string}|null} Path failure, or null when paths are allowed.
  */
-function isAllowedStagedSubmissionPaths(payload, options) {
+function stagedPathFailure(payload, options) {
   const { assignmentId, stagingRoot, pendingRoot } = options;
-  if ( !assignmentId || (!stagingRoot && !pendingRoot) ) return true;
-  const overlayAllowed = isAllowedSubmissionPath(assignmentId, payload.staged.overlayPath, stagingRoot, pendingRoot);
-  if ( !overlayAllowed ) return false;
-  if ( payload.staged.mergedPath ) {
-    return isAllowedSubmissionPath(assignmentId, payload.staged.mergedPath, stagingRoot, pendingRoot);
+  if ( !assignmentId || (!stagingRoot && !pendingRoot) ) return null;
+  const fields = [
+    ["overlayPath", "overlay", payload.staged.overlayPath],
+    ["mergedPath", "merged", payload.staged.mergedPath]
+  ];
+  for ( const [field, kind, path] of fields ) {
+    if ( !path ) continue;
+    if ( isAllowedSubmissionPath(assignmentId, path, stagingRoot, pendingRoot, { ...options, expectedKind: kind }) ) continue;
+    const expected = [stagingRoot && `${stagingRoot}/${assignmentId}-${kind}.(webp|png)`, pendingRoot && `${pendingRoot}/${kind}.(webp|png)`]
+      .filter(Boolean).join(" or ");
+    return { ok: false, reason: "path-allowlist", detail: `${field} path ${path} does not match expected ${expected}` };
   }
-  return true;
+  return null;
 }
 
 /**
@@ -127,10 +162,14 @@ function isAllowedStagedSubmissionPaths(payload, options) {
  * @param {string|undefined} pendingRoot Pending root.
  * @returns {boolean} Whether allowed.
  */
-function isAllowedSubmissionPath(assignmentId, path, stagingRoot, pendingRoot) {
-  if ( stagingRoot && isAllowedStagedPath(assignmentId, path, stagingRoot) ) return true;
-  if ( pendingRoot && isAllowedPendingPath(assignmentId, path, pendingRoot) ) return true;
+function isAllowedSubmissionPath(assignmentId, path, stagingRoot, pendingRoot, options) {
+  if ( stagingRoot && isAllowedStagedPath(assignmentId, path, stagingRoot, options) ) return true;
+  if ( pendingRoot && isAllowedPendingPath(assignmentId, path, pendingRoot, options) ) return true;
   return false;
+}
+
+function invalidShape(detail) {
+  return { ok: false, reason: "shape", detail };
 }
 
 /**

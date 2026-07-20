@@ -5,6 +5,7 @@ import { STATUS } from "../scripts/constants.mjs";
 import {
   getAssignment,
   listAssignments,
+  updateTimerState,
   updateStatus,
   upsertAssignment
 } from "../scripts/prompts/client-store.mjs";
@@ -41,4 +42,29 @@ test("client store lists current user's assignments by descending sent time and 
   assert.deepEqual(listAssignments().map(payload => payload.assignment.id), ["new", "old"]);
   updateStatus("old", STATUS.CANCELLED);
   assert.equal(getAssignment("old").assignment.status, STATUS.CANCELLED);
+});
+
+test("client store updates canonical timer state without replacing prompt data", () => {
+  upsertAssignment({
+    assignment: { id: "a1", userId: "u1", status: STATUS.OPENED },
+    prompt: { id: "p1", promptText: "Draw", timerStatus: "running", deadlineAt: 1000, remainingMs: null }
+  });
+
+  const updated = updateTimerState("a1", {
+    timerStatus: "paused",
+    deadlineAt: null,
+    remainingMs: -5000
+  });
+
+  assert.equal(updated.prompt.promptText, "Draw");
+  assert.deepEqual({
+    timerStatus: updated.prompt.timerStatus,
+    deadlineAt: updated.prompt.deadlineAt,
+    remainingMs: updated.prompt.remainingMs
+  }, {
+    timerStatus: "paused",
+    deadlineAt: null,
+    remainingMs: -5000
+  });
+  assert.equal(updateTimerState("missing", { timerStatus: "none", deadlineAt: null, remainingMs: null }), null);
 });

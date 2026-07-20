@@ -1,16 +1,11 @@
 import { FLAG_PROMPT, MODULE_ID } from "../constants.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
+import { assertGM } from "./socket-auth.mjs";
+import { TimerUpdateQueue } from "./timer-update-queue.mjs";
 
 /** @type {Map<string, string>|null} */
 let assignmentIndex = null;
-
-/**
- * Ensure the current user is a GM before writing world data.
- * @returns {void}
- */
-function assertGM() {
-  if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
-}
+const promptSaveQueue = new TimerUpdateQueue();
 
 /**
  * Get the localized Journal folder name.
@@ -110,15 +105,43 @@ export async function createPromptEntry(prompt) {
 
 /**
  * Save the full prompt state to its JournalEntry flag.
+ * Scoped saves merge into the latest persisted prompt. All other saves preserve
+ * the latest persisted timer state, preventing stale assignment models from
+ * moving the deadline back.
  * @param {DrawingPrompt} prompt Prompt model to save.
+ * @param {object} [options] Save options.
+ * @param {boolean} [options.timerOnly=false] Persist only the timer state.
+ * @param {string|null} [options.assignmentOnly=null] Persist only this assignment and the asset folder name.
  * @returns {Promise<JournalEntry>}
  */
-export async function savePrompt(prompt) {
+export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = null } = {}) {
   assertGM();
-  const entry = game.journal.get(prompt.id);
-  if ( !entry ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
-  indexPromptAssignments(prompt);
-  return entry.setFlag(MODULE_ID, FLAG_PROMPT, prompt.toObject());
+  return promptSaveQueue.enqueue(prompt.id, async () => {
+    const entry = game.journal.get(prompt.id);
+    if ( !entry ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+    const persisted = entry.getFlag(MODULE_ID, FLAG_PROMPT);
+    const latest = persisted ? DrawingPrompt.fromObject(persisted) : null;
+    let savedPrompt = prompt;
+    if ( latest && timerOnly ) {
+      latest.timerState = prompt.timerState;
+      savedPrompt = latest;
+      prompt.assignments = latest.assignments;
+      prompt.assetFolderName = latest.assetFolderName;
+    } else if ( latest && assignmentOnly ) {
+      const assignment = prompt.getAssignment(assignmentOnly);
+      if ( !assignment ) throw new Error(`Assignment not found: ${assignmentOnly}`);
+      latest.assignments[assignmentOnly] = assignment;
+      latest.assetFolderName = prompt.assetFolderName ?? latest.assetFolderName;
+      savedPrompt = latest;
+      prompt.timerState = latest.timerState;
+      prompt.assignments = latest.assignments;
+      prompt.assetFolderName = latest.assetFolderName;
+    } else if ( latest ) {
+      prompt.timerState = latest.timerState;
+    }
+    indexPromptAssignments(savedPrompt);
+    return entry.setFlag(MODULE_ID, FLAG_PROMPT, savedPrompt.toObject());
+  });
 }
 
 /**
