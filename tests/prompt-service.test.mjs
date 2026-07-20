@@ -4,6 +4,7 @@ import { before, beforeEach, test } from "node:test";
 import { FLAG_PROMPT, MODULE_ID, STATUS } from "../scripts/constants.mjs";
 
 let saveAssignment;
+let stagedFetchUrl;
 let DrawingAssignment;
 let storedPrompt;
 
@@ -19,7 +20,7 @@ before(async () => {
     }
   };
   ({ DrawingAssignment } = await import("../scripts/prompts/prompt-models.mjs"));
-  ({ saveAssignment } = await import("../scripts/prompts/prompt-service.mjs"));
+  ({ saveAssignment, stagedFetchUrl } = await import("../scripts/prompts/prompt-service.mjs"));
 });
 
 beforeEach(() => {
@@ -70,4 +71,26 @@ test("saveAssignment backfills the save gate timestamp when cached submission da
 
   assert.equal(assignment.savedSubmissionTs, 123_456);
   assert.equal(storedPrompt.assignments["a-saved"].savedSubmissionTs, 123_456);
+});
+
+test("stagedFetchUrl treats a local path as root-relative", () => {
+  const url = stagedFetchUrl("worlds/test-world/drawing-prompts/staging/a1-overlay.webp", 999);
+
+  assert.equal(url, "/worlds/test-world/drawing-prompts/staging/a1-overlay.webp?ts=999");
+});
+
+test("stagedFetchUrl fetches a Forge Assets Library URL absolutely", () => {
+  const forgeUrl = "https://assets.forge-vtt.com/abc123/drawing-prompts/world/staging/a1-overlay.webp";
+
+  const url = stagedFetchUrl(forgeUrl, 999);
+
+  assert.equal(url, `${forgeUrl}?ts=999`);
+});
+
+test("stagedFetchUrl appends the cache-buster with & when the URL already has a query string", () => {
+  const forgeUrl = "https://assets.forge-vtt.com/abc123/staging/a1-overlay.webp?v=2";
+
+  const url = stagedFetchUrl(forgeUrl, 999);
+
+  assert.equal(url, `${forgeUrl}&ts=999`);
 });

@@ -1326,13 +1326,16 @@ function submissionPreviewSrc(submission) {
 }
 
 /**
- * Build a root-relative fetch URL for a staged asset.
+ * Build a fetch URL for a staged asset. Absolute URLs (e.g. Forge's Assets
+ * Library) are used as-is; local paths are treated as root-relative.
  * @param {string} path Asset path.
  * @param {number} receiptTs Receipt timestamp.
  * @returns {string} Fetch URL.
  */
-function stagedFetchUrl(path, receiptTs) {
-  return `/${encodeURI(normalizePath(path))}?ts=${encodeURIComponent(String(receiptTs ?? Date.now()))}`;
+export function stagedFetchUrl(path, receiptTs) {
+  const ts = `ts=${encodeURIComponent(String(receiptTs ?? Date.now()))}`;
+  if ( /^https?:\/\//i.test(path) ) return `${path}${path.includes("?") ? "&" : "?"}${ts}`;
+  return `/${encodeURI(normalizePath(path))}?${ts}`;
 }
 
 /**
