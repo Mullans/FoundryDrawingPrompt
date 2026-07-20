@@ -7,6 +7,9 @@ const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
  * Configure the world Actor used as the default Copy Actor source.
  */
 export class CloneSourceSettings extends HandlebarsApplicationMixin(ApplicationV2) {
+  /** @type {WeakSet<HTMLElement>} Search inputs which already have actor filters attached. */
+  #actorFilterInputs = new WeakSet();
+
   static DEFAULT_OPTIONS = {
     id: "drawing-prompts-clone-source-settings",
     classes: ["drawing-prompts", "drawing-prompts-clone-source-settings"],
@@ -51,7 +54,21 @@ export class CloneSourceSettings extends HandlebarsApplicationMixin(ApplicationV
   /** @override */
   async _onRender(context, options) {
     await super._onRender(context, options);
-    attachActorFilter(this.element, "cloneSourceSearch", "actorUuid");
+    this.#attachActorFilter(this.element, "cloneSourceSearch", "actorUuid");
+  }
+
+  /**
+   * Attach an actor filter once to the current rendered search input.
+   * @param {HTMLElement|null} root Application root.
+   * @param {string} searchName Search input name.
+   * @param {string} selectName Actor select name.
+   * @returns {void}
+   */
+  #attachActorFilter(root, searchName, selectName) {
+    const search = root?.querySelector(`[name="${searchName}"]`);
+    if ( !search || this.#actorFilterInputs.has(search) ) return;
+    attachActorFilter(root, searchName, selectName);
+    this.#actorFilterInputs.add(search);
   }
 
   /**

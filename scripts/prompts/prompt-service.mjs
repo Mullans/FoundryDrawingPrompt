@@ -158,6 +158,7 @@ export async function createAndSendPrompt(draft) {
   }, draft.selectedUserIds);
 
   await createPromptEntry(prompt);
+  // Prompt creation requires a full save to establish prompt-level and all assignment state.
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.promptCreated", prompt);
 
@@ -455,7 +456,7 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false, name
     hidden: Boolean(hidden),
     placedAt: Date.now()
   });
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, tile, { kind: "tile" });
   await refreshManager();
@@ -530,7 +531,7 @@ export async function placeAssignmentAsToken(assignmentId, { mode, name = "", ac
     hidden: Boolean(hidden),
     placedAt: Date.now()
   });
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentPlaced", prompt, assignment, token, { kind: "token" });
   await refreshManager();
@@ -560,7 +561,7 @@ export async function cancelAssignment(assignmentId, userId = null) {
   assertPromptOwner(prompt);
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
   assignment.markCancelled(Date.now());
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   if ( game.users.get(assignment.userId)?.active ) await emit.cancelDrawingPrompt(assignment.userId, assignment.id);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentCancelled", prompt, assignment);
@@ -625,7 +626,7 @@ export async function reopenAssignment(assignmentId, userId = null) {
   assignment.pendingSubmission = null;
   pendingSubmissions.delete(assignment.id);
   clearCachedSubmission(assignment.id);
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   if ( game.users.get(assignment.userId)?.active ) await emit.reopenDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentReopened", prompt, assignment);
@@ -643,7 +644,7 @@ export async function resendAssignment(assignmentId) {
   assertPromptOwner(prompt);
   if ( assignment.status === STATUS.CANCELLED ) {
     assignment.markResent();
-    await savePrompt(prompt);
+    await savePrompt(prompt, { assignmentOnly: assignment.id });
   } else if ( ![STATUS.PENDING, STATUS.OPENED].includes(assignment.status) ) {
     return;
   }
@@ -828,7 +829,7 @@ async function handleAssignmentOpened(assignmentId, userId) {
   const decision = evaluateOpened(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("opened", assignment, decision.reason);
   assignment.markOpened(Date.now());
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentOpened", prompt, assignment);
   await setManagerWindowOpen(assignment.id, true);
@@ -885,7 +886,7 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   pendingSubmissions.set(assignment.id, receivedSubmission);
   assignment.pendingSubmission = receivedSubmission;
   cacheSubmission(assignment.id, receivedSubmission);
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, receivedSubmission);
   const previewSrc = submissionPreviewSrc(receivedSubmission);
@@ -906,7 +907,7 @@ async function handleDrawingRejected(assignmentId, userId, reason) {
   const decision = evaluateRejection(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("rejected", assignment, decision.reason);
   assignment.markRejected(Date.now());
-  await savePrompt(prompt);
+  await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentRejected", prompt, assignment, reason);
   await setManagerWindowOpen(assignment.id, false);

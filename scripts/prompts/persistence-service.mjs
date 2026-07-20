@@ -126,12 +126,16 @@ export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = n
       latest.timerState = prompt.timerState;
       savedPrompt = latest;
       prompt.assignments = latest.assignments;
+      prompt.assetFolderName = latest.assetFolderName;
     } else if ( latest && assignmentOnly ) {
       const assignment = prompt.getAssignment(assignmentOnly);
       if ( !assignment ) throw new Error(`Assignment not found: ${assignmentOnly}`);
       latest.assignments[assignmentOnly] = assignment;
       latest.assetFolderName = prompt.assetFolderName ?? latest.assetFolderName;
       savedPrompt = latest;
+      prompt.timerState = latest.timerState;
+      prompt.assignments = latest.assignments;
+      prompt.assetFolderName = latest.assetFolderName;
     } else if ( latest ) {
       prompt.timerState = latest.timerState;
     }

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 const TEST_FILES = [
+  "tests/application-lifecycle.test.mjs",
   "tests/background-layout.test.mjs",
   "tests/background-source-service.test.mjs",
   "tests/client-store.test.mjs",

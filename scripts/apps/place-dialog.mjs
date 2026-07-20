@@ -9,6 +9,12 @@ const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
  * GM placement window for one saved drawing assignment.
  */
 export class PlaceDialog extends HandlebarsApplicationMixin(ApplicationV2) {
+  /** @type {PlaceDialog|null} The currently live placement window. */
+  static #instance = null;
+
+  /** @type {Promise<void>} Serializes fixed-id application replacement transactions. */
+  static #openQueue = Promise.resolve();
+
   static DEFAULT_OPTIONS = {
     id: "drawing-prompts-place-dialog",
     classes: ["drawing-prompts", "drawing-prompts-place-dialog", "standard-form"],
@@ -43,10 +49,26 @@ export class PlaceDialog extends HandlebarsApplicationMixin(ApplicationV2) {
     if ( !assignment?.primaryImagePath || !isSaveGateOpen(assignment) ) {
       throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
     }
-    const app = new this(assignment);
-    await app.render({ force: true });
-    app.bringToFront();
-    return app;
+    const transaction = PlaceDialog.#openQueue.then(async () => {
+      if ( PlaceDialog.#instance ) await PlaceDialog.#instance.close();
+      const app = new this(assignment);
+      PlaceDialog.#instance = app;
+      try {
+        await app.render({ force: true });
+        app.bringToFront();
+        return app;
+      } catch (err) {
+        try {
+          await app.close();
+        } catch (_closeError) {
+          // Best effort: preserve the render failure while still clearing our live reference.
+        }
+        if ( PlaceDialog.#instance === app ) PlaceDialog.#instance = null;
+        throw err;
+      }
+    });
+    PlaceDialog.#openQueue = transaction.then(() => undefined, () => undefined);
+    return transaction;
   }
 
   /**
@@ -60,6 +82,12 @@ export class PlaceDialog extends HandlebarsApplicationMixin(ApplicationV2) {
 
   /** @type {boolean} Whether a placement commit is in flight. */
   #placing = false;
+
+  /** @type {WeakSet<HTMLElement>} Form roots which already have the mode change listener. */
+  #formListenerRoots = new WeakSet();
+
+  /** @type {WeakSet<HTMLElement>} Search inputs which already have actor filters attached. */
+  #actorFilterInputs = new WeakSet();
 
   /** @override */
   async _prepareContext(options) {
@@ -75,12 +103,35 @@ export class PlaceDialog extends HandlebarsApplicationMixin(ApplicationV2) {
   async _onRender(context, options) {
     await super._onRender(context, options);
     const form = this.#formElement();
-    form?.addEventListener("change", event => {
-      if ( event.target?.name === "mode" ) this.#syncModeState();
-    });
-    attachActorFilter(form, "copyActorSearch", "copyActorUuid");
-    attachActorFilter(form, "existingActorSearch", "existingActorUuid");
+    if ( form && !this.#formListenerRoots.has(form) ) {
+      form.addEventListener("change", event => {
+        if ( event.target?.name === "mode" ) this.#syncModeState();
+      });
+      this.#formListenerRoots.add(form);
+    }
+    this.#attachActorFilter(form, "copyActorSearch", "copyActorUuid");
+    this.#attachActorFilter(form, "existingActorSearch", "existingActorUuid");
     this.#syncModeState();
+  }
+
+  /** @override */
+  _onClose(options) {
+    super._onClose(options);
+    if ( PlaceDialog.#instance === this ) PlaceDialog.#instance = null;
+  }
+
+  /**
+   * Attach an actor filter once to the current rendered search input.
+   * @param {HTMLElement|null} root Application form root.
+   * @param {string} searchName Search input name.
+   * @param {string} selectName Actor select name.
+   * @returns {void}
+   */
+  #attachActorFilter(root, searchName, selectName) {
+    const search = root?.querySelector(`[name="${searchName}"]`);
+    if ( !search || this.#actorFilterInputs.has(search) ) return;
+    attachActorFilter(root, searchName, selectName);
+    this.#actorFilterInputs.add(search);
   }
 
   /** @this {PlaceDialog} */
