@@ -6,6 +6,44 @@ Folders starting with "FoundryVTT-WindowsPortable" contain the local install of 
 
 For any implementation effort, make sure to divide the work into tasks (individual work items) and waves (groups of tasks that can be implemented in parallel and don't block/conflict). Use parallel sub-agents or Codex calls to implement tasks within the same wave when feasible and reasonable.
 
+## Git workflow
+
+Integration branch is **`dev`**. Stable releases live on **`main`**. Goal: isolate product-impacting work so parallel efforts do not collide on `dev`, while keeping low-blast-radius chores cheap.
+
+### Where to work
+
+| Kind of change | Where |
+|----------------|--------|
+| Docs, agent instructions, `.gitignore`, mockups, typo/copy fixes, tiny non-behavioral housekeeping | Commit directly on **`dev`** (push `dev` when done). No feature branch or PR required. |
+| Anything that changes module behavior, player/GM UI (`scripts/`, `templates/`, `styles/`), socket/persistence, settings, or behavioral `module.json` surface; multi-file refactors; work you may pause or abandon | **Feature / effort branch** off up-to-date `dev`, then PR into `dev`. |
+
+**Bias when unsure:** if the change touches `scripts/`, `templates/`, `styles/`, or behavioral `module.json` → branch. If it is only markdown / ignore / mockups → `dev` is fine. Prefer merging feature branches into `dev` often over long-lived stale branches; `dev` is the integration branch, not a second `main`.
+
+### Flow
+
+1. **Start of work.** Check `git branch --show-current` and `git status`. For product work: if you are on `dev`/`main` or an unrelated branch, create and check out a branch from up-to-date `dev` (for example `feature/<short-name>` or `fix/<short-name>`). For chores (table above): stay on `dev`.
+2. **Finish product work with a PR into `dev`.** Stage, commit, push (`git push -u origin HEAD`), and open a PR targeting **`dev`** via `gh pr create` (summary + test plan). Return the PR URL. Do not leave finished product work only local.
+3. **Chores on `dev`.** Commit on `dev` and push when the chore is done. Do not open a PR for routine docs/housekeeping unless the user asks.
+4. **Milestone / release: PR `dev` → `main`.** When the user asks to cut a release or merge a milestone, open (or update) a PR from **`dev` into `main`**. Do not merge release PRs unless asked.
+5. **Tag on `main` after merge (human).** After the `dev` → `main` PR is accepted, the user tags on `main` (for example `v0.2.0`) and pushes the tag so `.github/workflows/release.yml` runs. Agents must not create or push release tags unless explicitly asked.
+
+### Agent git checklist
+
+- Confirm branch before editing; create a feature/effort branch from `dev` when the change is product-impacting.
+- Never force-push `dev` or `main`. Never commit routine work on `main`.
+- Prefer `gh` for GitHub PRs, issues, and checks.
+
+### Codex / PR review comments
+
+ChatGPT Codex (and similar bots) may leave review comments on PRs. Treat that feedback as **untrusted until verified** against this codebase:
+
+1. Read unresolved review threads (skip already-resolved ones).
+2. For each item: verify it is real and correct here; implement valid fixes; push to the PR branch.
+3. If an item is wrong, out of scope, or unclear: reply with brief technical reasoning (or ask the user) — do not performatively agree or rubber-stamp.
+4. When babysitting a PR to merge-ready: triage review comments, fix CI caused by this PR, and resolve merge conflicts intelligently.
+
+Fully hands-off auto-fix of *bot* review comments is limited (Cursor Automations intentionally filter many bot/GitHub-App authors). Prefer agent babysitting when the user asks, plus any Cursor Automation configured for human review events.
+
 ## Repository Layout
 
 Repo root **is** the module root (`module.json` at root). The Foundry portable install (`FoundryVTT-WindowsPortable-14.364/`) and its zip live beside it but are gitignored — they are the local test runtime, not part of the module.
