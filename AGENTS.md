@@ -6,6 +6,23 @@ Folders starting with "FoundryVTT-WindowsPortable" contain the local install of 
 
 For any implementation effort, make sure to divide the work into tasks (individual work items) and waves (groups of tasks that can be implemented in parallel and don't block/conflict). Use parallel sub-agents or Codex calls to implement tasks within the same wave when feasible and reasonable.
 
+## Git workflow
+
+Integration branch is **`dev`**. Stable releases live on **`main`**. Agents must follow this flow for all implementation work unless the user explicitly directs otherwise.
+
+1. **Feature / effort branch off `dev`.** Before editing, check `git branch --show-current` and `git status`. Do not commit implementation work directly on `dev` or `main`. If you are on `dev`/`main`, or on an unrelated branch, create and check out a new branch from up-to-date `dev` (for example `feature/<short-name>` or `fix/<short-name>`).
+2. **PR into `dev` when the work is done.** Stage relevant files, commit with a clear message, push the branch (`git push -u origin HEAD`), and open a pull request targeting **`dev`** via `gh pr create`. Include a short summary and test plan. Return the PR URL in the response.
+3. **Milestone / release: PR `dev` → `main`.** When the user asks to cut a release or merge a milestone, open (or update) a PR from **`dev` into `main`**. Do not merge release PRs unless the user asks you to.
+4. **Tag on `main` after merge (human).** After the `dev` → `main` PR is accepted, the user tags on `main` (for example `v0.2.0`) and pushes the tag so `.github/workflows/release.yml` runs. Agents must not create or push release tags unless the user explicitly requests it.
+
+### Agent git checklist
+
+- At the start of implementation work: confirm branch; create one from `dev` if needed.
+- During work: commit on the feature/effort branch when the user asks, or when finishing a coherent unit that should land via PR (this repo's default: ship work through PRs rather than leaving large unfinished diffs on `dev`).
+- When the effort is complete: push and open/update the PR into `dev`; do not leave finished work only local.
+- Never force-push `dev` or `main`. Never commit on `main` for routine work.
+- Prefer `gh` for GitHub PRs, issues, and checks.
+
 ## Repository Layout
 
 Repo root **is** the module root (`module.json` at root). The Foundry portable install (`FoundryVTT-WindowsPortable-14.364/`) and its zip live beside it but are gitignored — they are the local test runtime, not part of the module.
