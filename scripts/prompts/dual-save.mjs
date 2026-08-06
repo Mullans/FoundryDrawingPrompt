@@ -1,7 +1,8 @@
-import { BG_SOURCE } from "../constants.mjs";
+import { BG_SOURCE, FRAMING_VIEW } from "../constants.mjs";
 import { bakeDualRasters, computeFramingGeometry, dualSaveFilenames } from "../drawing/prompt-framing.mjs";
 import { canvasToEncodedImage } from "../drawing/export-service.mjs";
 import { resolvePromptFraming } from "./framed-delivery.mjs";
+import { isSaveGateOpen } from "./transitions.mjs";
 
 /**
  * Whether the prompt has a source image suitable for Source Framing dual Save.
@@ -14,6 +15,42 @@ export function hasSourceBackground(prompt) {
   const naturalWidth = Number(background.naturalWidth);
   const naturalHeight = Number(background.naturalHeight);
   return naturalWidth > 0 && naturalHeight > 0;
+}
+
+/**
+ * Normalize a Framing View value. Falls back to Prompt canvas when Source Framing
+ * is unavailable or the value is unknown.
+ * @param {string|null|undefined} framingView Candidate view.
+ * @param {{hasSource?: boolean}} [options] Context.
+ * @returns {typeof FRAMING_VIEW[keyof typeof FRAMING_VIEW]}
+ */
+export function normalizeFramingView(framingView, { hasSource = false } = {}) {
+  if ( framingView === FRAMING_VIEW.SOURCE && hasSource ) return FRAMING_VIEW.SOURCE;
+  return FRAMING_VIEW.PROMPT_CANVAS;
+}
+
+/**
+ * Resolve the pre-saved Place/Transform asset path for a Framing View.
+ * Prompt canvas → primaryImagePath (`{basename}`); Source Framing → assets.fullPath (`{basename}_full`).
+ * @param {import("./prompt-models.mjs").DrawingAssignment|null|undefined} assignment Assignment.
+ * @param {string} framingView Framing View.
+ * @returns {string|null}
+ */
+export function resolveFramingViewAssetPath(assignment, framingView) {
+  if ( !assignment ) return null;
+  if ( framingView === FRAMING_VIEW.SOURCE ) return assignment.assets?.fullPath ?? null;
+  return assignment.primaryImagePath ?? null;
+}
+
+/**
+ * Whether Place/Transform may use the given Framing View's saved raster.
+ * Uses the single dual-Save gate; does not invent a per-view save state.
+ * @param {import("./prompt-models.mjs").DrawingAssignment|null|undefined} assignment Assignment.
+ * @param {string} framingView Framing View.
+ * @returns {boolean}
+ */
+export function canPlaceFramingView(assignment, framingView) {
+  return isSaveGateOpen(assignment) && Boolean(resolveFramingViewAssetPath(assignment, framingView));
 }
 
 /**
@@ -100,6 +137,36 @@ export async function bakeAndEncodeSourceFraming({ overlay, prompt, format = "we
     width: source.width,
     height: source.height
   };
+}
+
+/**
+ * Build a Source Framing preview data URL from a Prompt-canvas image source.
+ * Reuses dual-Save geometry/remap — not a second save path.
+ * @param {object} options Options.
+ * @param {string} options.src Prompt-canvas image URL or data URL.
+ * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} options.prompt Prompt.
+ * @param {object|null|undefined} [options.submission] Optional submission for original size.
+ * @returns {Promise<string|null>} Encoded data URL, or null when remap is unavailable.
+ */
+export async function buildSourceFramingPreviewDataUrl({ src, prompt, submission = null } = {}) {
+  if ( !src || !hasSourceBackground(prompt) ) return null;
+  const size = resolveSubmissionOverlaySize(submission, prompt);
+  const overlay = await decodeImageToRgba(src, size.width, size.height);
+  const baked = await bakeAndEncodeSourceFraming({ overlay, prompt, format: "webp" });
+  return blobToDataUrl(baked.blob);
+}
+
+/**
+ * @param {Blob} blob Image blob.
+ * @returns {Promise<string>}
+ */
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed."));
+    reader.readAsDataURL(blob);
+  });
 }
 
 /**

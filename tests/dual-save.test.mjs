@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BG_SOURCE, FIT_MODE, STATUS } from "../scripts/constants.mjs";
+import { BG_SOURCE, FIT_MODE, FRAMING_VIEW, STATUS } from "../scripts/constants.mjs";
 import { bakeDualRasters, mapPromptToSource } from "../scripts/drawing/prompt-framing.mjs";
 import { DrawingAssignment } from "../scripts/prompts/prompt-models.mjs";
 import {
+  canPlaceFramingView,
   clearFramingViewAssets,
   computeDualSaveGeometry,
   hasSavedFramingViewAssets,
   hasSourceBackground,
+  normalizeFramingView,
+  resolveFramingViewAssetPath,
   resolveFullFilename,
   resolveSubmissionOverlaySize
 } from "../scripts/prompts/dual-save.mjs";
@@ -134,6 +137,68 @@ test("dual save remaps overlay ink into source natural resolution", () => {
   const sx = Math.round(mapped.x);
   const sy = Math.round(mapped.y);
   assert.deepEqual(getPixel(source, 4, sx, sy), [255, 0, 0, 255]);
+});
+
+test("normalizeFramingView rejects Source Framing without a source and unknown values", () => {
+  assert.equal(normalizeFramingView(FRAMING_VIEW.SOURCE, { hasSource: true }), FRAMING_VIEW.SOURCE);
+  assert.equal(normalizeFramingView(FRAMING_VIEW.SOURCE, { hasSource: false }), FRAMING_VIEW.PROMPT_CANVAS);
+  assert.equal(normalizeFramingView(FRAMING_VIEW.PROMPT_CANVAS, { hasSource: true }), FRAMING_VIEW.PROMPT_CANVAS);
+  assert.equal(normalizeFramingView("nope", { hasSource: true }), FRAMING_VIEW.PROMPT_CANVAS);
+  assert.equal(normalizeFramingView(null), FRAMING_VIEW.PROMPT_CANVAS);
+});
+
+test("resolveFramingViewAssetPath picks primary vs fullPath by Framing View", () => {
+  const assignment = DrawingAssignment.fromObject({
+    id: "a1",
+    promptId: "p1",
+    userId: "u1",
+    status: STATUS.SUBMITTED,
+    assets: {
+      overlayPath: "drawings/hero-overlay.webp",
+      mergedPath: "drawings/hero.webp",
+      fullPath: "drawings/hero_full.webp"
+    }
+  });
+  assert.equal(resolveFramingViewAssetPath(assignment, FRAMING_VIEW.PROMPT_CANVAS), "drawings/hero.webp");
+  assert.equal(resolveFramingViewAssetPath(assignment, FRAMING_VIEW.SOURCE), "drawings/hero_full.webp");
+  assert.equal(resolveFramingViewAssetPath(null, FRAMING_VIEW.PROMPT_CANVAS), null);
+
+  const blankOnly = DrawingAssignment.fromObject({
+    id: "a2",
+    promptId: "p1",
+    userId: "u1",
+    status: STATUS.SUBMITTED,
+    assets: { overlayPath: "drawings/blank.webp", mergedPath: null, fullPath: null }
+  });
+  assert.equal(resolveFramingViewAssetPath(blankOnly, FRAMING_VIEW.PROMPT_CANVAS), "drawings/blank.webp");
+  assert.equal(resolveFramingViewAssetPath(blankOnly, FRAMING_VIEW.SOURCE), null);
+});
+
+test("canPlaceFramingView uses the dual Save gate and current view path", () => {
+  const assignment = DrawingAssignment.fromObject({
+    id: "a1",
+    promptId: "p1",
+    userId: "u1",
+    status: STATUS.SUBMITTED,
+    submittedAt: 100,
+    savedSubmissionTs: 100,
+    assets: {
+      overlayPath: "drawings/hero-overlay.webp",
+      mergedPath: "drawings/hero.webp",
+      fullPath: "drawings/hero_full.webp"
+    }
+  });
+  assert.equal(isSaveGateOpen(assignment), true);
+  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.PROMPT_CANVAS), true);
+  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.SOURCE), true);
+
+  assignment.assets.fullPath = null;
+  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.SOURCE), false);
+  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.PROMPT_CANVAS), true);
+
+  // Toggling framing view state is not modeled here — only savedSubmissionTs re-arms.
+  assignment.savedSubmissionTs = null;
+  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.PROMPT_CANVAS), false);
 });
 
 test("clearFramingViewAssets clears both Framing View paths and re-arms the Save gate", () => {

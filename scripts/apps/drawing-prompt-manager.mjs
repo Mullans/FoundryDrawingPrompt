@@ -1,4 +1,4 @@
-import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, FRAMING_VIEW, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import {
   FRAMING_ZOOM_STEP,
   drawFramingEditor,
@@ -24,6 +24,13 @@ import {
   resolveCanvasSize
 } from "../foundry/background-source-service.mjs";
 import { defaultAssignmentAssetName } from "../prompts/naming-service.mjs";
+import {
+  buildSourceFramingPreviewDataUrl,
+  canPlaceFramingView,
+  hasSourceBackground,
+  normalizeFramingView,
+  resolveFramingViewAssetPath
+} from "../prompts/dual-save.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
@@ -75,6 +82,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       applyTransform: DrawingPromptManager.#onApplyTransform,
       finishPrompt: DrawingPromptManager.#onFinishPrompt,
       switchPrompt: DrawingPromptManager.#onSwitchPrompt,
+      setFramingView: DrawingPromptManager.#onSetFramingView,
       framingZoomIn: DrawingPromptManager.#onFramingZoomIn,
       framingZoomOut: DrawingPromptManager.#onFramingZoomOut,
       framingReset: DrawingPromptManager.#onFramingReset
@@ -148,6 +156,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.latestSnapshots = new Map();
     this.selectedAssignmentId = null;
     this.windowOpenByAssignment = new Map();
+    /** @type {string} GM review Framing View for the open manager session. */
+    this.framingView = FRAMING_VIEW.PROMPT_CANVAS;
+    /** @type {Map<string, string>} Cached Source Framing live-remap data URLs by assignment. */
+    this.#sourceFramingPreviewCache = new Map();
+    this.#sourceFramingPreviewLoad = null;
     this.#expiryTimerId = null;
     this.#expiryStateSignature = "";
   }
@@ -155,6 +168,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #expiryTimerId;
   #expiryStateSignature;
   #formListenersAttached = false;
+  #sourceFramingPreviewCache;
+  #sourceFramingPreviewLoad;
   /**
    * Loaded (and taint-checked) `<img>` for the current draft background, cached
    * alongside its path so {@link #updateBackgroundPreview} can redraw the preview
@@ -201,7 +216,25 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.latestSnapshots.set(assignmentId, dataUrl);
     this.#cacheSnapshot(assignmentId, dataUrl);
     this.selectedAssignmentId ??= assignmentId;
-    if ( this.selectedAssignmentId === assignmentId ) this.#updatePreviewImage(dataUrl);
+    if ( this.selectedAssignmentId !== assignmentId ) return;
+
+    const view = normalizeFramingView(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
+    if ( view !== FRAMING_VIEW.SOURCE ) {
+      this.#updatePreviewImage(dataUrl);
+      return;
+    }
+
+    const assignment = this.activePrompt?.getAssignment(assignmentId);
+    if ( !assignment || !this.activePrompt ) return;
+    void this.#resolveSourceFramingPreviewSrc(assignment, dataUrl).then(remapped => {
+      if ( this.selectedAssignmentId !== assignmentId ) return;
+      if ( normalizeFramingView(this.framingView, {
+        hasSource: hasSourceBackground(this.activePrompt)
+      }) !== FRAMING_VIEW.SOURCE ) return;
+      if ( remapped ) this.#updatePreviewImage(remapped);
+    });
   }
 
   /**
@@ -241,8 +274,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const users = userValues().filter(user => !user.isGM);
     const rows = users.map(user => this.#rowContext(user));
     const selectedAssignment = this.#selectedAssignment();
-    const selectedPreview = await this.#selectedPreviewContext(selectedAssignment);
+    const hasSource = hasSourceBackground(this.activePrompt);
+    this.framingView = normalizeFramingView(this.framingView, { hasSource });
+    const framingView = this.framingView;
+    const selectedPreview = await this.#selectedPreviewContext(selectedAssignment, framingView);
     const hasActivePrompt = Boolean(this.activePrompt);
+    const viewAssetPath = resolveFramingViewAssetPath(selectedAssignment, framingView);
+    const savedAndGateOpen = isSaveGateOpen(selectedAssignment);
     return {
       draft: this.#draftContext(),
       rows,
@@ -261,14 +299,17 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       canResendAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
       canFinishPrompt: Boolean(this.activePrompt),
       promptQueue: this.#promptQueueContext(),
-      selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !isSaveGateOpen(selectedAssignment),
-      selectedIsSaved: Boolean(selectedAssignment?.primaryImagePath),
-      selectedSavedTooltip: selectedAssignment?.primaryImagePath
-        ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: selectedAssignment.primaryImagePath })
-        : "",
-      selectedCanPlace: isSaveGateOpen(selectedAssignment),
+      selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !savedAndGateOpen,
+      selectedIsSaved: savedAndGateOpen,
+      selectedSavedTooltip: viewAssetPath
+        ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: viewAssetPath })
+        : selectedAssignment?.primaryImagePath
+          ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: selectedAssignment.primaryImagePath })
+          : "",
+      selectedCanPlace: canPlaceFramingView(selectedAssignment, framingView),
       saveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.manager.actions.saveFirst"),
-      transformSaveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst")
+      transformSaveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst"),
+      framingViewToggle: this.#framingViewToggleContext(hasSource, framingView)
     };
   }
 
@@ -873,6 +914,32 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
+   * Build Framing View toggle context for review mode.
+   * @param {boolean} hasSource Whether Source Framing is available for this Prompt.
+   * @param {string} framingView Current Framing View.
+   * @returns {{visible: boolean, options: object[]}}
+   */
+  #framingViewToggleContext(hasSource, framingView) {
+    if ( !hasSource ) return { visible: false, options: [] };
+    return {
+      visible: true,
+      label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.label"),
+      options: [
+        {
+          value: FRAMING_VIEW.PROMPT_CANVAS,
+          selected: framingView === FRAMING_VIEW.PROMPT_CANVAS,
+          label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.promptCanvas")
+        },
+        {
+          value: FRAMING_VIEW.SOURCE,
+          selected: framingView === FRAMING_VIEW.SOURCE,
+          label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.sourceFraming")
+        }
+      ]
+    };
+  }
+
+  /**
    * Build fit mode select options.
    * @returns {object[]}
    */
@@ -882,6 +949,19 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       selected: value === this.draft.background.fitMode,
       label: game.i18n.localize(`DRAWING-PROMPTS.choices.fitMode.${fitModeKey(value)}`)
     }));
+  }
+
+  /**
+   * @this {DrawingPromptManager}
+   * @returns {void}
+   */
+  static #onSetFramingView(_event, target) {
+    const hasSource = hasSourceBackground(this.activePrompt);
+    const next = normalizeFramingView(target?.dataset?.framingView, { hasSource });
+    if ( next === this.framingView ) return;
+    // Session UI only — must not touch clearFramingViewAssets / savedSubmissionTs (Save gate).
+    this.framingView = next;
+    this.render({ parts: ["body"] });
   }
 
   /**
@@ -1094,9 +1174,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const assignmentId = target.dataset.assignmentId || this.selectedAssignmentId;
     const assignment = this.activePrompt?.getAssignment(assignmentId);
     if ( !assignment ) return;
+    const framingView = normalizeFramingView(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
+    const imagePath = resolveFramingViewAssetPath(assignment, framingView);
     const { PlaceDialog } = await import("./place-dialog.mjs");
     try {
-      await PlaceDialog.open(assignment);
+      await PlaceDialog.open(assignment, { framingView, imagePath });
     } catch (err) {
       ui.notifications.warn(err.message);
     }
@@ -1106,9 +1190,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   static async #onApplyTransform(_event, target) {
     const assignmentId = target.dataset.assignmentId || this.selectedAssignmentId;
     if ( !assignmentId ) return;
+    const framingView = normalizeFramingView(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
     const service = await import("../prompts/prompt-service.mjs");
     try {
-      await service.applyAssignmentTransform(assignmentId);
+      await service.applyAssignmentTransform(assignmentId, { framingView });
     } catch (err) {
       ui.notifications.warn(err.message);
     }
@@ -1232,20 +1319,35 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /**
    * Resolve preview source and heading for the selected assignment.
    * @param {import("../prompts/prompt-models.mjs").DrawingAssignment|null} assignment Selected assignment.
+   * @param {string} [framingView] Framing View for this preview.
    * @returns {Promise<{src: string|null, heading: string}>}
    */
-  async #selectedPreviewContext(assignment) {
+  async #selectedPreviewContext(assignment, framingView = FRAMING_VIEW.PROMPT_CANVAS) {
     if ( !assignment ) {
       return {
         src: null,
         heading: game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview")
       };
     }
+    const view = normalizeFramingView(framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
     const snapshot = this.latestSnapshots.get(assignment.id) ?? null;
+    const headingSubmitted = assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing");
+    const headingLive = game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview");
+
+    if ( view === FRAMING_VIEW.SOURCE ) {
+      const src = await this.#resolveSourceFramingPreviewSrc(assignment, snapshot);
+      return {
+        src,
+        heading: assignment.status === STATUS.SUBMITTED ? headingSubmitted : headingLive
+      };
+    }
+
     if ( assignment.status === STATUS.SUBMITTED && assignment.primaryImagePath ) {
       return {
         src: assignment.primaryImagePath,
-        heading: assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing")
+        heading: headingSubmitted
       };
     }
     if ( assignment.status === STATUS.SUBMITTED ) {
@@ -1253,13 +1355,66 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       const submission = service.getPendingSubmission(assignment.id);
       return {
         src: pendingSubmissionPreviewSrc(submission) ?? snapshot,
-        heading: assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing")
+        heading: headingSubmitted
       };
     }
     return {
       src: snapshot,
-      heading: game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview")
+      heading: headingLive
     };
+  }
+
+  /**
+   * Resolve Source Framing preview: saved fullPath when gate open for current submission,
+   * otherwise remapped live/pending overlay via dual-Save geometry.
+   * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Assignment.
+   * @param {string|null} snapshot Live snapshot data URL.
+   * @returns {Promise<string|null>}
+   */
+  async #resolveSourceFramingPreviewSrc(assignment, snapshot) {
+    const savedFull = resolveFramingViewAssetPath(assignment, FRAMING_VIEW.SOURCE);
+    if ( savedFull && isSaveGateOpen(assignment) ) return savedFull;
+
+    let promptCanvasSrc = null;
+    let submission = null;
+    if ( assignment.status === STATUS.SUBMITTED ) {
+      const service = await import("../prompts/prompt-service.mjs");
+      submission = service.getPendingSubmission(assignment.id);
+      promptCanvasSrc = pendingSubmissionPreviewSrc(submission)
+        ?? (assignment.primaryImagePath || null)
+        ?? snapshot;
+    } else {
+      promptCanvasSrc = snapshot;
+    }
+    if ( !promptCanvasSrc || !this.activePrompt ) return null;
+
+    const cacheKey = sourceFramingPreviewCacheKey(assignment.id, this.activePrompt.id, promptCanvasSrc);
+    const cached = this.#sourceFramingPreviewCache.get(cacheKey);
+    if ( cached ) return cached;
+
+    // Drop other keys for this assignment so reloads don't grow unbounded.
+    for ( const key of this.#sourceFramingPreviewCache.keys() ) {
+      if ( key.startsWith(`${assignment.id}|`) ) this.#sourceFramingPreviewCache.delete(key);
+    }
+
+    const load = (async () => {
+      try {
+        const dataUrl = await buildSourceFramingPreviewDataUrl({
+          src: promptCanvasSrc,
+          prompt: this.activePrompt,
+          submission
+        });
+        if ( dataUrl ) this.#sourceFramingPreviewCache.set(cacheKey, dataUrl);
+        return dataUrl;
+      } catch (err) {
+        console.warn("drawing-prompts | Source Framing preview remap failed", err);
+        return null;
+      }
+    })();
+    this.#sourceFramingPreviewLoad = load;
+    const result = await load;
+    if ( this.#sourceFramingPreviewLoad === load ) this.#sourceFramingPreviewLoad = null;
+    return result;
   }
 
   /**
@@ -1332,6 +1487,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#adoptDraftFromPrompt();
     this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
     this.latestSnapshots.clear();
+    this.#sourceFramingPreviewCache.clear();
+    this.framingView = normalizeFramingView(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
     this.#hydrateSnapshotCache();
     await this.#hydrateSubmissionCache();
     if ( isSocketReady() ) {
@@ -1619,6 +1778,20 @@ function pendingSubmissionPreviewSrc(submission) {
     return path ? `${encodeURI(path)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}` : null;
   }
   return submission?.merged?.dataUrl ?? submission?.overlay?.dataUrl ?? null;
+}
+
+/**
+ * Compact cache key for Source Framing remapped previews (avoid storing full data URLs as keys).
+ * @param {string} assignmentId Assignment id.
+ * @param {string} promptId Prompt id.
+ * @param {string} src Prompt-canvas image source.
+ * @returns {string}
+ */
+function sourceFramingPreviewCacheKey(assignmentId, promptId, src) {
+  const value = String(src ?? "");
+  const head = value.slice(0, 48);
+  const tail = value.length > 64 ? value.slice(-24) : "";
+  return `${assignmentId}|${promptId}|${value.length}|${head}|${tail}`;
 }
 
 /**

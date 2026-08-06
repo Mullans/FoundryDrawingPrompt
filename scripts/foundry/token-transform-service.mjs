@@ -30,11 +30,13 @@ export function buildTokenTransformPlan(tokens) {
 /**
  * Apply a saved assignment drawing to all currently controlled tokens.
  * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Saved assignment.
+ * @param {{imagePath?: string|null}} [options] Override path (Framing View asset); defaults to primaryImagePath.
  * @returns {Promise<object[]>} Token placeables that received the drawing.
  */
-export async function applyTransformToControlledTokens(assignment) {
+export async function applyTransformToControlledTokens(assignment, { imagePath = null } = {}) {
   assertGM();
-  if ( !assignment?.primaryImagePath || !isSaveGateOpen(assignment) ) {
+  const src = imagePath || assignment?.primaryImagePath;
+  if ( !src || !isSaveGateOpen(assignment) ) {
     throw new Error(game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst"));
   }
 
@@ -65,7 +67,7 @@ export async function applyTransformToControlledTokens(assignment) {
     if ( item.shouldStoreOriginal ) {
       await item.token.document.setFlag(MODULE_ID, FLAG_ORIGINAL_TEXTURE, item.originalTexture);
     }
-    await item.token.document.update({ "texture.src": assignment.primaryImagePath });
+    await item.token.document.update({ "texture.src": src });
   }
   return targets;
 }

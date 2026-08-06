@@ -1,4 +1,4 @@
-import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { FILES_UPLOAD_PERMISSION, FRAMING_VIEW, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
 import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { buildTileData } from "../foundry/tile-placement-service.mjs";
@@ -16,6 +16,8 @@ import {
   decodeImageToRgba,
   hasSavedFramingViewAssets,
   hasSourceBackground,
+  normalizeFramingView,
+  resolveFramingViewAssetPath,
   resolveSubmissionOverlaySize
 } from "./dual-save.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
@@ -457,11 +459,11 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
 /**
  * Place an assignment as a Scene Tile.
  * @param {string} assignmentId Assignment id.
- * @param {{hidden?: boolean, name?: string}} [options] Placement options.
+ * @param {{hidden?: boolean, name?: string, framingView?: string}} [options] Placement options.
  * @returns {Promise<object>}
  */
-export async function placeAssignmentAsTile(assignmentId, { hidden = false, name = "" } = {}) {
-  const { prompt, assignment, scene } = requirePlacementContext(assignmentId);
+export async function placeAssignmentAsTile(assignmentId, { hidden = false, name = "", framingView = FRAMING_VIEW.PROMPT_CANVAS } = {}) {
+  const { prompt, assignment, scene, imagePath } = requirePlacementContext(assignmentId, framingView);
   const submission = getPendingSubmission(assignmentId);
   const tileWidth = assignment.assets.tileWidth ?? submissionTileWidth(submission, prompt);
   const tileHeight = assignment.assets.tileHeight ?? submissionTileHeight(submission, prompt);
@@ -472,7 +474,7 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false, name
     }));
   }
   const tileData = buildTileData({
-    src: assignment.primaryImagePath,
+    src: imagePath,
     name: String(name || assignment.assets.name || "").trim(),
     width: tileWidth,
     height: tileHeight,
@@ -508,16 +510,17 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false, name
  * @param {string} [options.name] Actor name for New Actor or Copy Actor.
  * @param {string} [options.actorUuid] Source world Actor UUID.
  * @param {boolean} [options.hidden=false] Whether the Token is hidden.
+ * @param {string} [options.framingView] Framing View whose saved raster is placed.
  * @returns {Promise<object>}
  */
-export async function placeAssignmentAsToken(assignmentId, { mode, name = "", actorUuid = "", hidden = false } = {}) {
-  const { prompt, assignment, scene } = requirePlacementContext(assignmentId);
+export async function placeAssignmentAsToken(assignmentId, { mode, name = "", actorUuid = "", hidden = false, framingView = FRAMING_VIEW.PROMPT_CANVAS } = {}) {
+  const { prompt, assignment, scene, imagePath } = requirePlacementContext(assignmentId, framingView);
   const validationError = mode === PLACE_MODES.TILE ? "invalidMode" : validatePlaceSelection({ mode, name, actorUuid });
   if ( validationError ) {
     throw new Error(game.i18n.localize(`DRAWING-PROMPTS.placeDialog.validation.${validationError}`));
   }
 
-  const src = assignment.primaryImagePath;
+  const src = imagePath;
   let actor;
   let createdActor = false;
   if ( mode === PLACE_MODES.NEW_ACTOR ) {
@@ -578,12 +581,13 @@ export async function placeAssignmentAsToken(assignmentId, { mode, name = "", ac
 /**
  * Apply a saved assignment drawing to the GM's currently controlled tokens.
  * @param {string} assignmentId Assignment id.
+ * @param {{framingView?: string}} [options] Framing View whose saved raster is applied.
  * @returns {Promise<object[]>} Token placeables that received the drawing.
  */
-export async function applyAssignmentTransform(assignmentId) {
-  const { assignment } = requireTransformContext(assignmentId);
+export async function applyAssignmentTransform(assignmentId, { framingView = FRAMING_VIEW.PROMPT_CANVAS } = {}) {
+  const { assignment, imagePath } = requireTransformContext(assignmentId, framingView);
   const { applyTransformToControlledTokens } = await import("../foundry/token-transform-service.mjs");
-  return applyTransformToControlledTokens(assignment);
+  return applyTransformToControlledTokens(assignment, { imagePath });
 }
 
 /**
@@ -1116,33 +1120,43 @@ function assertPromptOwner(prompt) {
 /**
  * Validate common server-side placement requirements.
  * @param {string} assignmentId Assignment id.
- * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment, scene: object}}
+ * @param {string} [framingView] Framing View whose asset is placed.
+ * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment, scene: object, imagePath: string}}
  */
-function requirePlacementContext(assignmentId) {
+function requirePlacementContext(assignmentId, framingView = FRAMING_VIEW.PROMPT_CANVAS) {
   assertGM();
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
-  if ( !assignment.primaryImagePath || !isSaveGateOpen(assignment) ) {
+  const imagePath = resolveFramingViewAssetPath(
+    assignment,
+    normalizeFramingView(framingView, { hasSource: hasSourceBackground(prompt) })
+  );
+  if ( !imagePath || !isSaveGateOpen(assignment) ) {
     throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
   }
   const scene = globalThis.canvas?.scene;
   if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));
-  return { prompt, assignment, scene };
+  return { prompt, assignment, scene, imagePath };
 }
 
 /**
  * Validate common server-side transform requirements without requiring an active Scene.
  * @param {string} assignmentId Assignment id.
- * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment}}
+ * @param {string} [framingView] Framing View whose asset is applied.
+ * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment, imagePath: string}}
  */
-function requireTransformContext(assignmentId) {
+function requireTransformContext(assignmentId, framingView = FRAMING_VIEW.PROMPT_CANVAS) {
   assertGM();
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
-  if ( !assignment.primaryImagePath || !isSaveGateOpen(assignment) ) {
+  const imagePath = resolveFramingViewAssetPath(
+    assignment,
+    normalizeFramingView(framingView, { hasSource: hasSourceBackground(prompt) })
+  );
+  if ( !imagePath || !isSaveGateOpen(assignment) ) {
     throw new Error(game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst"));
   }
-  return { prompt, assignment };
+  return { prompt, assignment, imagePath };
 }
 
 /**

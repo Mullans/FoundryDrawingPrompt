@@ -528,6 +528,29 @@
   outline-offset: 2px;
 }
 
+.drawing-prompts .dp-framing-view-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.drawing-prompts .dp-framing-view-label {
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+.drawing-prompts .dp-framing-view-toggle .dp-button-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.drawing-prompts .dp-framing-view-toggle button.is-selected {
+  box-shadow: inset 0 0 0 1px var(--dp-accent);
+  font-weight: 600;
+}
+
 .drawing-prompts .is-review .dp-preview-frame {
   min-height: 230px;
 }

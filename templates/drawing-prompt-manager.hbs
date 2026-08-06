@@ -133,6 +133,23 @@
         <fieldset>
           <legend>{{selectedPreviewHeading}}</legend>
 
+          {{#if framingViewToggle.visible}}
+          <div class="dp-framing-view-toggle" role="group" aria-label="{{framingViewToggle.label}}">
+            <span class="dp-framing-view-label">{{framingViewToggle.label}}</span>
+            <div class="dp-button-strip">
+              {{#each framingViewToggle.options}}
+              <button type="button"
+                      data-action="setFramingView"
+                      data-framing-view="{{this.value}}"
+                      class="{{#if this.selected}}is-selected{{/if}}"
+                      aria-pressed="{{this.selected}}">
+                <span>{{this.label}}</span>
+              </button>
+              {{/each}}
+            </div>
+          </div>
+          {{/if}}
+
           <div class="dp-preview-frame">
             {{#if selectedSnapshot}}
             <img src="{{selectedSnapshot}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.assignmentPreview'}}">

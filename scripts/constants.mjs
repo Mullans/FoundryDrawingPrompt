@@ -27,6 +27,15 @@ export const FIT_MODE = Object.freeze({
   STRETCH: "stretch"
 });
 
+/**
+ * GM review Framing View: Prompt canvas (player-facing) or Source Framing (full source space).
+ * Client-session selection; does not re-arm the Save gate.
+ */
+export const FRAMING_VIEW = Object.freeze({
+  PROMPT_CANVAS: "prompt-canvas",
+  SOURCE: "source"
+});
+
 /** Player-local Canvas chrome under the Framed background (editing aid only). */
 export const CANVAS_CHROME = Object.freeze({
   WHITE: "white",
