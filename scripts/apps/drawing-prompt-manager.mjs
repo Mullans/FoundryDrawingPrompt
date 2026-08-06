@@ -1,5 +1,18 @@
 import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
-import { computeBackgroundLayout } from "../drawing/background-layout.mjs";
+import {
+  FRAMING_ZOOM_STEP,
+  drawFramingEditor,
+  panFraming,
+  resetFraming,
+  resolveDraftFraming,
+  zoomFraming
+} from "../drawing/draft-framing-editor.mjs";
+import { computeFramingGeometry } from "../drawing/prompt-framing.mjs";
+import { defaultFramingForBackground, drawFramedBackground } from "../drawing/framed-background.mjs";
+import {
+  classifyWheelGesture,
+  isPanModifierActive
+} from "../drawing/player-navigation.mjs";
 import { defaultAssetFolder, normalizePath } from "../prompts/asset-service.mjs";
 import {
   blankBackground,
@@ -61,7 +74,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       openPlaceDialog: DrawingPromptManager.#onOpenPlaceDialog,
       applyTransform: DrawingPromptManager.#onApplyTransform,
       finishPrompt: DrawingPromptManager.#onFinishPrompt,
-      switchPrompt: DrawingPromptManager.#onSwitchPrompt
+      switchPrompt: DrawingPromptManager.#onSwitchPrompt,
+      framingZoomIn: DrawingPromptManager.#onFramingZoomIn,
+      framingZoomOut: DrawingPromptManager.#onFramingZoomOut,
+      framingReset: DrawingPromptManager.#onFramingReset
     }
   };
 
@@ -147,13 +163,22 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   */
   #previewBackgroundImage = null;
   #previewBackgroundLoad = null;
+  #framingEditorAttached = false;
+  #framingEditorHandlers = null;
+  #framingResizeObserver = null;
+  #framingViewportEl = null;
+  #framingPanPointerId = null;
+  #framingPanLast = null;
+  #framingSpaceHeld = false;
   #onFormInput = () => {
     this.#syncDraftFromForm();
     this.#updateBackgroundPreview();
+    this.#updateFramingEditor();
   };
   #onFormChange = event => {
     this.#syncDraftFromForm();
     this.#updateBackgroundPreview();
+    this.#updateFramingEditor();
     if ( event.target?.name === "selectedUserIds" ) this.#updateSelectedCount();
   };
 
@@ -249,6 +274,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @override */
   async _onRender(context, options) {
+    this.#destroyFramingEditor();
     await super._onRender(context, options);
     const form = this.#formElement();
     if ( form && !this.#formListenersAttached ) {
@@ -258,12 +284,15 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     }
     this.#updateBackgroundPreview();
     void this.#ensurePreviewBackgroundImage();
+    this.#updateFramingEditor();
+    this.#ensureFramingEditor();
     this.#refreshExpiryTicker();
   }
 
   /** @override */
   _onClose(options) {
     super._onClose(options);
+    this.#destroyFramingEditor();
     this.#clearExpiryTicker();
     if ( this.constructor.#instance === this ) this.constructor.#instance = null;
   }
@@ -354,7 +383,14 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         path: loaded.path,
         fitMode: this.draft.background.fitMode || setting(SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_WIDTH),
         naturalWidth: loaded.naturalWidth,
-        naturalHeight: loaded.naturalHeight
+        naturalHeight: loaded.naturalHeight,
+        framing: defaultFramingForBackground({
+          sourceType,
+          path: loaded.path,
+          naturalWidth: loaded.naturalWidth,
+          naturalHeight: loaded.naturalHeight
+        }),
+        framedPath: null
       };
       this.#previewBackgroundImage = { path: loaded.path, img: loaded.img };
       const dims = resolveCanvasSize(this.draft.canvasWidth, this.draft.canvasHeight, loaded.naturalWidth, loaded.naturalHeight);
@@ -467,15 +503,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Live-repaint the WYSIWYG background preview canvas to match the current draft
-   * dimensions, fit mode, and background image without a full body rerender. The
-   * canvas element's width/height attributes are set to the draft canvas size, giving
-   * it a correct intrinsic aspect ratio as a replaced element (CSS max-width/max-height
-   * then letterboxes it reliably, unlike aspect-ratio on a non-replaced div). The
-   * background is composited with the same {@link computeBackgroundLayout} math
-   * {@link DrawingEngine#renderBackground} (drawing-engine.mjs) uses for the player
-   * canvas, so the two can never drift. A blank/missing background simply leaves the
-   * canvas transparent, letting the checkerboard CSS backdrop show through.
+   * Live-repaint the player-preview canvas at Prompt canvas dimensions using Prompt
+   * Framing + Fit mode. Uses the same {@link drawFramedBackground} path as delivery.
    * @returns {void}
    */
   #updateBackgroundPreview() {
@@ -491,8 +520,265 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const { path, naturalWidth, naturalHeight, fitMode } = this.draft.background;
     const img = path && this.#previewBackgroundImage?.path === path ? this.#previewBackgroundImage.img : null;
     if ( !img ) return;
-    const rect = computeBackgroundLayout(canvasWidth, canvasHeight, naturalWidth, naturalHeight, fitMode);
-    ctx.drawImage(img, rect.dx, rect.dy, rect.dw, rect.dh);
+    const framing = resolveDraftFraming(this.draft.background);
+    if ( !framing ) return;
+    const geometry = computeFramingGeometry({
+      sourceWidth: naturalWidth,
+      sourceHeight: naturalHeight,
+      framing,
+      fitMode,
+      canvasWidth,
+      canvasHeight
+    });
+    drawFramedBackground(ctx, img, geometry);
+  }
+
+  /**
+   * Repaint the Prompt Framing editor viewport over the source image.
+   * @returns {void}
+   */
+  #updateFramingEditor() {
+    if ( this.activePrompt ) return;
+    const canvasEl = this.element?.querySelector("[data-dp-framing-viewport]");
+    if ( !canvasEl ) return;
+    const { path, naturalWidth, naturalHeight } = this.draft.background;
+    const img = path && this.#previewBackgroundImage?.path === path ? this.#previewBackgroundImage.img : null;
+    if ( !img ) return;
+    const framing = resolveDraftFraming(this.draft.background);
+    if ( !framing ) return;
+    const viewport = canvasEl.parentElement?.getBoundingClientRect();
+    const viewportWidth = Math.max(1, Math.round(viewport?.width || canvasEl.clientWidth || 1));
+    const viewportHeight = Math.max(1, Math.round(viewport?.height || canvasEl.clientHeight || 1));
+    canvasEl.width = viewportWidth;
+    canvasEl.height = viewportHeight;
+    drawFramingEditor(
+      canvasEl.getContext("2d"),
+      img,
+      framing,
+      naturalWidth,
+      naturalHeight,
+      viewportWidth,
+      viewportHeight
+    );
+  }
+
+  /**
+   * Apply a Prompt Framing rect to the draft and refresh previews.
+   * @param {{x: number, y: number, width: number, height: number}} framing Framing rect.
+   * @returns {void}
+   */
+  #applyDraftFraming(framing) {
+    if ( this.activePrompt || !this.draft.background.path ) return;
+    this.draft.background.framing = { ...framing };
+    this.#updateFramingEditor();
+    this.#updateBackgroundPreview();
+  }
+
+  /**
+   * Resolve the framing editor viewport canvas and its display size.
+   * @returns {{canvas: HTMLCanvasElement, width: number, height: number}|null}
+   */
+  #framingViewportMetrics() {
+    const canvas = this.element?.querySelector("[data-dp-framing-viewport]");
+    if ( !canvas ) return null;
+    return {
+      canvas,
+      width: Math.max(1, canvas.width || canvas.clientWidth || 1),
+      height: Math.max(1, canvas.height || canvas.clientHeight || 1)
+    };
+  }
+
+  /**
+   * Attach pan/zoom handlers to the Prompt Framing editor viewport.
+   * @returns {void}
+   */
+  #ensureFramingEditor() {
+    if ( this.activePrompt || this.#framingEditorAttached ) return;
+    const root = this.element?.querySelector("[data-dp-framing-editor]");
+    const viewport = root?.querySelector(".dp-framing-viewport");
+    if ( !viewport ) return;
+
+    const onWheel = event => this.#onFramingWheel(event);
+    const onPointerDown = event => this.#onFramingPointerDown(event);
+    const onPointerMove = event => this.#onFramingPointerMove(event);
+    const onPointerUp = event => this.#onFramingPointerUp(event);
+    const onDblClick = event => {
+      event.preventDefault();
+      this.#resetDraftFraming();
+    };
+    const onKeyDown = event => {
+      if ( event.code !== "Space" || event.repeat ) return;
+      const target = event.target;
+      if ( target?.closest?.("input, textarea, select, [contenteditable='true']") ) return;
+      this.#framingSpaceHeld = true;
+      if ( this.element?.contains(target) || target === document.body ) event.preventDefault();
+    };
+    const onKeyUp = event => {
+      if ( event.code === "Space" ) this.#framingSpaceHeld = false;
+    };
+    const onBlur = () => {
+      this.#framingSpaceHeld = false;
+      this.#endFramingPan();
+    };
+
+    this.#framingEditorHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur };
+    this.#framingViewportEl = viewport;
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    viewport.addEventListener("pointerdown", onPointerDown);
+    viewport.addEventListener("pointermove", onPointerMove);
+    viewport.addEventListener("pointerup", onPointerUp);
+    viewport.addEventListener("pointercancel", onPointerUp);
+    viewport.addEventListener("dblclick", onDblClick);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    if ( typeof ResizeObserver !== "undefined" ) {
+      this.#framingResizeObserver = new ResizeObserver(() => this.#updateFramingEditor());
+      this.#framingResizeObserver.observe(viewport);
+    }
+    this.#framingEditorAttached = true;
+  }
+
+  /**
+   * Tear down Prompt Framing editor listeners.
+   * @returns {void}
+   */
+  #destroyFramingEditor() {
+    this.#endFramingPan();
+    const viewport = this.#framingViewportEl;
+    const handlers = this.#framingEditorHandlers;
+    if ( viewport && handlers ) {
+      viewport.removeEventListener("wheel", handlers.onWheel);
+      viewport.removeEventListener("pointerdown", handlers.onPointerDown);
+      viewport.removeEventListener("pointermove", handlers.onPointerMove);
+      viewport.removeEventListener("pointerup", handlers.onPointerUp);
+      viewport.removeEventListener("pointercancel", handlers.onPointerUp);
+      viewport.removeEventListener("dblclick", handlers.onDblClick);
+    }
+    if ( handlers ) {
+      window.removeEventListener("keydown", handlers.onKeyDown);
+      window.removeEventListener("keyup", handlers.onKeyUp);
+      window.removeEventListener("blur", handlers.onBlur);
+    }
+    this.#framingResizeObserver?.disconnect();
+    this.#framingResizeObserver = null;
+    this.#framingEditorHandlers = null;
+    this.#framingViewportEl = null;
+    this.#framingEditorAttached = false;
+    this.#framingSpaceHeld = false;
+  }
+
+  /**
+   * Reset Prompt Framing to the full source image.
+   * @returns {void}
+   */
+  #resetDraftFraming() {
+    const { naturalWidth, naturalHeight, path } = this.draft.background;
+    if ( !path || !(Number(naturalWidth) > 0 && Number(naturalHeight) > 0) ) return;
+    this.#applyDraftFraming(resetFraming(naturalWidth, naturalHeight));
+  }
+
+  /**
+   * Zoom the draft Prompt Framing about the viewport center.
+   * @param {number} factor Zoom factor (>1 zooms in).
+   * @returns {void}
+   */
+  #zoomDraftFraming(factor) {
+    const framing = resolveDraftFraming(this.draft.background);
+    const metrics = this.#framingViewportMetrics();
+    if ( !framing || !metrics ) return;
+    this.#applyDraftFraming(zoomFraming(framing, {
+      factor,
+      focusX: metrics.width / 2,
+      focusY: metrics.height / 2,
+      viewportWidth: metrics.width,
+      viewportHeight: metrics.height
+    }));
+  }
+
+  /**
+   * Handle wheel / trackpad gestures on the framing editor.
+   * @param {WheelEvent} event Wheel event.
+   * @returns {void}
+   */
+  #onFramingWheel(event) {
+    const framing = resolveDraftFraming(this.draft.background);
+    const metrics = this.#framingViewportMetrics();
+    if ( !framing || !metrics ) return;
+    event.preventDefault();
+    const gesture = classifyWheelGesture(event);
+    if ( gesture.type === "pan" ) {
+      this.#applyDraftFraming(panFraming(framing, {
+        dxDisplay: gesture.dx,
+        dyDisplay: gesture.dy,
+        viewportWidth: metrics.width,
+        viewportHeight: metrics.height
+      }));
+      return;
+    }
+    const rect = metrics.canvas.getBoundingClientRect();
+    this.#applyDraftFraming(zoomFraming(framing, {
+      factor: gesture.factor,
+      focusX: event.clientX - rect.left,
+      focusY: event.clientY - rect.top,
+      viewportWidth: metrics.width,
+      viewportHeight: metrics.height
+    }));
+  }
+
+  /**
+   * Begin a framing-editor pan drag.
+   * @param {PointerEvent} event Pointer event.
+   * @returns {void}
+   */
+  #onFramingPointerDown(event) {
+    if ( !isPanModifierActive({ button: event.button, spaceHeld: this.#framingSpaceHeld }) ) return;
+    if ( !resolveDraftFraming(this.draft.background) ) return;
+    event.preventDefault();
+    this.#framingPanPointerId = event.pointerId;
+    this.#framingPanLast = { x: event.clientX, y: event.clientY };
+    event.currentTarget?.setPointerCapture?.(event.pointerId);
+  }
+
+  /**
+   * Continue a framing-editor pan drag.
+   * @param {PointerEvent} event Pointer event.
+   * @returns {void}
+   */
+  #onFramingPointerMove(event) {
+    if ( this.#framingPanPointerId !== event.pointerId || !this.#framingPanLast ) return;
+    const framing = resolveDraftFraming(this.draft.background);
+    const metrics = this.#framingViewportMetrics();
+    if ( !framing || !metrics ) return;
+    const dxDisplay = event.clientX - this.#framingPanLast.x;
+    const dyDisplay = event.clientY - this.#framingPanLast.y;
+    this.#framingPanLast = { x: event.clientX, y: event.clientY };
+    this.#applyDraftFraming(panFraming(framing, {
+      dxDisplay,
+      dyDisplay,
+      viewportWidth: metrics.width,
+      viewportHeight: metrics.height
+    }));
+  }
+
+  /**
+   * End a framing-editor pan drag.
+   * @param {PointerEvent} [event] Pointer event.
+   * @returns {void}
+   */
+  #onFramingPointerUp(event) {
+    if ( event && this.#framingPanPointerId !== event.pointerId ) return;
+    event?.currentTarget?.releasePointerCapture?.(this.#framingPanPointerId);
+    this.#endFramingPan();
+  }
+
+  /**
+   * Clear framing-editor pan drag state.
+   * @returns {void}
+   */
+  #endFramingPan() {
+    this.#framingPanPointerId = null;
+    this.#framingPanLast = null;
   }
 
   /**
@@ -514,6 +800,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         if ( this.#previewBackgroundLoad?.promise !== promise || this.draft.background.path !== path ) return;
         this.#previewBackgroundImage = { path, img: loaded.img };
         this.#updateBackgroundPreview();
+        this.#updateFramingEditor();
       } catch {
         // Selection-time validation already reports load errors; keep restored drafts blank if the asset disappeared.
       } finally {
@@ -595,6 +882,24 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       selected: value === this.draft.background.fitMode,
       label: game.i18n.localize(`DRAWING-PROMPTS.choices.fitMode.${fitModeKey(value)}`)
     }));
+  }
+
+  /**
+   * @this {DrawingPromptManager}
+   * @returns {void}
+   */
+  static #onFramingZoomIn() {
+    this.#zoomDraftFraming(FRAMING_ZOOM_STEP);
+  }
+
+  /** @this {DrawingPromptManager} */
+  static #onFramingZoomOut() {
+    this.#zoomDraftFraming(1 / FRAMING_ZOOM_STEP);
+  }
+
+  /** @this {DrawingPromptManager} */
+  static #onFramingReset() {
+    this.#resetDraftFraming();
   }
 
   /**
