@@ -91,6 +91,7 @@ export function registerSettings() {
       [FIT_MODE.CENTER]: "DRAWING-PROMPTS.choices.fitMode.center",
       [FIT_MODE.FIT_WIDTH]: "DRAWING-PROMPTS.choices.fitMode.fitWidth",
       [FIT_MODE.FIT_HEIGHT]: "DRAWING-PROMPTS.choices.fitMode.fitHeight",
+      [FIT_MODE.FIT_CANVAS]: "DRAWING-PROMPTS.choices.fitMode.fitCanvas",
       [FIT_MODE.STRETCH]: "DRAWING-PROMPTS.choices.fitMode.stretch"
     },
     default: FIT_MODE.FIT_WIDTH

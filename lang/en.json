@@ -45,6 +45,7 @@
   "DRAWING-PROMPTS.choices.fitMode.center": "Center",
   "DRAWING-PROMPTS.choices.fitMode.fitWidth": "Fit width",
   "DRAWING-PROMPTS.choices.fitMode.fitHeight": "Fit height",
+  "DRAWING-PROMPTS.choices.fitMode.fitCanvas": "Fit canvas",
   "DRAWING-PROMPTS.choices.fitMode.stretch": "Stretch",
   "DRAWING-PROMPTS.choices.exportFormat.webp": "WebP",
   "DRAWING-PROMPTS.choices.exportFormat.png": "PNG",

@@ -1356,6 +1356,7 @@ function fitModeKey(value) {
     [FIT_MODE.CENTER]: "center",
     [FIT_MODE.FIT_WIDTH]: "fitWidth",
     [FIT_MODE.FIT_HEIGHT]: "fitHeight",
+    [FIT_MODE.FIT_CANVAS]: "fitCanvas",
     [FIT_MODE.STRETCH]: "stretch"
   }[value] ?? "fitWidth";
 }

@@ -27,6 +27,10 @@ export function computeBackgroundLayout(canvasW, canvasH, naturalW, naturalH, fi
   } else if ( fitMode === FIT_MODE.FIT_HEIGHT ) {
     dh = canvasHeight;
     dw = imageWidth * (canvasHeight / imageHeight);
+  } else if ( fitMode === FIT_MODE.FIT_CANVAS ) {
+    const scale = Math.min(canvasWidth / imageWidth, canvasHeight / imageHeight);
+    dw = imageWidth * scale;
+    dh = imageHeight * scale;
   }
 
   return {

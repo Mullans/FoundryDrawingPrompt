@@ -23,6 +23,7 @@ export const FIT_MODE = Object.freeze({
   CENTER: "center",
   FIT_WIDTH: "fit-width",
   FIT_HEIGHT: "fit-height",
+  FIT_CANVAS: "fit-canvas",
   STRETCH: "stretch"
 });
 
