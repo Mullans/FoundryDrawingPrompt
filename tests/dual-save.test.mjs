@@ -9,7 +9,8 @@ import {
   computeDualSaveGeometry,
   hasSavedFramingViewAssets,
   hasSourceBackground,
-  resolveFullFilename
+  resolveFullFilename,
+  resolveSubmissionOverlaySize
 } from "../scripts/prompts/dual-save.mjs";
 import { isSaveGateOpen } from "../scripts/prompts/transitions.mjs";
 import { uniqueDrawingAssetFilenames } from "../scripts/prompts/naming-service.mjs";
@@ -60,6 +61,50 @@ test("computeDualSaveGeometry uses prompt framing and natural source dimensions"
   assert.equal(geometry.sourceWidth, 4);
   assert.equal(geometry.sourceHeight, 4);
   assert.deepEqual(geometry.framing, { x: 1, y: 1, width: 2, height: 2 });
+});
+
+test("resolveSubmissionOverlaySize prefers original (pre-wire-scale) dimensions", () => {
+  const size = resolveSubmissionOverlaySize(
+    { width: 256, height: 128, originalWidth: 1024, originalHeight: 512, wireScaled: true },
+    { canvasWidth: 800, canvasHeight: 600 }
+  );
+  assert.deepEqual(size, { width: 1024, height: 512 });
+});
+
+test("resolveSubmissionOverlaySize falls back to width then canvas", () => {
+  assert.deepEqual(
+    resolveSubmissionOverlaySize({ width: 400, height: 300 }, { canvasWidth: 1024, canvasHeight: 768 }),
+    { width: 400, height: 300 }
+  );
+  assert.deepEqual(
+    resolveSubmissionOverlaySize({}, { canvasWidth: 1024, canvasHeight: 768 }),
+    { width: 1024, height: 768 }
+  );
+});
+
+test("bakeDualRasters remaps wire-scaled overlay pixels into full Prompt canvas space", () => {
+  // Prompt canvas 4×4, full source, stretch; wire overlay 2×2 with ink at (1,1).
+  // Without scale-up mapping that pixel would land at source (1,1); with wire→canvas
+  // map it centers on canvas (2.5,2.5) → source (3,3) rounded.
+  const geometry = computeDualSaveGeometry({
+    canvasWidth: 4,
+    canvasHeight: 4,
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      fitMode: FIT_MODE.STRETCH,
+      naturalWidth: 4,
+      naturalHeight: 4,
+      framing: { x: 0, y: 0, width: 4, height: 4 }
+    }
+  });
+
+  const overlay = blankRgba(2, 2);
+  setPixel(overlay, 2, 1, 1, [0, 255, 0, 255]);
+  const { source } = bakeDualRasters({ geometry, overlay });
+
+  assert.deepEqual(getPixel(source, 4, 1, 1), [0, 0, 0, 0]);
+  assert.deepEqual(getPixel(source, 4, 3, 3), [0, 255, 0, 255]);
 });
 
 test("dual save remaps overlay ink into source natural resolution", () => {

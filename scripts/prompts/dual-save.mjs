@@ -66,6 +66,23 @@ export function hasSavedFramingViewAssets(assignment) {
 }
 
 /**
+ * Resolve the Prompt canvas size a Submission overlay should occupy when baking
+ * Source Framing. Prefer original (pre-wire-scale) dimensions so transit
+ * downscales still map as if drawn on the full Prompt canvas.
+ * @param {object|null|undefined} submission Submission payload.
+ * @param {{canvasWidth?: number, canvasHeight?: number}|null|undefined} prompt Prompt.
+ * @returns {{width: number, height: number}}
+ */
+export function resolveSubmissionOverlaySize(submission, prompt) {
+  const width = Number(submission?.originalWidth ?? submission?.width ?? prompt?.canvasWidth);
+  const height = Number(submission?.originalHeight ?? submission?.height ?? prompt?.canvasHeight);
+  return {
+    width: Number.isFinite(width) && width > 0 ? Math.floor(width) : 1,
+    height: Number.isFinite(height) && height > 0 ? Math.floor(height) : 1
+  };
+}
+
+/**
  * Bake and encode the Source Framing raster from a Prompt-canvas overlay buffer.
  * @param {object} options Options.
  * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay Overlay RGBA buffer.

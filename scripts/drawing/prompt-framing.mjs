@@ -160,6 +160,10 @@ export function bakeDualRasters({ geometry, overlay } = {}) {
 
   const overlayWidth = Number(overlay?.width) || canvasWidth;
   const overlayHeight = Number(overlay?.height) || canvasHeight;
+  // Wire-scaled overlays are smaller than the Prompt canvas; map in canvas space
+  // so Source Framing remapping stays correct after compress/downscale for transit.
+  const toCanvasX = canvasWidth / Math.max(1, overlayWidth);
+  const toCanvasY = canvasHeight / Math.max(1, overlayHeight);
   const data = overlay?.data;
   if ( !data ) return { promptCanvas, source };
 
@@ -169,7 +173,9 @@ export function bakeDualRasters({ geometry, overlay } = {}) {
       const alpha = data[srcOffset + 3];
       if ( !alpha ) continue;
 
-      const mapped = mapPromptToSource(geometry, px, py);
+      const canvasX = (px + 0.5) * toCanvasX - 0.5;
+      const canvasY = (py + 0.5) * toCanvasY - 0.5;
+      const mapped = mapPromptToSource(geometry, canvasX, canvasY);
       const sx = Math.round(mapped.x);
       const sy = Math.round(mapped.y);
       if ( sx < 0 || sy < 0 || sx >= sourceWidth || sy >= sourceHeight ) continue;

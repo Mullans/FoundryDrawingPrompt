@@ -15,7 +15,8 @@ import {
   clearFramingViewAssets,
   decodeImageToRgba,
   hasSavedFramingViewAssets,
-  hasSourceBackground
+  hasSourceBackground,
+  resolveSubmissionOverlaySize
 } from "./dual-save.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
@@ -1306,13 +1307,14 @@ async function uploadStagedPath(dir, filename, path, receiptTs) {
 
 /**
  * Load a submission overlay as an RGBA buffer in Prompt canvas coordinates.
+ * Wire-scaled submissions are decoded to originalWidth/originalHeight so Source
+ * Framing bake maps strokes as if on the full Prompt canvas.
  * @param {object} submission Submission payload.
  * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
  * @returns {Promise<{width: number, height: number, data: Uint8ClampedArray}>}
  */
 async function loadSubmissionOverlayRgba(submission, prompt) {
-  const width = Number(submission.width) || prompt.canvasWidth;
-  const height = Number(submission.height) || prompt.canvasHeight;
+  const { width, height } = resolveSubmissionOverlaySize(submission, prompt);
   if ( isStagedSubmission(submission) ) {
     const blob = await fetchStagedBlob(submission.staged.overlayPath, submission.receiptTs);
     const objectUrl = URL.createObjectURL(blob);
