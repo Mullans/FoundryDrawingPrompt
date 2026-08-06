@@ -1,4 +1,5 @@
 import { BG_SOURCE, FIT_MODE, STATUS } from "../constants.mjs";
+import { assertBackgroundUnlocked } from "./framed-delivery.mjs";
 import { normalizeTimerState } from "./timer-service.mjs";
 
 const TERMINAL_STATUSES = new Set([STATUS.SUBMITTED, STATUS.REJECTED, STATUS.CANCELLED]);
@@ -236,7 +237,9 @@ export class DrawingPrompt {
       path: data.background?.path ?? null,
       fitMode: data.background?.fitMode ?? FIT_MODE.FIT_WIDTH,
       naturalWidth: data.background?.naturalWidth ?? null,
-      naturalHeight: data.background?.naturalHeight ?? null
+      naturalHeight: data.background?.naturalHeight ?? null,
+      framing: normalizeStoredFraming(data.background?.framing),
+      framedPath: data.background?.framedPath ?? null
     };
     this.timerSeconds = data.timerSeconds ?? null;
     this.createdAt = data.createdAt ?? Date.now();
@@ -335,6 +338,24 @@ export class DrawingPrompt {
   }
 
   /**
+   * Whether Prompt Framing and Fit mode are locked after first send.
+   * @returns {boolean}
+   */
+  get isBackgroundLocked() {
+    return this.sentAt != null;
+  }
+
+  /**
+   * Apply background changes, rejecting locked Prompt Framing and Fit mode edits.
+   * @param {object} changes Partial background update.
+   * @returns {void}
+   */
+  applyBackgroundUpdate(changes = {}) {
+    assertBackgroundUnlocked(changes, this.background, this);
+    Object.assign(this.background, changes);
+  }
+
+  /**
    * Whether any assignment is still active.
    * @returns {boolean}
    */
@@ -368,4 +389,19 @@ export class DrawingPrompt {
   assignmentForUser(userId) {
     return Object.values(this.assignments).find(assignment => assignment.userId === userId) ?? null;
   }
+}
+
+/**
+ * @param {{x?: number, y?: number, width?: number, height?: number}|null|undefined} framing
+ * @returns {{x: number, y: number, width: number, height: number}|null}
+ */
+function normalizeStoredFraming(framing) {
+  if ( framing == null ) return null;
+  if ( typeof framing !== "object" ) return null;
+  return {
+    x: Number(framing.x) || 0,
+    y: Number(framing.y) || 0,
+    width: Number(framing.width) || 0,
+    height: Number(framing.height) || 0
+  };
 }

@@ -16,6 +16,8 @@ const TEST_FILES = [
   "tests/phase-d-helpers.test.mjs",
   "tests/persistence-service.test.mjs",
   "tests/player-navigation.test.mjs",
+  "tests/framed-background.test.mjs",
+  "tests/framed-delivery.test.mjs",
   "tests/prompt-framing.test.mjs",
   "tests/prompt-service.test.mjs",
   "tests/prompt-models.test.mjs",

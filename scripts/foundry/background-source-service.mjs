@@ -127,7 +127,9 @@ export function blankBackground() {
     path: null,
     fitMode: settingDefault(SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_WIDTH),
     naturalWidth: null,
-    naturalHeight: null
+    naturalHeight: null,
+    framing: null,
+    framedPath: null
   };
 }
 

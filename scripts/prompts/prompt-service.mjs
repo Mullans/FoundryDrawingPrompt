@@ -9,6 +9,7 @@ import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, pendingDir, 
 import { getAssignment as getClientAssignment, updateStatus, updateTimerState, upsertAssignment } from "./client-store.mjs";
 import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
 import { defaultAssignmentAssetName, promptAssetFolderName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
+import { prepareFramedBackgroundForSend, serializeBackgroundForPlayer } from "./framed-delivery.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
 import { adjustTimer, evaluateSubmissionTiming, normalizeTimerState, pauseTimer, resetTimer, resumeTimer, stopTimer } from "./timer-service.mjs";
@@ -107,7 +108,7 @@ function payloadFor(prompt, assignment) {
       drawingName: prompt.drawingName,
       canvasWidth: prompt.canvasWidth,
       canvasHeight: prompt.canvasHeight,
-      background: { ...prompt.background },
+      background: serializeBackgroundForPlayer(prompt),
       sentAt: prompt.sentAt,
       timerSeconds: prompt.timerSeconds,
       ...prompt.timerState
@@ -158,6 +159,7 @@ export async function createAndSendPrompt(draft) {
   }, draft.selectedUserIds);
 
   await createPromptEntry(prompt);
+  await prepareFramedBackgroundForSend(prompt);
   // Prompt creation requires a full save to establish prompt-level and all assignment state.
   await savePrompt(prompt);
   Hooks.callAll("drawing-prompts.promptCreated", prompt);
@@ -170,7 +172,7 @@ export async function createAndSendPrompt(draft) {
     }
   }
 
-  const deliveries = deliverPromptAssignments(prompt);
+  const deliveries = await deliverPromptAssignments(prompt);
   if ( draft.awaitDeliveries ) await deliveries;
   return prompt;
 }
@@ -258,11 +260,24 @@ async function broadcastTimerState(prompt) {
 }
 
 /**
+ * Ensure a sent prompt has a baked Framed background before player delivery.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<void>}
+ */
+async function ensureFramedBackgroundDelivered(prompt) {
+  const background = prompt.background ?? {};
+  if ( !background.path || background.framedPath ) return;
+  await prepareFramedBackgroundForSend(prompt);
+  await savePrompt(prompt);
+}
+
+/**
  * Deliver active assignments for a prompt and return their settlement promise.
  * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
  * @returns {Promise<PromiseSettledResult<void>[]>}
  */
-function deliverPromptAssignments(prompt) {
+async function deliverPromptAssignments(prompt) {
+  await ensureFramedBackgroundDelivered(prompt);
   const deliveries = Object.values(prompt.assignments)
     .filter(assignment => game.users.get(assignment.userId)?.active)
     .map(assignment => emit.openDrawingPrompt(assignment.userId, payloadFor(prompt, assignment))
@@ -627,6 +642,7 @@ export async function reopenAssignment(assignmentId, userId = null) {
   pendingSubmissions.delete(assignment.id);
   clearCachedSubmission(assignment.id);
   await savePrompt(prompt, { assignmentOnly: assignment.id });
+  await ensureFramedBackgroundDelivered(prompt);
   if ( game.users.get(assignment.userId)?.active ) await emit.reopenDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentReopened", prompt, assignment);
@@ -649,6 +665,7 @@ export async function resendAssignment(assignmentId) {
     return;
   }
   if ( game.users.get(assignment.userId)?.active ) {
+    await ensureFramedBackgroundDelivered(prompt);
     await emit.openDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
     Hooks.callAll("drawing-prompts.assignmentSent", prompt, assignment);
   }
