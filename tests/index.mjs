@@ -18,6 +18,7 @@ const TEST_FILES = [
   "tests/player-navigation.test.mjs",
   "tests/framed-background.test.mjs",
   "tests/framed-delivery.test.mjs",
+  "tests/dual-save.test.mjs",
   "tests/prompt-framing.test.mjs",
   "tests/prompt-service.test.mjs",
   "tests/prompt-models.test.mjs",
