@@ -134,6 +134,7 @@
 .drawing-prompts .dp-list-row h2,
 .drawing-prompts .dp-color-control span,
 .drawing-prompts .dp-size-control span,
+.drawing-prompts .dp-chrome-control span,
 .drawing-prompts .dp-timer span {
   margin: 0;
   color: var(--dp-text-muted);
@@ -435,7 +436,8 @@
 
 .drawing-prompts .dp-background-preview,
 .drawing-prompts .dp-preview-frame,
-.drawing-prompts .dp-canvas-box {
+.drawing-prompts .dp-canvas-box,
+.drawing-prompts .dp-canvas-box.dp-chrome-checkerboard {
   background-color: var(--dp-checker-b);
   background-image:
     linear-gradient(45deg, var(--dp-checker-a) 25%, transparent 25%),
@@ -445,6 +447,17 @@
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
   background-repeat: repeat;
   background-size: 16px 16px;
+}
+
+/* Player Canvas chrome: CSS-only under-layer; never painted into export bitmaps. */
+.drawing-prompts .dp-canvas-box.dp-chrome-white {
+  background-color: #ffffff;
+  background-image: none;
+}
+
+.drawing-prompts .dp-canvas-box.dp-chrome-black {
+  background-color: #000000;
+  background-image: none;
 }
 
 /*
@@ -713,7 +726,8 @@
 }
 
 .drawing-prompts .dp-color-control,
-.drawing-prompts .dp-size-control {
+.drawing-prompts .dp-size-control,
+.drawing-prompts .dp-chrome-control {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -721,7 +735,8 @@
 }
 
 .drawing-prompts .dp-color-control span,
-.drawing-prompts .dp-size-control span {
+.drawing-prompts .dp-size-control span,
+.drawing-prompts .dp-chrome-control span {
   white-space: nowrap;
 }
 
@@ -735,6 +750,11 @@
 .drawing-prompts .dp-size-input,
 .drawing-prompts .dp-opacity-input {
   width: 128px;
+}
+
+.drawing-prompts .dp-chrome-input {
+  min-width: 9rem;
+  max-width: 14rem;
 }
 
 .drawing-prompts .dp-size-value,
@@ -916,7 +936,8 @@
 
   .drawing-prompts .dp-drawing-toolbar,
   .drawing-prompts .dp-color-control,
-  .drawing-prompts .dp-size-control {
+  .drawing-prompts .dp-size-control,
+  .drawing-prompts .dp-chrome-control {
     align-items: stretch;
   }
 }

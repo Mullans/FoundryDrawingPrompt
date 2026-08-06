@@ -43,6 +43,15 @@
       <output class="dp-opacity-value">{{brushOpacityPercent}}</output>
     </label>
 
+    <label class="dp-chrome-control">
+      <span>{{localize "DRAWING-PROMPTS.player.fields.canvasChrome"}}</span>
+      <select class="dp-chrome-input">
+        {{#each canvasChromeOptions}}
+        <option value="{{value}}" {{#if selected}}selected{{/if}}>{{localize label}}</option>
+        {{/each}}
+      </select>
+    </label>
+
     <div class="dp-tool-group">
       <button type="button" data-action="clearLayer" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.actions.clear"}}">
         <i class="fa-solid fa-trash" inert></i>
@@ -60,7 +69,7 @@
   </div>
 
   <section class="dp-canvas-wrap">
-    <div class="dp-canvas-box">
+    <div class="dp-canvas-box {{canvasChromeClass}}">
       {{#if backgroundError}}
       <p class="dp-canvas-error">{{backgroundError}}</p>
       {{else}}

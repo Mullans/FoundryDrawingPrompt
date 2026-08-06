@@ -1,4 +1,4 @@
-import { FIT_MODE, INTERNAL, MODULE_ID, SETTINGS } from "./constants.mjs";
+import { CANVAS_CHROME, FIT_MODE, INTERNAL, MODULE_ID, SETTINGS } from "./constants.mjs";
 import { CloneSourceSettings } from "./apps/clone-source-settings.mjs";
 
 const PREFIX = "DRAWING-PROMPTS.settings";
@@ -158,6 +158,20 @@ export function registerSettings() {
     config: false,
     type: String,
     default: ""
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.CANVAS_CHROME, {
+    scope: "client",
+    config: true,
+    name: `${PREFIX}.canvasChrome.name`,
+    hint: `${PREFIX}.canvasChrome.hint`,
+    type: String,
+    choices: {
+      [CANVAS_CHROME.WHITE]: "DRAWING-PROMPTS.choices.canvasChrome.white",
+      [CANVAS_CHROME.BLACK]: "DRAWING-PROMPTS.choices.canvasChrome.black",
+      [CANVAS_CHROME.CHECKERBOARD]: "DRAWING-PROMPTS.choices.canvasChrome.checkerboard"
+    },
+    default: CANVAS_CHROME.CHECKERBOARD
   });
 
   game.settings.register(MODULE_ID, SETTINGS.AUTO_OPEN_PLAYER_WINDOW, {

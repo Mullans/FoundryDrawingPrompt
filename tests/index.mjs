@@ -6,6 +6,7 @@ const TEST_FILES = [
   "tests/application-lifecycle.test.mjs",
   "tests/background-layout.test.mjs",
   "tests/background-source-service.test.mjs",
+  "tests/canvas-chrome.test.mjs",
   "tests/client-store.test.mjs",
   "tests/drawing-engine.test.mjs",
   "tests/fill-tool.test.mjs",

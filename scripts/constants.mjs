@@ -27,6 +27,13 @@ export const FIT_MODE = Object.freeze({
   STRETCH: "stretch"
 });
 
+/** Player-local Canvas chrome under the Framed background (editing aid only). */
+export const CANVAS_CHROME = Object.freeze({
+  WHITE: "white",
+  BLACK: "black",
+  CHECKERBOARD: "checkerboard"
+});
+
 export const INTERNAL = Object.freeze({
   SNAPSHOT_THROTTLE_MS: 1500,
   SNAPSHOT_MAX_EDGE: 512,
@@ -58,6 +65,7 @@ export const SETTINGS = Object.freeze({
   DEFAULT_CLONE_SOURCE_ACTOR_UUID: "defaultCloneSourceActorUuid",
   LAST_SAVE_FOLDER: "lastSaveFolder",
   LAST_BRUSH_COLOR: "lastBrushColor",
+  CANVAS_CHROME: "canvasChrome",
   AUTO_OPEN_PLAYER_WINDOW: "autoOpenPlayerWindow",
   NOTIFY_PLAYER: "notifyPlayer",
   LIVE_PREVIEW: "livePreview"

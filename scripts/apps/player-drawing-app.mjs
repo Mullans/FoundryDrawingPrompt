@@ -1,4 +1,5 @@
-import { INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { CANVAS_CHROME, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { CANVAS_CHROME_CSS_CLASSES, canvasChromeCssClass, normalizeCanvasChrome } from "../drawing/canvas-chrome.mjs";
 import { DrawingEngine } from "../drawing/drawing-engine.mjs";
 import { buildFullSubmission, buildSubmission } from "../drawing/export-service.mjs";
 import { loadBackgroundImage } from "../foundry/background-source-service.mjs";
@@ -118,6 +119,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.mode = mode;
     this.#background = assignmentPayload.prompt.background ?? {};
     this.#color = initialBrushColor();
+    this.#canvasChrome = initialCanvasChrome();
   }
 
   #background;
@@ -133,6 +135,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #color = "#000000";
   #brushSize = 8;
   #brushOpacity = 1;
+  #canvasChrome = CANVAS_CHROME.CHECKERBOARD;
   #unsubscribers = [];
   #wireScaledWarned = false;
 
@@ -157,6 +160,9 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       brushSize: this.#brushSize,
       brushOpacity: this.#brushOpacity,
       brushOpacityPercent: formatPercent(this.#brushOpacity),
+      canvasChrome: this.#canvasChrome,
+      canvasChromeClass: canvasChromeCssClass(this.#canvasChrome),
+      canvasChromeOptions: this.#canvasChromeOptions(),
       canUndo: this.#engine?.canUndo ?? false,
       canRedo: this.#engine?.canRedo ?? false,
       toolButtons: this.#toolButtons()
@@ -429,6 +435,37 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       this.#engine?.setBrushOpacity(this.#brushOpacity);
       this.#refreshToolbarState();
     });
+    const chromeInput = this.element?.querySelector(".dp-chrome-input");
+    chromeInput?.addEventListener("change", event => {
+      this.#setCanvasChrome(event.currentTarget.value);
+    });
+  }
+
+  /**
+   * Apply a Canvas chrome preference (client setting + surface class).
+   * @param {string} value Chrome choice.
+   * @returns {void}
+   */
+  #setCanvasChrome(value) {
+    this.#canvasChrome = normalizeCanvasChrome(value);
+    void game.settings.set(MODULE_ID, SETTINGS.CANVAS_CHROME, this.#canvasChrome);
+    this.#refreshToolbarState();
+  }
+
+  /**
+   * Build select options for Canvas chrome.
+   * @returns {{value: string, label: string, selected: boolean}[]}
+   */
+  #canvasChromeOptions() {
+    return [
+      { value: CANVAS_CHROME.WHITE, label: "DRAWING-PROMPTS.choices.canvasChrome.white", selected: this.#canvasChrome === CANVAS_CHROME.WHITE },
+      { value: CANVAS_CHROME.BLACK, label: "DRAWING-PROMPTS.choices.canvasChrome.black", selected: this.#canvasChrome === CANVAS_CHROME.BLACK },
+      {
+        value: CANVAS_CHROME.CHECKERBOARD,
+        label: "DRAWING-PROMPTS.choices.canvasChrome.checkerboard",
+        selected: this.#canvasChrome === CANVAS_CHROME.CHECKERBOARD
+      }
+    ];
   }
 
   /**
@@ -471,6 +508,13 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( canvas ) {
       canvas.classList.remove("tool-brush", "tool-eraser", "tool-fill", "tool-eyedropper");
       canvas.classList.add(`tool-${this.#activeTool}`);
+    }
+    const chromeInput = root.querySelector(".dp-chrome-input");
+    if ( chromeInput && chromeInput.value !== this.#canvasChrome ) chromeInput.value = this.#canvasChrome;
+    const canvasBox = root.querySelector(".dp-canvas-box");
+    if ( canvasBox ) {
+      canvasBox.classList.remove(...CANVAS_CHROME_CSS_CLASSES);
+      canvasBox.classList.add(canvasChromeCssClass(this.#canvasChrome));
     }
   }
 
@@ -609,6 +653,14 @@ function initialBrushColor() {
   return normalizeHex(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLOR))
     ?? normalizeHex(game.user?.color)
     ?? "#000000";
+}
+
+/**
+ * Resolve the initial Canvas chrome for this client.
+ * @returns {string}
+ */
+function initialCanvasChrome() {
+  return normalizeCanvasChrome(game.settings.get(MODULE_ID, SETTINGS.CANVAS_CHROME));
 }
 
 /**
