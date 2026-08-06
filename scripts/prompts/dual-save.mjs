@@ -140,10 +140,11 @@ export async function bakeAndEncodeSourceFraming({ overlay, prompt, format = "we
 }
 
 /**
- * Build a Source Framing preview data URL from a Prompt-canvas image source.
- * Reuses dual-Save geometry/remap — not a second save path.
+ * Build a Source Framing preview data URL from a Prompt-canvas **overlay** source.
+ * Reuses dual-Save geometry/remap — not a second save path. Input must be ink-only
+ * (transparent outside strokes), not a merged/composite raster.
  * @param {object} options Options.
- * @param {string} options.src Prompt-canvas image URL or data URL.
+ * @param {string} options.src Overlay image URL or data URL.
  * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} options.prompt Prompt.
  * @param {object|null|undefined} [options.submission] Optional submission for original size.
  * @returns {Promise<string|null>} Encoded data URL, or null when remap is unavailable.
@@ -154,6 +155,31 @@ export async function buildSourceFramingPreviewDataUrl({ src, prompt, submission
   const overlay = await decodeImageToRgba(src, size.width, size.height);
   const baked = await bakeAndEncodeSourceFraming({ overlay, prompt, format: "webp" });
   return blobToDataUrl(baked.blob);
+}
+
+/**
+ * Pick the overlay-only image source from a pending submission (dual-Save bake input).
+ * Prefers staged overlay path or inline overlay data URL — never merged/composite.
+ * @param {object|null|undefined} submission Submission payload.
+ * @returns {string|null} Overlay path or data URL, or null.
+ */
+export function pickSubmissionOverlaySrc(submission) {
+  if ( !submission ) return null;
+  if ( submission.mode === "staged" ) return submission.staged?.overlayPath || null;
+  return submission.overlay?.dataUrl || null;
+}
+
+/**
+ * Pick the Prompt-canvas preview source from a pending submission (prefers merged).
+ * @param {object|null|undefined} submission Submission payload.
+ * @returns {string|null} Merged or overlay path/data URL, or null.
+ */
+export function pickSubmissionPromptCanvasSrc(submission) {
+  if ( !submission ) return null;
+  if ( submission.mode === "staged" ) {
+    return submission.staged?.mergedPath || submission.staged?.overlayPath || null;
+  }
+  return submission.merged?.dataUrl || submission.overlay?.dataUrl || null;
 }
 
 /**

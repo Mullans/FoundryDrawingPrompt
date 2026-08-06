@@ -162,11 +162,11 @@ export const emit = {
    * @param {string} gmUserId Prompt-owning GM user id.
    * @param {string} assignmentId Assignment id.
    * @param {string} userId Player user id.
-   * @param {string} snapshotDataUrl Snapshot data URL.
+   * @param {string|{composite?: string, overlay?: string}} snapshotPayload Composite and/or overlay data URLs.
    * @returns {Promise<*>}
    */
-  drawingSnapshot(gmUserId, assignmentId, userId, snapshotDataUrl) {
-    return requireSocket().executeForUsers(CALLS.SNAPSHOT, [gmUserId], assignmentId, userId, snapshotDataUrl);
+  drawingSnapshot(gmUserId, assignmentId, userId, snapshotPayload) {
+    return requireSocket().executeForUsers(CALLS.SNAPSHOT, [gmUserId], assignmentId, userId, snapshotPayload);
   },
 
   /**

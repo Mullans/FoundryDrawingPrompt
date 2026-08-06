@@ -11,6 +11,8 @@ import {
   hasSavedFramingViewAssets,
   hasSourceBackground,
   normalizeFramingView,
+  pickSubmissionOverlaySrc,
+  pickSubmissionPromptCanvasSrc,
   resolveFramingViewAssetPath,
   resolveFullFilename,
   resolveSubmissionOverlaySize
@@ -228,6 +230,45 @@ test("clearFramingViewAssets clears both Framing View paths and re-arms the Save
   assert.equal(assignment.savedSubmissionTs, null);
   assert.equal(isSaveGateOpen(assignment), false);
   assert.equal(hasSavedFramingViewAssets(assignment), false);
+});
+
+test("pickSubmissionOverlaySrc never prefers merged over overlay for Source Framing preview", () => {
+  assert.equal(pickSubmissionOverlaySrc({
+    mode: "inline",
+    overlay: { dataUrl: "data:image/webp;base64,overlay" },
+    merged: { dataUrl: "data:image/webp;base64,merged" }
+  }), "data:image/webp;base64,overlay");
+
+  assert.equal(pickSubmissionOverlaySrc({
+    mode: "staged",
+    staged: {
+      overlayPath: "worlds/demo/staging/a1-overlay.webp",
+      mergedPath: "worlds/demo/staging/a1-merged.webp"
+    }
+  }), "worlds/demo/staging/a1-overlay.webp");
+
+  assert.equal(pickSubmissionOverlaySrc({
+    mode: "staged",
+    staged: { overlayPath: null, mergedPath: "worlds/demo/staging/a1-merged.webp" }
+  }), null);
+
+  assert.equal(pickSubmissionOverlaySrc(null), null);
+});
+
+test("pickSubmissionPromptCanvasSrc prefers merged for Prompt-canvas preview", () => {
+  assert.equal(pickSubmissionPromptCanvasSrc({
+    mode: "inline",
+    overlay: { dataUrl: "data:image/webp;base64,overlay" },
+    merged: { dataUrl: "data:image/webp;base64,merged" }
+  }), "data:image/webp;base64,merged");
+
+  assert.equal(pickSubmissionPromptCanvasSrc({
+    mode: "staged",
+    staged: {
+      overlayPath: "worlds/demo/staging/a1-overlay.webp",
+      mergedPath: "worlds/demo/staging/a1-merged.webp"
+    }
+  }), "worlds/demo/staging/a1-merged.webp");
 });
 
 /**

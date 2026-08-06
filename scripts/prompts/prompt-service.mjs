@@ -26,7 +26,7 @@ import { adjustTimer, evaluateSubmissionTiming, normalizeTimerState, pauseTimer,
 import { TimerUpdateQueue } from "./timer-update-queue.mjs";
 import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isSaveGateOpen, validateSubmissionPayload } from "./transitions.mjs";
 import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
-import { isValidSnapshotDataUrl } from "./wire-validation.mjs";
+import { isValidSnapshotPayload } from "./wire-validation.mjs";
 
 const pendingSubmissions = new Map();
 const timerUpdateQueue = new TimerUpdateQueue();
@@ -884,18 +884,18 @@ async function handleAssignmentOpened(assignmentId, userId) {
  * Handle a snapshot on the owning GM.
  * @param {string} assignmentId Assignment id.
  * @param {string} userId Player user id.
- * @param {string} snapshotDataUrl Snapshot data URL.
+ * @param {string|{composite?: string, overlay?: string}} snapshotPayload Snapshot payload.
  * @returns {Promise<void>}
  */
-async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
+async function handleDrawingSnapshot(assignmentId, userId, snapshotPayload) {
   const { assignment } = validateOwningGMSender(assignmentId, userId);
-  if ( !isValidSnapshotDataUrl(snapshotDataUrl) ) {
+  if ( !isValidSnapshotPayload(snapshotPayload) ) {
     console.debug(`${MODULE_ID} | ignored invalid snapshot payload shape for assignment ${assignmentId}`);
     return;
   }
   const decision = evaluateSnapshot(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("snapshot", assignment, decision.reason);
-  receiveManagerSnapshot(assignmentId, snapshotDataUrl);
+  receiveManagerSnapshot(assignmentId, snapshotPayload);
 }
 
 /**

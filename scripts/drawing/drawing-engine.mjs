@@ -257,12 +257,33 @@ export class DrawingEngine {
    * @returns {string}
    */
   getCompositeSnapshot({ maxEdge, quality, type = "image/webp" } = {}) {
-    const scale = Math.min(1, Number(maxEdge || Math.max(this.width, this.height)) / Math.max(this.width, this.height));
-    const canvas = createCanvas(Math.max(1, Math.round(this.width * scale)), Math.max(1, Math.round(this.height * scale)));
+    const canvas = this.#snapshotCanvas(maxEdge);
     const context = canvas.getContext("2d");
     context.drawImage(this.#bgCanvas, 0, 0, canvas.width, canvas.height);
     context.drawImage(this.#drawCanvas, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL(type, quality);
+  }
+
+  /**
+   * Build a downscaled overlay-only (ink) data URL with transparent background.
+   * Used for Source Framing live remap — same ink layer dual Save bakes, not bg+ink.
+   * @param {{maxEdge: number, quality?: number, type?: string}} options Snapshot options.
+   * @returns {string}
+   */
+  getOverlaySnapshot({ maxEdge, quality, type = "image/webp" } = {}) {
+    const canvas = this.#snapshotCanvas(maxEdge);
+    canvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL(type, quality);
+  }
+
+  /**
+   * Create a downscaled snapshot canvas sized by max edge.
+   * @param {number} maxEdge Max edge length in pixels.
+   * @returns {HTMLCanvasElement|OffscreenCanvas}
+   */
+  #snapshotCanvas(maxEdge) {
+    const scale = Math.min(1, Number(maxEdge || Math.max(this.width, this.height)) / Math.max(this.width, this.height));
+    return createCanvas(Math.max(1, Math.round(this.width * scale)), Math.max(1, Math.round(this.height * scale)));
   }
 
   /**

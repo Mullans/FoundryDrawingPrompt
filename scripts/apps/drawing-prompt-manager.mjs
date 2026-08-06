@@ -29,12 +29,15 @@ import {
   canPlaceFramingView,
   hasSourceBackground,
   normalizeFramingView,
+  pickSubmissionOverlaySrc,
+  pickSubmissionPromptCanvasSrc,
   resolveFramingViewAssetPath
 } from "../prompts/dual-save.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { formatClock, formatTimerAdjustment, formatTimerState } from "../utils/timer-chip.mjs";
+import { normalizeSnapshotPayload } from "../prompts/wire-validation.mjs";
 
 const { ApplicationV2, DialogV2, HandlebarsApplicationMixin } = foundry.applications.api;
 const SNAPSHOT_KEY_PREFIX = "drawing-prompts.snap.";
@@ -134,11 +137,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /**
    * Deliver a snapshot to the open manager, if any.
    * @param {string} assignmentId Assignment id.
-   * @param {string} dataUrl Snapshot data URL.
+   * @param {string|{composite?: string, overlay?: string}} snapshotPayload Snapshot payload.
    * @returns {void}
    */
-  static receiveSnapshotOpen(assignmentId, dataUrl) {
-    this.#instance?.receiveSnapshot(assignmentId, dataUrl);
+  static receiveSnapshotOpen(assignmentId, snapshotPayload) {
+    this.#instance?.receiveSnapshot(assignmentId, snapshotPayload);
   }
 
   constructor() {
@@ -154,6 +157,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     };
     this.activePrompt = null;
     this.latestSnapshots = new Map();
+    /** @type {Map<string, string>} Latest overlay-only (ink) live snapshots for Source Framing remaps. */
+    this.latestOverlaySnapshots = new Map();
     this.selectedAssignmentId = null;
     this.windowOpenByAssignment = new Map();
     /** @type {string} GM review Framing View for the open manager session. */
@@ -209,12 +214,17 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /**
    * Receive a player snapshot for preview.
    * @param {string} assignmentId Assignment id.
-   * @param {string} dataUrl Snapshot data URL.
+   * @param {string|{composite?: string, overlay?: string}} snapshotPayload Composite and/or overlay data URLs.
    * @returns {void}
    */
-  receiveSnapshot(assignmentId, dataUrl) {
-    this.latestSnapshots.set(assignmentId, dataUrl);
-    this.#cacheSnapshot(assignmentId, dataUrl);
+  receiveSnapshot(assignmentId, snapshotPayload) {
+    const { composite, overlay } = normalizeSnapshotPayload(snapshotPayload);
+    if ( composite ) {
+      this.latestSnapshots.set(assignmentId, composite);
+      this.#cacheSnapshot(assignmentId, composite);
+    }
+    if ( overlay ) this.latestOverlaySnapshots.set(assignmentId, overlay);
+
     this.selectedAssignmentId ??= assignmentId;
     if ( this.selectedAssignmentId !== assignmentId ) return;
 
@@ -222,13 +232,15 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       hasSource: hasSourceBackground(this.activePrompt)
     });
     if ( view !== FRAMING_VIEW.SOURCE ) {
-      this.#updatePreviewImage(dataUrl);
+      if ( composite ) this.#updatePreviewImage(composite);
       return;
     }
 
     const assignment = this.activePrompt?.getAssignment(assignmentId);
     if ( !assignment || !this.activePrompt ) return;
-    void this.#resolveSourceFramingPreviewSrc(assignment, dataUrl).then(remapped => {
+    const overlaySrc = overlay ?? this.latestOverlaySnapshots.get(assignmentId) ?? null;
+    if ( !overlaySrc ) return;
+    void this.#resolveSourceFramingPreviewSrc(assignment, overlaySrc).then(remapped => {
       if ( this.selectedAssignmentId !== assignmentId ) return;
       if ( normalizeFramingView(this.framingView, {
         hasSource: hasSourceBackground(this.activePrompt)
@@ -1237,6 +1249,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       this.activePrompt = null;
       this.selectedAssignmentId = null;
       this.latestSnapshots.clear();
+      this.latestOverlaySnapshots.clear();
       const adoption = await this.adoptMostRecentActivePrompt();
       await this.render({ parts: ["body"] });
       if ( adoption.adopted ) {
@@ -1337,7 +1350,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const headingLive = game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview");
 
     if ( view === FRAMING_VIEW.SOURCE ) {
-      const src = await this.#resolveSourceFramingPreviewSrc(assignment, snapshot);
+      const src = await this.#resolveSourceFramingPreviewSrc(assignment);
       return {
         src,
         heading: assignment.status === STATUS.SUBMITTED ? headingSubmitted : headingLive
@@ -1354,7 +1367,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       const service = await import("../prompts/prompt-service.mjs");
       const submission = service.getPendingSubmission(assignment.id);
       return {
-        src: pendingSubmissionPreviewSrc(submission) ?? snapshot,
+        src: pendingSubmissionPromptCanvasPreviewSrc(submission) ?? snapshot,
         heading: headingSubmitted
       };
     }
@@ -1366,29 +1379,32 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /**
    * Resolve Source Framing preview: saved fullPath when gate open for current submission,
-   * otherwise remapped live/pending overlay via dual-Save geometry.
+   * otherwise remapped live/pending **overlay only** via dual-Save geometry (never merged/composite).
    * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Assignment.
-   * @param {string|null} snapshot Live snapshot data URL.
+   * @param {string|null} [overlaySrcHint] Optional live overlay data URL.
    * @returns {Promise<string|null>}
    */
-  async #resolveSourceFramingPreviewSrc(assignment, snapshot) {
+  async #resolveSourceFramingPreviewSrc(assignment, overlaySrcHint = null) {
     const savedFull = resolveFramingViewAssetPath(assignment, FRAMING_VIEW.SOURCE);
     if ( savedFull && isSaveGateOpen(assignment) ) return savedFull;
 
-    let promptCanvasSrc = null;
+    let overlaySrc = overlaySrcHint;
     let submission = null;
     if ( assignment.status === STATUS.SUBMITTED ) {
       const service = await import("../prompts/prompt-service.mjs");
       submission = service.getPendingSubmission(assignment.id);
-      promptCanvasSrc = pendingSubmissionPreviewSrc(submission)
-        ?? (assignment.primaryImagePath || null)
-        ?? snapshot;
+      overlaySrc = pendingSubmissionOverlayPreviewSrc(submission)
+        ?? this.latestOverlaySnapshots.get(assignment.id)
+        ?? overlaySrcHint
+        ?? null;
     } else {
-      promptCanvasSrc = snapshot;
+      overlaySrc = overlaySrcHint
+        ?? this.latestOverlaySnapshots.get(assignment.id)
+        ?? null;
     }
-    if ( !promptCanvasSrc || !this.activePrompt ) return null;
+    if ( !overlaySrc || !this.activePrompt ) return null;
 
-    const cacheKey = sourceFramingPreviewCacheKey(assignment.id, this.activePrompt.id, promptCanvasSrc);
+    const cacheKey = sourceFramingPreviewCacheKey(assignment.id, this.activePrompt.id, overlaySrc);
     const cached = this.#sourceFramingPreviewCache.get(cacheKey);
     if ( cached ) return cached;
 
@@ -1400,7 +1416,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const load = (async () => {
       try {
         const dataUrl = await buildSourceFramingPreviewDataUrl({
-          src: promptCanvasSrc,
+          src: overlaySrc,
           prompt: this.activePrompt,
           submission
         });
@@ -1487,6 +1503,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#adoptDraftFromPrompt();
     this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
     this.latestSnapshots.clear();
+    this.latestOverlaySnapshots.clear();
     this.#sourceFramingPreviewCache.clear();
     this.framingView = normalizeFramingView(this.framingView, {
       hasSource: hasSourceBackground(this.activePrompt)
@@ -1768,16 +1785,31 @@ function userCanUploadFiles(user) {
 }
 
 /**
- * Resolve a preview source from a cached pending submission.
+ * Resolve a Prompt-canvas preview source from a cached pending submission (prefers merged).
  * @param {object|null} submission Submission payload.
  * @returns {string|null} Preview source.
  */
-function pendingSubmissionPreviewSrc(submission) {
+function pendingSubmissionPromptCanvasPreviewSrc(submission) {
+  const src = pickSubmissionPromptCanvasSrc(submission);
+  if ( !src ) return null;
   if ( submission?.mode === "staged" ) {
-    const path = submission.staged?.mergedPath ?? submission.staged?.overlayPath;
-    return path ? `${encodeURI(path)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}` : null;
+    return `${encodeURI(src)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}`;
   }
-  return submission?.merged?.dataUrl ?? submission?.overlay?.dataUrl ?? null;
+  return src;
+}
+
+/**
+ * Resolve an overlay-only preview source for Source Framing remap (never merged).
+ * @param {object|null} submission Submission payload.
+ * @returns {string|null} Overlay path or data URL.
+ */
+function pendingSubmissionOverlayPreviewSrc(submission) {
+  const src = pickSubmissionOverlaySrc(submission);
+  if ( !src ) return null;
+  if ( submission?.mode === "staged" ) {
+    return `${encodeURI(src)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}`;
+  }
+  return src;
 }
 
 /**

@@ -675,10 +675,15 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   async #sendSnapshot() {
     if ( !this.#canSendSnapshots() || !this.#engine ) return;
-    const snapshot = this.#engine.getCompositeSnapshot({
+    const opts = {
       maxEdge: INTERNAL.SNAPSHOT_MAX_EDGE,
       quality: INTERNAL.SNAPSHOT_QUALITY
-    });
+    };
+    // Composite for Prompt-canvas live; overlay-only for Source Framing remap (matches dual Save).
+    const snapshot = {
+      composite: this.#engine.getCompositeSnapshot(opts),
+      overlay: this.#engine.getOverlaySnapshot(opts)
+    };
     await emit.drawingSnapshot(
       this.assignmentPayload.prompt.gmUserId,
       this.assignmentPayload.assignment.id,

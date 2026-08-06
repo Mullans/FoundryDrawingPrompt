@@ -8,7 +8,9 @@ import {
   isAllowedPendingPath,
   isAllowedStagedPath,
   isValidImageDataUrl,
-  isValidSnapshotDataUrl
+  isValidSnapshotDataUrl,
+  isValidSnapshotPayload,
+  normalizeSnapshotPayload
 } from "../scripts/prompts/wire-validation.mjs";
 
 test("isValidImageDataUrl accepts webp and png data URLs", () => {
@@ -23,6 +25,26 @@ test("isValidSnapshotDataUrl enforces snapshot wire cap", () => {
   assert.equal(isValidSnapshotDataUrl(small), true);
   const huge = `data:image/webp;base64,${"a".repeat(INTERNAL.MAX_SNAPSHOT_WIRE_BYTES)}`;
   assert.equal(isValidSnapshotDataUrl(huge), false);
+});
+
+test("isValidSnapshotPayload accepts composite/overlay objects and legacy strings", () => {
+  const small = `data:image/webp;base64,${"a".repeat(100)}`;
+  assert.equal(isValidSnapshotPayload(small), true);
+  assert.equal(isValidSnapshotPayload({ composite: small, overlay: small }), true);
+  assert.equal(isValidSnapshotPayload({ overlay: small }), true);
+  assert.equal(isValidSnapshotPayload({ composite: small }), true);
+  assert.equal(isValidSnapshotPayload({}), false);
+  assert.equal(isValidSnapshotPayload({ composite: "not-image" }), false);
+  assert.equal(isValidSnapshotPayload(null), false);
+});
+
+test("normalizeSnapshotPayload separates composite and overlay", () => {
+  const composite = "data:image/webp;base64,composite";
+  const overlay = "data:image/webp;base64,overlay";
+  assert.deepEqual(normalizeSnapshotPayload(composite), { composite, overlay: null });
+  assert.deepEqual(normalizeSnapshotPayload({ composite, overlay }), { composite, overlay });
+  assert.deepEqual(normalizeSnapshotPayload({ overlay }), { composite: null, overlay });
+  assert.deepEqual(normalizeSnapshotPayload(null), { composite: null, overlay: null });
 });
 
 test("estimateOpLogWireBytes counts serialized op-log size", () => {

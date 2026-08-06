@@ -25,6 +25,41 @@ export function isValidSnapshotDataUrl(value) {
 }
 
 /**
+ * Test whether a live snapshot payload is safe (legacy composite string or composite/overlay object).
+ * @param {*} value Candidate payload.
+ * @returns {boolean} Whether valid.
+ */
+export function isValidSnapshotPayload(value) {
+  if ( isValidSnapshotDataUrl(value) ) return true;
+  if ( !value || typeof value !== "object" ) return false;
+  const hasComposite = value.composite != null;
+  const hasOverlay = value.overlay != null;
+  if ( !hasComposite && !hasOverlay ) return false;
+  if ( hasComposite && !isValidSnapshotDataUrl(value.composite) ) return false;
+  if ( hasOverlay && !isValidSnapshotDataUrl(value.overlay) ) return false;
+  return true;
+}
+
+/**
+ * Normalize a live snapshot payload into composite (Prompt canvas) and overlay (ink-only) URLs.
+ * Legacy string payloads are treated as composite only.
+ * @param {string|{composite?: string, overlay?: string}|null|undefined} payload Snapshot payload.
+ * @returns {{composite: string|null, overlay: string|null}}
+ */
+export function normalizeSnapshotPayload(payload) {
+  if ( typeof payload === "string" ) {
+    return { composite: payload, overlay: null };
+  }
+  if ( payload && typeof payload === "object" ) {
+    return {
+      composite: typeof payload.composite === "string" ? payload.composite : null,
+      overlay: typeof payload.overlay === "string" ? payload.overlay : null
+    };
+  }
+  return { composite: null, overlay: null };
+}
+
+/**
  * Estimate wire bytes for a data URL using string length as a base64 proxy.
  * @param {string} dataUrl Data URL.
  * @returns {number} Estimated bytes.
