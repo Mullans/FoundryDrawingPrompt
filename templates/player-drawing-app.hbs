@@ -66,6 +66,21 @@
         <span>{{localize "DRAWING-PROMPTS.player.actions.redo"}}</span>
       </button>
     </div>
+
+    <div class="dp-tool-group" role="group" aria-label="{{localize "DRAWING-PROMPTS.player.nav.label"}}">
+      <button type="button" data-action="zoomOut" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.nav.zoomOut"}}">
+        <i class="fa-solid fa-magnifying-glass-minus" inert></i>
+        <span class="sr-only">{{localize "DRAWING-PROMPTS.player.nav.zoomOut"}}</span>
+      </button>
+      <button type="button" data-action="zoomIn" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.nav.zoomIn"}}">
+        <i class="fa-solid fa-magnifying-glass-plus" inert></i>
+        <span class="sr-only">{{localize "DRAWING-PROMPTS.player.nav.zoomIn"}}</span>
+      </button>
+      <button type="button" data-action="resetView" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.nav.reset"}}">
+        <i class="fa-solid fa-expand" inert></i>
+        <span class="sr-only">{{localize "DRAWING-PROMPTS.player.nav.reset"}}</span>
+      </button>
+    </div>
   </div>
 
   <section class="dp-canvas-wrap">
@@ -73,10 +88,12 @@
       {{#if backgroundError}}
       <p class="dp-canvas-error">{{backgroundError}}</p>
       {{else}}
-      {{#if backgroundLoading}}
-      <p class="dp-canvas-note">{{localize "DRAWING-PROMPTS.player.canvas.loading"}}</p>
-      {{/if}}
-      <canvas class="dp-display-canvas tool-{{activeTool}}" width="{{prompt.canvasWidth}}" height="{{prompt.canvasHeight}}" style="{{{canvasStyle}}}"></canvas>
+      <div class="dp-canvas-viewport">
+        {{#if backgroundLoading}}
+        <p class="dp-canvas-note">{{localize "DRAWING-PROMPTS.player.canvas.loading"}}</p>
+        {{/if}}
+        <canvas class="dp-display-canvas tool-{{activeTool}}" width="{{prompt.canvasWidth}}" height="{{prompt.canvasHeight}}"></canvas>
+      </div>
       {{/if}}
     </div>
   </section>
