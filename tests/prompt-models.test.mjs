@@ -52,6 +52,7 @@ test("DrawingAssignment tolerates missing serialized fields", () => {
     name: null,
     overlayPath: null,
     mergedPath: null,
+    fullPath: null,
     oplogPath: null,
     thumbPath: null,
     folder: null,

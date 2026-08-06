@@ -10,6 +10,13 @@ import { getAssignment as getClientAssignment, updateStatus, updateTimerState, u
 import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
 import { defaultAssignmentAssetName, promptAssetFolderName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { prepareFramedBackgroundForSend, serializeBackgroundForPlayer } from "./framed-delivery.mjs";
+import {
+  bakeAndEncodeSourceFraming,
+  clearFramingViewAssets,
+  decodeImageToRgba,
+  hasSavedFramingViewAssets,
+  hasSourceBackground
+} from "./dual-save.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
 import { adjustTimer, evaluateSubmissionTiming, normalizeTimerState, pauseTimer, resetTimer, resumeTimer, stopTimer } from "./timer-service.mjs";
@@ -400,11 +407,13 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     const dir = location.final;
     await ensureDir(dir);
     const hasMerged = hasMergedSubmission(submission);
+    const writeSourceFull = hasSourceBackground(prompt);
     const filenames = uniqueDrawingAssetFilenames({
       name: resolvedName,
       playerName: assignment.userName,
       extension: extensionFor(primarySubmissionFormat(submission, hasMerged)),
       hasMerged,
+      hasSourceFull: writeSourceFull,
       existingFiles: await browseFiles(dir),
       fallback: game.i18n.localize("DRAWING-PROMPTS.manager.saveDialog.defaultSlug")
     });
@@ -412,6 +421,18 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     assignment.assets.overlayPath = hasMerged ? overlay.path : primary.path;
     assignment.assets.mergedPath = hasMerged ? primary.path : null;
     assignment.assets.oplogPath = opLog.path;
+    if ( writeSourceFull ) {
+      const full = await uploadSourceFramingAsset({
+        dir,
+        filename: filenames.sourceFull,
+        submission,
+        prompt,
+        format: extensionFor(primarySubmissionFormat(submission, hasMerged))
+      });
+      assignment.assets.fullPath = full.path;
+    } else {
+      assignment.assets.fullPath = null;
+    }
     assignment.assets.folder = dir;
     assignment.assets.tileWidth = submissionTileWidth(submission, prompt);
     assignment.assets.tileHeight = submissionTileHeight(submission, prompt);
@@ -637,6 +658,7 @@ export async function reopenAssignment(assignmentId, userId = null) {
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
+  if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
   assignment.markReopened();
   assignment.pendingSubmission = null;
   pendingSubmissions.delete(assignment.id);
@@ -888,6 +910,7 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   }
   const decision = evaluateSubmission(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("submitted", assignment, decision.reason);
+  if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
   const now = Date.now();
   if ( assignment.status === STATUS.PENDING ) assignment.markOpened(now);
   const timing = evaluateSubmissionTiming(prompt.timerState, now);
@@ -1279,6 +1302,43 @@ async function uploadSubmissionAssets(dir, filenames, submission, hasMerged) {
 async function uploadStagedPath(dir, filename, path, receiptTs) {
   const blob = await fetchStagedBlob(path, receiptTs);
   return uploadBlob(dir, filename, blob);
+}
+
+/**
+ * Load a submission overlay as an RGBA buffer in Prompt canvas coordinates.
+ * @param {object} submission Submission payload.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<{width: number, height: number, data: Uint8ClampedArray}>}
+ */
+async function loadSubmissionOverlayRgba(submission, prompt) {
+  const width = Number(submission.width) || prompt.canvasWidth;
+  const height = Number(submission.height) || prompt.canvasHeight;
+  if ( isStagedSubmission(submission) ) {
+    const blob = await fetchStagedBlob(submission.staged.overlayPath, submission.receiptTs);
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      return await decodeImageToRgba(objectUrl, width, height);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+  return decodeImageToRgba(submission.overlay.dataUrl, width, height);
+}
+
+/**
+ * Bake and upload the Source Framing `_full` raster for one submission.
+ * @param {object} options Upload options.
+ * @param {string} options.dir Target directory.
+ * @param {string} options.filename Target filename.
+ * @param {object} options.submission Submission payload.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} options.prompt Prompt.
+ * @param {string} options.format Output format.
+ * @returns {Promise<{path: string}>}
+ */
+async function uploadSourceFramingAsset({ dir, filename, submission, prompt, format }) {
+  const overlay = await loadSubmissionOverlayRgba(submission, prompt);
+  const encoded = await bakeAndEncodeSourceFraming({ overlay, prompt, format });
+  return uploadBlob(dir, filename, encoded.blob);
 }
 
 /**
