@@ -435,6 +435,7 @@
 }
 
 .drawing-prompts .dp-background-preview,
+.drawing-prompts .dp-framing-viewport canvas,
 .drawing-prompts .dp-preview-frame,
 .drawing-prompts .dp-canvas-box,
 .drawing-prompts .dp-canvas-box.dp-chrome-checkerboard {
@@ -465,10 +466,10 @@
  * canvas dimensions) give it its intrinsic aspect ratio as a replaced
  * element -- unlike a non-replaced div, a canvas shrinks to fit reliably
  * across engines via width/height:auto + max-width/max-height:100%, with no
- * dependence on the `aspect-ratio` property. The background is drawn into
- * the canvas with the same `computeBackgroundLayout` math the player's
- * DrawingEngine uses, so a blank background simply leaves the canvas
- * transparent and the checkerboard backdrop shows through as the letterbox.
+ * dependence on the `aspect-ratio` property. The player preview is drawn with
+ * the same {@link drawFramedBackground} path used for delivery, so a blank
+ * background simply leaves the canvas transparent and the checkerboard
+ * backdrop shows through as the letterbox.
  */
 .drawing-prompts .dp-background-preview {
   display: block;
@@ -478,6 +479,40 @@
   max-height: 100%;
   border: 1px solid var(--dp-panel-border-soft);
   border-radius: 4px;
+}
+
+.drawing-prompts .dp-framing-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.drawing-prompts .dp-framing-viewport {
+  min-height: 140px;
+  cursor: grab;
+}
+
+.drawing-prompts .dp-framing-viewport:active {
+  cursor: grabbing;
+}
+
+.drawing-prompts .dp-framing-viewport canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 140px;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 4px;
+}
+
+.drawing-prompts .dp-framing-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.drawing-prompts .dp-framing-controls button {
+  min-width: 2rem;
 }
 
 .drawing-prompts .dp-preview-frame {
