@@ -136,27 +136,33 @@ export function dualSaveFilenames(name, extension) {
  * Dual raster bake from a synthetic Prompt-canvas overlay (RGBA buffer).
  * Prompt-facing output is canvas-sized; `_full` is source natural size with remapped ink.
  * Pad-outside-source ink is omitted from the `_full` raster.
+ * When `sourceUnderlay` is provided, `_full` starts as that source image and ink is
+ * composited on top with source-over alpha; otherwise `_full` is transparent + ink.
  *
  * @param {object} options
  * @param {ReturnType<typeof computeFramingGeometry>} options.geometry Framing geometry.
  * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay
  *   Overlay in Prompt canvas coordinates (width/height should match the canvas).
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} [options.sourceUnderlay]
+ *   Optional source-image RGBA at natural size (drawn under remapped ink).
  * @returns {{
  *   promptCanvas: {width: number, height: number, data: Uint8ClampedArray},
  *   source: {width: number, height: number, data: Uint8ClampedArray}
  * }}
  */
-export function bakeDualRasters({ geometry, overlay } = {}) {
+export function bakeDualRasters({ geometry, overlay, sourceUnderlay = null } = {}) {
   const canvasWidth = geometry.canvasWidth;
   const canvasHeight = geometry.canvasHeight;
   const sourceWidth = geometry.sourceWidth;
   const sourceHeight = geometry.sourceHeight;
   const promptCanvas = copyRgbaBuffer(overlay, canvasWidth, canvasHeight);
-  const source = {
-    width: sourceWidth,
-    height: sourceHeight,
-    data: new Uint8ClampedArray(sourceWidth * sourceHeight * 4)
-  };
+  const source = sourceUnderlay
+    ? copyRgbaBuffer(sourceUnderlay, sourceWidth, sourceHeight)
+    : {
+      width: sourceWidth,
+      height: sourceHeight,
+      data: new Uint8ClampedArray(sourceWidth * sourceHeight * 4)
+    };
 
   const overlayWidth = Number(overlay?.width) || canvasWidth;
   const overlayHeight = Number(overlay?.height) || canvasHeight;
@@ -181,15 +187,53 @@ export function bakeDualRasters({ geometry, overlay } = {}) {
       if ( sx < 0 || sy < 0 || sx >= sourceWidth || sy >= sourceHeight ) continue;
 
       const destOffset = (sy * sourceWidth + sx) * 4;
-      // Later opaque markers overwrite earlier ones; sufficient for placement asserts.
-      source.data[destOffset] = data[srcOffset];
-      source.data[destOffset + 1] = data[srcOffset + 1];
-      source.data[destOffset + 2] = data[srcOffset + 2];
-      source.data[destOffset + 3] = alpha;
+      compositeSourceOver(
+        source.data,
+        destOffset,
+        data[srcOffset],
+        data[srcOffset + 1],
+        data[srcOffset + 2],
+        alpha
+      );
     }
   }
 
   return { promptCanvas, source };
+}
+
+/**
+ * Source-over composite of one opaque-or-translucent pixel onto an RGBA buffer.
+ * @param {Uint8ClampedArray} dest Destination buffer.
+ * @param {number} destOffset Byte offset of the destination pixel.
+ * @param {number} sr Source red.
+ * @param {number} sg Source green.
+ * @param {number} sb Source blue.
+ * @param {number} sa Source alpha (0–255).
+ * @returns {void}
+ */
+function compositeSourceOver(dest, destOffset, sr, sg, sb, sa) {
+  if ( sa >= 255 ) {
+    dest[destOffset] = sr;
+    dest[destOffset + 1] = sg;
+    dest[destOffset + 2] = sb;
+    dest[destOffset + 3] = 255;
+    return;
+  }
+  const srcA = sa / 255;
+  const dstA = dest[destOffset + 3] / 255;
+  const outA = srcA + dstA * (1 - srcA);
+  if ( outA <= 0 ) {
+    dest[destOffset] = 0;
+    dest[destOffset + 1] = 0;
+    dest[destOffset + 2] = 0;
+    dest[destOffset + 3] = 0;
+    return;
+  }
+  const invSrcA = 1 - srcA;
+  dest[destOffset] = Math.round((sr * srcA + dest[destOffset] * dstA * invSrcA) / outA);
+  dest[destOffset + 1] = Math.round((sg * srcA + dest[destOffset + 1] * dstA * invSrcA) / outA);
+  dest[destOffset + 2] = Math.round((sb * srcA + dest[destOffset + 2] * dstA * invSrcA) / outA);
+  dest[destOffset + 3] = Math.round(outA * 255);
 }
 
 /**

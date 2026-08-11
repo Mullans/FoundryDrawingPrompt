@@ -121,15 +121,24 @@ export function resolveSubmissionOverlaySize(submission, prompt) {
 
 /**
  * Bake and encode the Source Framing raster from a Prompt-canvas overlay buffer.
+ * Composites remapped ink over the prompt's source image when available (natural W×H).
  * @param {object} options Options.
  * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay Overlay RGBA buffer.
  * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} options.prompt Prompt.
  * @param {string} [options.format="webp"] Output format.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} [options.sourceUnderlay]
+ *   Optional pre-decoded source RGBA; when omitted, loads from `prompt.background.path`.
  * @returns {Promise<{blob: Blob, format: string, width: number, height: number}>}
  */
-export async function bakeAndEncodeSourceFraming({ overlay, prompt, format = "webp" } = {}) {
+export async function bakeAndEncodeSourceFraming({
+  overlay,
+  prompt,
+  format = "webp",
+  sourceUnderlay = null
+} = {}) {
   const geometry = computeDualSaveGeometry(prompt);
-  const { source } = bakeDualRasters({ geometry, overlay });
+  const underlay = sourceUnderlay ?? await loadSourceUnderlayRgba(prompt);
+  const { source } = bakeDualRasters({ geometry, overlay, sourceUnderlay: underlay });
   const encoded = await encodeRgbaBuffer(source, format);
   return {
     blob: encoded.blob,
@@ -142,7 +151,8 @@ export async function bakeAndEncodeSourceFraming({ overlay, prompt, format = "we
 /**
  * Build a Source Framing preview data URL from a Prompt-canvas **overlay** source.
  * Reuses dual-Save geometry/remap — not a second save path. Input must be ink-only
- * (transparent outside strokes), not a merged/composite raster.
+ * (transparent outside strokes), not a merged/composite raster. Output is source
+ * image + remapped ink (same bake as `_full`).
  * @param {object} options Options.
  * @param {string} options.src Overlay image URL or data URL.
  * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} options.prompt Prompt.
@@ -152,9 +162,37 @@ export async function bakeAndEncodeSourceFraming({ overlay, prompt, format = "we
 export async function buildSourceFramingPreviewDataUrl({ src, prompt, submission = null } = {}) {
   if ( !src || !hasSourceBackground(prompt) ) return null;
   const size = resolveSubmissionOverlaySize(submission, prompt);
-  const overlay = await decodeImageToRgba(src, size.width, size.height);
-  const baked = await bakeAndEncodeSourceFraming({ overlay, prompt, format: "webp" });
+  const [overlay, sourceUnderlay] = await Promise.all([
+    decodeImageToRgba(src, size.width, size.height),
+    loadSourceUnderlayRgba(prompt)
+  ]);
+  const baked = await bakeAndEncodeSourceFraming({
+    overlay,
+    prompt,
+    format: "webp",
+    sourceUnderlay
+  });
   return blobToDataUrl(baked.blob);
+}
+
+/**
+ * Decode the prompt's source background into an RGBA buffer at natural size.
+ * Uses the same CORS/taint-safe Image load path as overlay decode.
+ * @param {{background?: object}|null|undefined} prompt Prompt.
+ * @returns {Promise<{width: number, height: number, data: Uint8ClampedArray}|null>}
+ */
+export async function loadSourceUnderlayRgba(prompt) {
+  if ( !hasSourceBackground(prompt) ) return null;
+  const background = prompt.background;
+  const path = background.path;
+  const width = Math.floor(Number(background.naturalWidth));
+  const height = Math.floor(Number(background.naturalHeight));
+  try {
+    return await decodeImageToRgba(path, width, height);
+  } catch (err) {
+    console.warn("drawing-prompts | Source Framing underlay load failed", err);
+    return null;
+  }
 }
 
 /**
@@ -207,7 +245,7 @@ export async function decodeImageToRgba(src, width, height) {
   img.crossOrigin = "anonymous";
   await new Promise((resolve, reject) => {
     img.addEventListener("load", resolve, { once: true });
-    img.addEventListener("error", () => reject(new Error("Overlay image load failed.")), { once: true });
+    img.addEventListener("error", () => reject(new Error("Image load failed.")), { once: true });
     img.src = src;
   });
   const canvas = document.createElement("canvas");

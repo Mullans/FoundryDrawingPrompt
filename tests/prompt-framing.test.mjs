@@ -217,6 +217,76 @@ test("bakeDualRasters pad-beyond-source: ink outside source AABB is dropped from
   }
 });
 
+test("bakeDualRasters with sourceUnderlay: remapped ink sits on source; underlay remains where ink absent", () => {
+  // Source 4×4, framing center 2×2 crop, stretch onto 4×4 prompt canvas → scale 2.
+  const geometry = computeFramingGeometry({
+    sourceWidth: 4,
+    sourceHeight: 4,
+    framing: { x: 1, y: 1, width: 2, height: 2 },
+    fitMode: FIT_MODE.STRETCH,
+    canvasWidth: 4,
+    canvasHeight: 4
+  });
+
+  // Distinct underlay color at every source pixel (green channel encodes x+y).
+  const sourceUnderlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(sourceUnderlay, 4, x, y, [10, x * 40 + y * 10, 20, 255]);
+    }
+  }
+
+  const overlay = blankRgba(4, 4);
+  setPixel(overlay, 4, 1, 1, [255, 0, 0, 255]); // marker at prompt (1,1)
+
+  const { source } = bakeDualRasters({ geometry, overlay, sourceUnderlay });
+
+  const mapped = mapPromptToSource(geometry, 1, 1);
+  const sx = Math.round(mapped.x);
+  const sy = Math.round(mapped.y);
+  assert.deepEqual(getPixel(source, 4, sx, sy), [255, 0, 0, 255]);
+
+  // Ink-absent pixels keep the source underlay (not transparent).
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      if ( x === sx && y === sy ) continue;
+      assert.deepEqual(
+        getPixel(source, 4, x, y),
+        [10, x * 40 + y * 10, 20, 255],
+        `underlay missing at (${x},${y})`
+      );
+    }
+  }
+});
+
+test("bakeDualRasters with sourceUnderlay: semi-transparent ink blends over source", () => {
+  const geometry = computeFramingGeometry({
+    sourceWidth: 2,
+    sourceHeight: 2,
+    framing: { x: 0, y: 0, width: 2, height: 2 },
+    fitMode: FIT_MODE.STRETCH,
+    canvasWidth: 2,
+    canvasHeight: 2
+  });
+
+  const sourceUnderlay = blankRgba(2, 2);
+  setPixel(sourceUnderlay, 2, 0, 0, [0, 0, 255, 255]); // opaque blue
+  setPixel(sourceUnderlay, 2, 1, 0, [0, 0, 255, 255]);
+  setPixel(sourceUnderlay, 2, 0, 1, [0, 0, 255, 255]);
+  setPixel(sourceUnderlay, 2, 1, 1, [0, 0, 255, 255]);
+
+  const overlay = blankRgba(2, 2);
+  setPixel(overlay, 2, 0, 0, [255, 0, 0, 128]); // 50% red
+
+  const { source } = bakeDualRasters({ geometry, overlay, sourceUnderlay });
+  const pixel = getPixel(source, 2, 0, 0);
+  // Source-over: out ≈ (127–128, 0, 127–128, 255)
+  assert.equal(pixel[3], 255);
+  assert.ok(Math.abs(pixel[0] - 128) <= 1, `red channel ${pixel[0]}`);
+  assert.equal(pixel[1], 0);
+  assert.ok(Math.abs(pixel[2] - 128) <= 1, `blue channel ${pixel[2]}`);
+  assert.deepEqual(getPixel(source, 2, 1, 1), [0, 0, 255, 255]);
+});
 /**
  * @param {number} width
  * @param {number} height

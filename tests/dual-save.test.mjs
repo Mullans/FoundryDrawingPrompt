@@ -141,6 +141,35 @@ test("dual save remaps overlay ink into source natural resolution", () => {
   assert.deepEqual(getPixel(source, 4, sx, sy), [255, 0, 0, 255]);
 });
 
+test("dual save Source Framing bake composites remapped ink over source underlay", () => {
+  const geometry = computeDualSaveGeometry({
+    canvasWidth: 4,
+    canvasHeight: 4,
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      fitMode: FIT_MODE.STRETCH,
+      naturalWidth: 4,
+      naturalHeight: 4,
+      framing: { x: 0, y: 0, width: 4, height: 4 }
+    }
+  });
+
+  const sourceUnderlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(sourceUnderlay, 4, x, y, [40, 80, 120, 255]);
+    }
+  }
+
+  const overlay = blankRgba(4, 4);
+  setPixel(overlay, 4, 2, 2, [255, 255, 0, 255]);
+  const { source } = bakeDualRasters({ geometry, overlay, sourceUnderlay });
+
+  assert.deepEqual(getPixel(source, 4, 2, 2), [255, 255, 0, 255]);
+  assert.deepEqual(getPixel(source, 4, 0, 0), [40, 80, 120, 255]);
+  assert.deepEqual(getPixel(source, 4, 3, 3), [40, 80, 120, 255]);
+});
 test("normalizeFramingView rejects Source Framing without a source and unknown values", () => {
   assert.equal(normalizeFramingView(FRAMING_VIEW.SOURCE, { hasSource: true }), FRAMING_VIEW.SOURCE);
   assert.equal(normalizeFramingView(FRAMING_VIEW.SOURCE, { hasSource: false }), FRAMING_VIEW.PROMPT_CANVAS);
