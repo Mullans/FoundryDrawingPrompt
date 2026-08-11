@@ -106,6 +106,7 @@
   position: sticky;
   top: 0;
   align-self: start;
+  min-height: 0;
   max-height: 100%;
 }
 
@@ -113,6 +114,7 @@
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -467,6 +469,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
 }
@@ -474,6 +477,9 @@
 /*
  * Panel void hosts the aspect-true Canvas plate. Chrome and accent stay on the
  * plate; this shell is plain and absorbs resize (letterbox/pillarbox void).
+ * Host size comes from viewport/panel (height + max-height), not the plate
+ * child — that child sets explicit px; without min-height:0 the host will not
+ * shrink below the child (flex default min-height:auto).
  */
 .drawing-prompts .dp-plate-stage {
   position: relative;
@@ -481,8 +487,10 @@
   flex: 1 1 auto;
   align-items: center;
   justify-content: center;
-  min-height: 220px;
+  min-width: 0;
+  min-height: min(220px, 100%);
   height: min(42vh, 360px);
+  max-height: min(42vh, 360px);
   overflow: hidden;
   background: transparent;
   border: none;
@@ -492,8 +500,9 @@
 }
 
 .drawing-prompts .is-review .dp-plate-stage {
-  min-height: 230px;
+  min-height: min(230px, 100%);
   height: min(48vh, 420px);
+  max-height: min(48vh, 420px);
 }
 
 .drawing-prompts .dp-framing-viewport {

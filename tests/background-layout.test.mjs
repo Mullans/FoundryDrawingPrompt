@@ -49,17 +49,14 @@ test("computeBackgroundLayout stretches exactly to the canvas rectangle", () => 
   });
 });
 
-test("computeBackgroundLayout placed fills the canvas like stretch", () => {
+test("computeBackgroundLayout placed fills the canvas box (crop aspect is locked by framing helpers)", () => {
+  // Placed layout dest is full canvas; isotropic source mapping requires ROI aspect == canvas.
   assert.deepEqual(computeBackgroundLayout(800, 600, 200, 400, FIT_MODE.PLACED), {
     dx: 0,
     dy: 0,
     dw: 800,
     dh: 600
   });
-  assert.deepEqual(
-    computeBackgroundLayout(800, 600, 200, 400, FIT_MODE.PLACED),
-    computeBackgroundLayout(800, 600, 200, 400, FIT_MODE.STRETCH)
-  );
 });
 
 test("computeBackgroundLayout fits the whole image inside the canvas (fit-canvas)", () => {

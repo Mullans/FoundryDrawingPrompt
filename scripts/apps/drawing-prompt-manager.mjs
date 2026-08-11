@@ -3,6 +3,8 @@ import {
   FRAMING_ZOOM_STEP,
   drawFramingEditor,
   framingAfterFitModeSelect,
+  framingForPlacedStart,
+  lockFramingToCanvasAspect,
   panFraming,
   resetFraming,
   resolveDraftFraming,
@@ -567,6 +569,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /**
    * Size the compose Canvas plate to draft Prompt canvas aspect inside the void stage.
+   * Stage uses min-height:0 + height/max-height caps so the host can shrink with the window
+   * even though the plate child has explicit px size.
    * @returns {void}
    */
   #layoutFramingPlate() {
@@ -674,29 +678,53 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       canvasEl.width = viewportWidth;
       canvasEl.height = viewportHeight;
     }
-    drawFramingEditor(
-      canvasEl.getContext("2d"),
-      img,
+    drawFramingEditor(canvasEl.getContext("2d"), img, {
       framing,
-      naturalWidth,
-      naturalHeight,
+      sourceWidth: naturalWidth,
+      sourceHeight: naturalHeight,
+      fitMode: this.draft.background.fitMode,
+      canvasWidth: this.draft.canvasWidth,
+      canvasHeight: this.draft.canvasHeight,
       viewportWidth,
       viewportHeight
-    );
+    });
   }
 
   /**
    * Apply a Prompt Framing rect to the draft and refresh previews.
-   * Manual pan/zoom switches Fit mode to Placed; framing reset leaves Fit mode alone
-   * (full-source rect; may remain Placed).
+   * Manual pan/zoom switches Fit mode to Placed and locks crop aspect to GM canvas dims
+   * (only Stretch may use anisotropic fill of non-matching ROI).
+   * Framing reset leaves Fit mode alone (full-source rect; may remain Placed).
    * @param {{x: number, y: number, width: number, height: number}} framing Framing rect.
-   * @param {{fromPanZoom?: boolean}} [options] When true, set Fit mode to Placed.
+   * @param {{fromPanZoom?: boolean}} [options] When true, set Fit mode to Placed and lock aspect.
    * @returns {void}
    */
   #applyDraftFraming(framing, { fromPanZoom = false } = {}) {
     if ( this.activePrompt || !this.draft.background.path ) return;
-    this.draft.background.framing = { ...framing };
-    if ( fromPanZoom ) this.#setDraftFitMode(FIT_MODE.PLACED);
+    let next = { ...framing };
+    if ( fromPanZoom ) {
+      const canvasWidth = this.draft.canvasWidth;
+      const canvasHeight = this.draft.canvasHeight;
+      const previousFitMode = this.draft.background.fitMode;
+      const enteringPlaced = previousFitMode !== FIT_MODE.PLACED;
+      if ( enteringPlaced && (
+        previousFitMode === FIT_MODE.STRETCH || !framingMatchesCanvasAspect(next, canvasWidth, canvasHeight)
+      ) ) {
+        next = framingForPlacedStart({
+          sourceWidth: this.draft.background.naturalWidth,
+          sourceHeight: this.draft.background.naturalHeight,
+          framing: next,
+          canvasWidth,
+          canvasHeight
+        });
+      } else {
+        next = lockFramingToCanvasAspect(next, canvasWidth, canvasHeight);
+      }
+      this.draft.background.framing = next;
+      this.#setDraftFitMode(FIT_MODE.PLACED);
+    } else {
+      this.draft.background.framing = next;
+    }
     this.#updateFramingEditor();
   }
 
@@ -712,12 +740,27 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * React to a Fit mode select change. Non-Placed modes reset framing to full source.
+   * React to a Fit mode select change.
+   * Non-Placed modes reset framing to full source.
+   * Placed: seed a canvas-aspect ROI containing the current framing (Fit Canvas-like start).
    * @param {string} previousFitMode Fit mode before the form sync.
    * @param {string} nextFitMode Fit mode after the form sync.
    * @returns {void}
    */
   #handleFitModeChange(previousFitMode, nextFitMode) {
+    if ( nextFitMode === FIT_MODE.PLACED ) {
+      const { naturalWidth, naturalHeight, path } = this.draft.background;
+      if ( !path || !(Number(naturalWidth) > 0 && Number(naturalHeight) > 0) ) return;
+      const current = resolveDraftFraming(this.draft.background);
+      this.draft.background.framing = framingForPlacedStart({
+        sourceWidth: naturalWidth,
+        sourceHeight: naturalHeight,
+        framing: current,
+        canvasWidth: this.draft.canvasWidth,
+        canvasHeight: this.draft.canvasHeight
+      });
+      return;
+    }
     const full = framingAfterFitModeSelect(this.draft.background, previousFitMode, nextFitMode);
     if ( full ) this.draft.background.framing = { ...full };
   }
@@ -822,7 +865,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       focusX: metrics.width / 2,
       focusY: metrics.height / 2,
       viewportWidth: metrics.width,
-      viewportHeight: metrics.height
+      viewportHeight: metrics.height,
+      canvasWidth: this.draft.canvasWidth,
+      canvasHeight: this.draft.canvasHeight
     }), { fromPanZoom: true });
   }
 
@@ -842,7 +887,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         dxDisplay: gesture.dx,
         dyDisplay: gesture.dy,
         viewportWidth: metrics.width,
-        viewportHeight: metrics.height
+        viewportHeight: metrics.height,
+        canvasWidth: this.draft.canvasWidth,
+        canvasHeight: this.draft.canvasHeight
       }), { fromPanZoom: true });
       return;
     }
@@ -852,7 +899,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       focusX: event.clientX - rect.left,
       focusY: event.clientY - rect.top,
       viewportWidth: metrics.width,
-      viewportHeight: metrics.height
+      viewportHeight: metrics.height,
+      canvasWidth: this.draft.canvasWidth,
+      canvasHeight: this.draft.canvasHeight
     }), { fromPanZoom: true });
   }
 
@@ -888,7 +937,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       dxDisplay,
       dyDisplay,
       viewportWidth: metrics.width,
-      viewportHeight: metrics.height
+      viewportHeight: metrics.height,
+      canvasWidth: this.draft.canvasWidth,
+      canvasHeight: this.draft.canvasHeight
     }), { fromPanZoom: true });
   }
 
@@ -2002,6 +2053,22 @@ function sourceFramingPreviewCacheKey(assignmentId, promptId, src) {
   const head = value.slice(0, 48);
   const tail = value.length > 64 ? value.slice(-24) : "";
   return `${assignmentId}|${promptId}|${value.length}|${head}|${tail}`;
+}
+
+/**
+ * Whether a framing ROI matches Prompt canvas aspect closely enough for isotropic Placed fill.
+ * @param {{width?: number, height?: number}} framing Framing rect.
+ * @param {number} canvasWidth Canvas width.
+ * @param {number} canvasHeight Canvas height.
+ * @returns {boolean}
+ */
+function framingMatchesCanvasAspect(framing, canvasWidth, canvasHeight) {
+  const fw = Number(framing?.width);
+  const fh = Number(framing?.height);
+  const cw = Number(canvasWidth);
+  const ch = Number(canvasHeight);
+  if ( !(fw > 0 && fh > 0 && cw > 0 && ch > 0) ) return false;
+  return Math.abs(fw / fh - cw / ch) < 1e-3;
 }
 
 /**

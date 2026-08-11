@@ -1,5 +1,5 @@
 import { FIT_MODE } from "../constants.mjs";
-import { defaultPromptFraming } from "./prompt-framing.mjs";
+import { computeFramingGeometry, defaultPromptFraming } from "./prompt-framing.mjs";
 
 /** Minimum Prompt Framing edge length in source pixels. */
 export const MIN_FRAMING_EDGE = 1;
@@ -52,32 +52,134 @@ export function framingAfterFitModeSelect(background, previousFitMode, nextFitMo
 }
 
 /**
- * Pan Prompt Framing by viewport pixel delta.
- * @param {{x: number, y: number, width: number, height: number}} framing Current framing.
- * @param {{dxDisplay: number, dyDisplay: number, viewportWidth: number, viewportHeight: number}} delta Pan delta.
+ * Expand or shrink framing so width/height matches Prompt canvas aspect, keeping the center fixed.
+ * @param {{x?: number, y?: number, width?: number, height?: number}} framing Current framing.
+ * @param {number} canvasWidth Prompt canvas width.
+ * @param {number} canvasHeight Prompt canvas height.
  * @returns {{x: number, y: number, width: number, height: number}}
  */
-export function panFraming(framing, { dxDisplay = 0, dyDisplay = 0, viewportWidth, viewportHeight } = {}) {
+export function lockFramingToCanvasAspect(framing, canvasWidth, canvasHeight) {
+  const frame = normalizeFraming(framing);
+  const cw = positive(canvasWidth, 1);
+  const ch = positive(canvasHeight, 1);
+  const aspect = cw / ch;
+  const centerX = frame.x + frame.width / 2;
+  const centerY = frame.y + frame.height / 2;
+  let width = frame.width;
+  let height = frame.height;
+  if ( width / height > aspect ) {
+    // Too wide for canvas aspect: grow height.
+    height = width / aspect;
+  } else {
+    // Too tall (or already matching): grow width.
+    width = height * aspect;
+  }
+  width = clampEdge(width);
+  height = clampEdge(height);
+  // Reconcile if edge clamp broke the aspect (e.g. one side hit MAX).
+  if ( Math.abs(width / height - aspect) > 1e-9 ) {
+    if ( width / height > aspect ) height = clampEdge(width / aspect);
+    else width = clampEdge(height * aspect);
+  }
+  return normalizeFraming({
+    x: centerX - width / 2,
+    y: centerY - height / 2,
+    width,
+    height
+  });
+}
+
+/**
+ * Build the initial Placed-mode Prompt Framing ROI: canvas-aspect crop that contains the
+ * current framing (or full source), like a Fit Canvas start window.
+ * @param {object} options Options.
+ * @param {number} options.sourceWidth Natural source width.
+ * @param {number} options.sourceHeight Natural source height.
+ * @param {{x?: number, y?: number, width?: number, height?: number}|null} [options.framing] Current framing.
+ * @param {number} options.canvasWidth Prompt canvas width.
+ * @param {number} options.canvasHeight Prompt canvas height.
+ * @returns {{x: number, y: number, width: number, height: number}}
+ */
+export function framingForPlacedStart({
+  sourceWidth,
+  sourceHeight,
+  framing = null,
+  canvasWidth,
+  canvasHeight
+} = {}) {
+  const source = isValidFraming(framing)
+    ? normalizeFraming(framing)
+    : defaultPromptFraming(sourceWidth, sourceHeight);
+  const cw = positive(canvasWidth, 1);
+  const ch = positive(canvasHeight, 1);
+  const aspect = cw / ch;
+  // Smallest canvas-aspect box that fully contains `source`.
+  const width = clampEdge(Math.max(source.width, source.height * aspect));
+  const height = clampEdge(width / aspect);
+  const centerX = source.x + source.width / 2;
+  const centerY = source.y + source.height / 2;
+  return normalizeFraming({
+    x: centerX - width / 2,
+    y: centerY - height / 2,
+    width,
+    height
+  });
+}
+
+/**
+ * Pan Prompt Framing by viewport pixel delta.
+ * When both canvasWidth and canvasHeight are provided, re-locks to canvas aspect after pan.
+ * @param {{x: number, y: number, width: number, height: number}} framing Current framing.
+ * @param {{
+ *   dxDisplay: number, dyDisplay: number, viewportWidth: number, viewportHeight: number,
+ *   canvasWidth?: number, canvasHeight?: number
+ * }} delta Pan delta.
+ * @returns {{x: number, y: number, width: number, height: number}}
+ */
+export function panFraming(framing, {
+  dxDisplay = 0,
+  dyDisplay = 0,
+  viewportWidth,
+  viewportHeight,
+  canvasWidth,
+  canvasHeight
+} = {}) {
   const vw = positive(viewportWidth, 1);
   const vh = positive(viewportHeight, 1);
   const frame = normalizeFraming(framing);
   const scaleX = frame.width / vw;
   const scaleY = frame.height / vh;
-  return normalizeFraming({
+  const panned = normalizeFraming({
     x: frame.x - Number(dxDisplay || 0) * scaleX,
     y: frame.y - Number(dyDisplay || 0) * scaleY,
     width: frame.width,
     height: frame.height
   });
+  if ( hasCanvasDims(canvasWidth, canvasHeight) ) {
+    return lockFramingToCanvasAspect(panned, canvasWidth, canvasHeight);
+  }
+  return panned;
 }
 
 /**
  * Zoom Prompt Framing about a viewport focus point.
+ * When both canvasWidth and canvasHeight are provided, re-locks to canvas aspect after zoom.
  * @param {{x: number, y: number, width: number, height: number}} framing Current framing.
- * @param {{factor: number, focusX?: number, focusY?: number, viewportWidth: number, viewportHeight: number}} options Zoom options.
+ * @param {{
+ *   factor: number, focusX?: number, focusY?: number, viewportWidth: number, viewportHeight: number,
+ *   canvasWidth?: number, canvasHeight?: number
+ * }} options Zoom options.
  * @returns {{x: number, y: number, width: number, height: number}}
  */
-export function zoomFraming(framing, { factor, focusX, focusY, viewportWidth, viewportHeight } = {}) {
+export function zoomFraming(framing, {
+  factor,
+  focusX,
+  focusY,
+  viewportWidth,
+  viewportHeight,
+  canvasWidth,
+  canvasHeight
+} = {}) {
   const vw = positive(viewportWidth, 1);
   const vh = positive(viewportHeight, 1);
   const frame = normalizeFraming(framing);
@@ -88,37 +190,117 @@ export function zoomFraming(framing, { factor, focusX, focusY, viewportWidth, vi
   const zoomFactor = Math.max(0.01, Number(factor) || 1);
   const width = clampEdge(frame.width / zoomFactor);
   const height = clampEdge(frame.height / zoomFactor);
-  return normalizeFraming({
+  const zoomed = normalizeFraming({
     x: sourceX - fx * width,
     y: sourceY - fy * height,
     width,
     height
   });
+  if ( hasCanvasDims(canvasWidth, canvasHeight) ) {
+    return lockFramingToCanvasAspect(zoomed, canvasWidth, canvasHeight);
+  }
+  return zoomed;
 }
 
 /**
- * Draw the Prompt Framing editor viewport: source image positioned within the framing rect.
- * @param {CanvasRenderingContext2D} context Target context.
- * @param {CanvasImageSource} img Loaded source image.
- * @param {{x: number, y: number, width: number, height: number}} framing Prompt Framing rect.
- * @param {number} sourceWidth Natural source width.
- * @param {number} sourceHeight Natural source height.
- * @param {number} viewportWidth Viewport width.
- * @param {number} viewportHeight Viewport height.
- * @returns {void}
+ * @param {unknown} canvasWidth
+ * @param {unknown} canvasHeight
+ * @returns {boolean}
  */
-export function drawFramingEditor(context, img, framing, sourceWidth, sourceHeight, viewportWidth, viewportHeight) {
+function hasCanvasDims(canvasWidth, canvasHeight) {
+  return Number.isFinite(Number(canvasWidth)) && Number.isFinite(Number(canvasHeight))
+    && Number(canvasWidth) > 0 && Number(canvasHeight) > 0;
+}
+
+/**
+ * Scale Framed-background placement from logical Prompt canvas space onto the editor plate.
+ * Matches bake destination when the plate is aspect-true to canvas W×H.
+ * @param {object} options Options.
+ * @param {ReturnType<typeof computeFramingGeometry>} options.geometry Framing + Fit geometry (logical canvas).
+ * @param {number} options.viewportWidth Plate width in CSS/display pixels.
+ * @param {number} options.viewportHeight Plate height in CSS/display pixels.
+ * @returns {{
+ *   sourceX: number, sourceY: number, sourceW: number, sourceH: number,
+ *   destX: number, destY: number, destW: number, destH: number,
+ *   scaleX: number, scaleY: number
+ * }}
+ */
+export function resolveFramingEditorDrawRect({ geometry, viewportWidth, viewportHeight } = {}) {
   const vw = positive(viewportWidth, 1);
   const vh = positive(viewportHeight, 1);
-  const sw = positive(sourceWidth, 1);
-  const sh = positive(sourceHeight, 1);
-  const frame = normalizeFraming(framing);
+  const cw = positive(geometry?.canvasWidth, 1);
+  const ch = positive(geometry?.canvasHeight, 1);
+  const framing = geometry?.framing ?? { x: 0, y: 0, width: 1, height: 1 };
+  const placement = geometry?.framedPlacement ?? { dx: 0, dy: 0, dw: cw, dh: ch };
+  const scaleX = vw / cw;
+  const scaleY = vh / ch;
+  return {
+    sourceX: framing.x,
+    sourceY: framing.y,
+    sourceW: framing.width,
+    sourceH: framing.height,
+    destX: placement.dx * scaleX,
+    destY: placement.dy * scaleY,
+    destW: placement.dw * scaleX,
+    destH: placement.dh * scaleY,
+    scaleX,
+    scaleY
+  };
+}
+
+/**
+ * Draw the Prompt Framing editor viewport: same framing + Fit placement as Framed background bake,
+ * scaled from logical canvas W×H onto the aspect-true plate (WYSIWYG for send).
+ * @param {CanvasRenderingContext2D} context Target context.
+ * @param {CanvasImageSource} img Loaded source image.
+ * @param {object} options Draw options.
+ * @param {{x: number, y: number, width: number, height: number}} options.framing Prompt Framing rect.
+ * @param {number} options.sourceWidth Natural source width.
+ * @param {number} options.sourceHeight Natural source height.
+ * @param {string} options.fitMode Fit mode (Center, Stretch, Placed, etc.).
+ * @param {number} options.canvasWidth Draft Prompt canvas width.
+ * @param {number} options.canvasHeight Draft Prompt canvas height.
+ * @param {number} options.viewportWidth Plate viewport width.
+ * @param {number} options.viewportHeight Plate viewport height.
+ * @returns {void}
+ */
+export function drawFramingEditor(context, img, {
+  framing,
+  sourceWidth,
+  sourceHeight,
+  fitMode,
+  canvasWidth,
+  canvasHeight,
+  viewportWidth,
+  viewportHeight
+} = {}) {
+  const vw = positive(viewportWidth, 1);
+  const vh = positive(viewportHeight, 1);
+  const geometry = computeFramingGeometry({
+    sourceWidth,
+    sourceHeight,
+    framing,
+    fitMode,
+    canvasWidth,
+    canvasHeight
+  });
+  const rect = resolveFramingEditorDrawRect({
+    geometry,
+    viewportWidth: vw,
+    viewportHeight: vh
+  });
   context.clearRect(0, 0, vw, vh);
-  const destX = -frame.x / frame.width * vw;
-  const destY = -frame.y / frame.height * vh;
-  const destW = sw / frame.width * vw;
-  const destH = sh / frame.height * vh;
-  context.drawImage(img, 0, 0, sw, sh, destX, destY, destW, destH);
+  context.drawImage(
+    img,
+    rect.sourceX,
+    rect.sourceY,
+    rect.sourceW,
+    rect.sourceH,
+    rect.destX,
+    rect.destY,
+    rect.destW,
+    rect.destH
+  );
 }
 
 /**

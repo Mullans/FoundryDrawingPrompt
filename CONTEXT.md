@@ -121,10 +121,10 @@ Scales the framed region so its height matches the Prompt canvas height, preserv
 Scales the framed region by the minimum factor that fits it entirely inside the Prompt canvas, preserving aspect ratio, then centers it. Behaves like Fit width when the region is relatively wider, and like Fit height when it is relatively taller.
 
 **Fit mode — Stretch**:
-Scales the framed region to exactly fill the Prompt canvas, ignoring aspect ratio.
+Scales the framed region to exactly fill the Prompt canvas, ignoring aspect ratio. The only Fit mode that may non-uniformly distort source pixels.
 
 **Fit mode — Placed**:
-Delivers the manually authored Prompt Framing region so it fills the Prompt canvas exactly (same framed placement as Stretch). Not an auto layout of the full source—it is the delivery mode for the current framing rect. Pan or zoom in the framing editor sets Fit mode to Placed; choosing any other fit mode resets framing to the full source. Framing reset restores full-source framing and leaves Fit mode unchanged (Placed may remain Placed with a full-source rect). Locked with Prompt Framing after Send.
+Delivers the manually authored Prompt Framing crop window so it fills the Prompt canvas. The crop window’s aspect is locked to the Prompt canvas width×height, so fill is isotropic (source aspect is preserved). Only Stretch may use a non-canvas-aspect ROI that produces distortion. Pan or zoom in the framing editor sets Fit mode to Placed and locks/repairs crop aspect (from Stretch, re-seeds a canvas-aspect window that contains the current framing, like a Fit Canvas start). Choosing any other Fit mode resets framing to the full source. Framing reset restores full-source framing and leaves Fit mode unchanged (Placed may remain Placed with a full-source rect; re-pan re-locks aspect). Locked with Prompt Framing after Send.
 
 ## Timer
 
