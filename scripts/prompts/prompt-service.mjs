@@ -11,14 +11,16 @@ import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAll
 import { defaultAssignmentAssetName, promptAssetFolderName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
 import { prepareFramedBackgroundForSend, serializeBackgroundForPlayer } from "./framed-delivery.mjs";
 import {
-  bakeAndEncodeSourceFraming,
+  bakeAndEncodePromptCanvasMerged,
+  bakeAndEncodeSourceSpaceAssets,
   clearFramingViewAssets,
   decodeImageToRgba,
   hasSavedFramingViewAssets,
   hasSourceBackground,
   normalizeFramingView,
   resolveFramingViewAssetPath,
-  resolveSubmissionOverlaySize
+  resolveSubmissionOverlaySize,
+  shouldWriteMergedSubmission
 } from "./dual-save.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
@@ -409,32 +411,54 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
     });
     const dir = location.final;
     await ensureDir(dir);
-    const hasMerged = hasMergedSubmission(submission);
     const writeSourceFull = hasSourceBackground(prompt);
+    let hasMerged = hasMergedSubmission(submission);
+    let rematerializedMergedBlob = null;
+    const format = extensionFor(primarySubmissionFormat(submission, hasMerged));
+    if ( shouldWriteMergedSubmission(submission, prompt) && !hasMerged ) {
+      const overlayRgba = await loadSubmissionOverlayRgba(submission, prompt);
+      const rematerialized = await bakeAndEncodePromptCanvasMerged({
+        overlay: overlayRgba,
+        prompt,
+        format
+      });
+      if ( rematerialized ) {
+        rematerializedMergedBlob = rematerialized.blob;
+        hasMerged = true;
+      }
+    }
     const filenames = uniqueDrawingAssetFilenames({
       name: resolvedName,
       playerName: assignment.userName,
-      extension: extensionFor(primarySubmissionFormat(submission, hasMerged)),
+      extension: format,
       hasMerged,
       hasSourceFull: writeSourceFull,
       existingFiles: await browseFiles(dir),
       fallback: game.i18n.localize("DRAWING-PROMPTS.manager.saveDialog.defaultSlug")
     });
-    const [primary, opLog, overlay] = await uploadSubmissionAssets(dir, filenames, submission, hasMerged);
+    const [primary, opLog, overlay] = await uploadSubmissionAssets(
+      dir,
+      filenames,
+      submission,
+      hasMerged,
+      rematerializedMergedBlob
+    );
     assignment.assets.overlayPath = hasMerged ? overlay.path : primary.path;
     assignment.assets.mergedPath = hasMerged ? primary.path : null;
     assignment.assets.oplogPath = opLog.path;
     if ( writeSourceFull ) {
-      const full = await uploadSourceFramingAsset({
+      const sourceAssets = await uploadSourceFramingAssets({
         dir,
-        filename: filenames.sourceFull,
+        filenames,
         submission,
         prompt,
-        format: extensionFor(primarySubmissionFormat(submission, hasMerged))
+        format
       });
-      assignment.assets.fullPath = full.path;
+      assignment.assets.fullPath = sourceAssets.full.path;
+      assignment.assets.sourceOverlayPath = sourceAssets.sourceOverlay.path;
     } else {
       assignment.assets.fullPath = null;
+      assignment.assets.sourceOverlayPath = null;
     }
     assignment.assets.folder = dir;
     assignment.assets.tileWidth = submissionTileWidth(submission, prompt);
@@ -1284,9 +1308,23 @@ function resolveDrawingName(prompt, explicitName) {
  * @param {object} filenames Resolved filenames.
  * @param {object} submission Submission payload.
  * @param {boolean} hasMerged Whether a merged image exists.
+ * @param {Blob|null} [rematerializedMergedBlob] GM-baked merged blob when submission lacked merged.
  * @returns {Promise<[{path: string}, {path: string}, {path: string}|undefined]>} Uploaded assets.
  */
-async function uploadSubmissionAssets(dir, filenames, submission, hasMerged) {
+async function uploadSubmissionAssets(dir, filenames, submission, hasMerged, rematerializedMergedBlob = null) {
+  if ( rematerializedMergedBlob && hasMerged ) {
+    const uploads = [
+      uploadBlob(dir, filenames.primary, rematerializedMergedBlob),
+      uploadJson(dir, filenames.opLog, submission.opLog ?? {})
+    ];
+    if ( isStagedSubmission(submission) ) {
+      uploads.push(uploadStagedPath(dir, filenames.overlay, submission.staged.overlayPath, submission.receiptTs));
+    } else {
+      uploads.push(uploadDataUrl(dir, filenames.overlay, submission.overlay?.dataUrl));
+    }
+    return Promise.all(uploads);
+  }
+
   if ( isStagedSubmission(submission) ) {
     const primaryPath = hasMerged ? submission.staged.mergedPath : submission.staged.overlayPath;
     const uploads = [
@@ -1342,19 +1380,23 @@ async function loadSubmissionOverlayRgba(submission, prompt) {
 }
 
 /**
- * Bake and upload the Source Framing `_full` raster for one submission.
+ * Bake and upload Source Framing `_full` and durable source-space overlay rasters.
  * @param {object} options Upload options.
  * @param {string} options.dir Target directory.
- * @param {string} options.filename Target filename.
+ * @param {{sourceFull: string, sourceOverlay: string}} options.filenames Target filenames.
  * @param {object} options.submission Submission payload.
  * @param {import("./prompt-models.mjs").DrawingPrompt} options.prompt Prompt.
  * @param {string} options.format Output format.
- * @returns {Promise<{path: string}>}
+ * @returns {Promise<{full: {path: string}, sourceOverlay: {path: string}}>}
  */
-async function uploadSourceFramingAsset({ dir, filename, submission, prompt, format }) {
+async function uploadSourceFramingAssets({ dir, filenames, submission, prompt, format }) {
   const overlay = await loadSubmissionOverlayRgba(submission, prompt);
-  const encoded = await bakeAndEncodeSourceFraming({ overlay, prompt, format });
-  return uploadBlob(dir, filename, encoded.blob);
+  const baked = await bakeAndEncodeSourceSpaceAssets({ overlay, prompt, format });
+  const [full, sourceOverlay] = await Promise.all([
+    uploadBlob(dir, filenames.sourceFull, baked.full.blob),
+    uploadBlob(dir, filenames.sourceOverlay, baked.sourceOverlay.blob)
+  ]);
+  return { full, sourceOverlay };
 }
 
 /**

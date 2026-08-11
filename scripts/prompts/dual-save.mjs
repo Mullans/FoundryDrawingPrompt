@@ -81,6 +81,16 @@ export function resolveFullFilename(slug, extension) {
 }
 
 /**
+ * Resolve the source-space overlay leaf filename for a saved drawing slug.
+ * @param {string} slug Saved drawing slug.
+ * @param {string} extension Image extension.
+ * @returns {string}
+ */
+export function resolveSourceOverlayFilename(slug, extension) {
+  return dualSaveFilenames(slug, extension).sourceOverlay;
+}
+
+/**
  * Clear persisted Framing View image paths and re-arm the Save gate.
  * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
  * @returns {void}
@@ -90,6 +100,7 @@ export function clearFramingViewAssets(assignment) {
   assignment.assets.overlayPath = null;
   assignment.assets.mergedPath = null;
   assignment.assets.fullPath = null;
+  assignment.assets.sourceOverlayPath = null;
   assignment.savedSubmissionTs = null;
 }
 
@@ -99,7 +110,41 @@ export function clearFramingViewAssets(assignment) {
  * @returns {boolean}
  */
 export function hasSavedFramingViewAssets(assignment) {
-  return Boolean(assignment?.primaryImagePath || assignment?.assets?.fullPath);
+  return Boolean(
+    assignment?.primaryImagePath
+    || assignment?.assets?.fullPath
+    || assignment?.assets?.sourceOverlayPath
+  );
+}
+
+/**
+ * Whether the prompt has a Prompt-canvas background (Framed or source path) that
+ * implies a merged (ink + prompt image) Save output.
+ * @param {{background?: object}|null|undefined} prompt Prompt.
+ * @returns {boolean}
+ */
+export function hasPromptCanvasBackground(prompt) {
+  const background = prompt?.background ?? {};
+  if ( background.sourceType === BG_SOURCE.BLANK ) return false;
+  return Boolean(background.framedPath || background.path);
+}
+
+/**
+ * Whether Save should write a merged Prompt-canvas primary.
+ * True when the submission already carries merged bytes/paths, or when the
+ * prompt has a Framed/prompt background that requires rematerializing merged.
+ * @param {object|null|undefined} submission Submission payload.
+ * @param {{background?: object}|null|undefined} prompt Prompt.
+ * @returns {boolean}
+ */
+export function shouldWriteMergedSubmission(submission, prompt) {
+  if ( !submission ) return false;
+  if ( submission.mode === "staged" ) {
+    if ( submission.staged?.mergedPath ) return true;
+  } else if ( submission.merged?.dataUrl ) {
+    return true;
+  }
+  return hasPromptCanvasBackground(prompt);
 }
 
 /**
@@ -136,8 +181,99 @@ export async function bakeAndEncodeSourceFraming({
   format = "webp",
   sourceUnderlay = null
 } = {}) {
+  const encoded = await bakeAndEncodeSourceSpaceRaster({
+    overlay,
+    prompt,
+    format,
+    sourceUnderlay,
+    includeUnderlay: true
+  });
+  return encoded;
+}
+
+/**
+ * Bake and encode the durable source-space overlay (remapped ink only, no underlay).
+ * @param {object} options Options.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay Overlay RGBA buffer.
+ * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} options.prompt Prompt.
+ * @param {string} [options.format="webp"] Output format.
+ * @returns {Promise<{blob: Blob, format: string, width: number, height: number}>}
+ */
+export async function bakeAndEncodeSourceOverlay({ overlay, prompt, format = "webp" } = {}) {
+  return bakeAndEncodeSourceSpaceRaster({
+    overlay,
+    prompt,
+    format,
+    sourceUnderlay: null,
+    includeUnderlay: false
+  });
+}
+
+/**
+ * Bake and encode both durable source-space rasters from one overlay load.
+ * `_full` includes the source underlay; `_source` is remapped ink only.
+ * @param {object} options Options.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay Overlay RGBA buffer.
+ * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} options.prompt Prompt.
+ * @param {string} [options.format="webp"] Output format.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} [options.sourceUnderlay]
+ *   Optional pre-decoded source RGBA; when omitted, loads from `prompt.background.path`.
+ * @returns {Promise<{
+ *   full: {blob: Blob, format: string, width: number, height: number},
+ *   sourceOverlay: {blob: Blob, format: string, width: number, height: number}
+ * }>}
+ */
+export async function bakeAndEncodeSourceSpaceAssets({
+  overlay,
+  prompt,
+  format = "webp",
+  sourceUnderlay = null
+} = {}) {
   const geometry = computeDualSaveGeometry(prompt);
   const underlay = sourceUnderlay ?? await loadSourceUnderlayRgba(prompt);
+  const { source: inkOnly } = bakeDualRasters({ geometry, overlay, sourceUnderlay: null });
+  const { source: fullBuffer } = bakeDualRasters({ geometry, overlay, sourceUnderlay: underlay });
+  const [sourceOverlay, full] = await Promise.all([
+    encodeRgbaBuffer(inkOnly, format),
+    encodeRgbaBuffer(fullBuffer, format)
+  ]);
+  return {
+    full: {
+      blob: full.blob,
+      format: full.format,
+      width: fullBuffer.width,
+      height: fullBuffer.height
+    },
+    sourceOverlay: {
+      blob: sourceOverlay.blob,
+      format: sourceOverlay.format,
+      width: inkOnly.width,
+      height: inkOnly.height
+    }
+  };
+}
+
+/**
+ * @param {object} options Options.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay Overlay RGBA.
+ * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} options.prompt Prompt.
+ * @param {string} options.format Output format.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} options.sourceUnderlay
+ *   Pre-decoded underlay, or null.
+ * @param {boolean} options.includeUnderlay Whether to composite the source underlay.
+ * @returns {Promise<{blob: Blob, format: string, width: number, height: number}>}
+ */
+async function bakeAndEncodeSourceSpaceRaster({
+  overlay,
+  prompt,
+  format,
+  sourceUnderlay,
+  includeUnderlay
+}) {
+  const geometry = computeDualSaveGeometry(prompt);
+  const underlay = includeUnderlay
+    ? (sourceUnderlay ?? await loadSourceUnderlayRgba(prompt))
+    : null;
   const { source } = bakeDualRasters({ geometry, overlay, sourceUnderlay: underlay });
   const encoded = await encodeRgbaBuffer(source, format);
   return {
@@ -146,6 +282,117 @@ export async function bakeAndEncodeSourceFraming({
     width: source.width,
     height: source.height
   };
+}
+
+/**
+ * Composite a Prompt-canvas overlay onto a same-size underlay (source-over).
+ * Used when Save must rematerialize merged (ink + prompt image) from overlay + Framed bg.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} underlay Underlay RGBA.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} overlay Overlay RGBA.
+ * @returns {{width: number, height: number, data: Uint8ClampedArray}}
+ */
+export function compositeOverlayOntoUnderlay(underlay, overlay) {
+  const width = Number(underlay?.width) || 1;
+  const height = Number(underlay?.height) || 1;
+  const merged = {
+    width,
+    height,
+    data: new Uint8ClampedArray(underlay.data)
+  };
+  const overlayWidth = Number(overlay?.width) || width;
+  const overlayHeight = Number(overlay?.height) || height;
+  const scaleX = width / Math.max(1, overlayWidth);
+  const scaleY = height / Math.max(1, overlayHeight);
+  const data = overlay?.data;
+  if ( !data ) return merged;
+
+  for ( let py = 0; py < overlayHeight; py++ ) {
+    for ( let px = 0; px < overlayWidth; px++ ) {
+      const srcOffset = (py * overlayWidth + px) * 4;
+      const alpha = data[srcOffset + 3];
+      if ( !alpha ) continue;
+      const dx = Math.min(width - 1, Math.max(0, Math.round((px + 0.5) * scaleX - 0.5)));
+      const dy = Math.min(height - 1, Math.max(0, Math.round((py + 0.5) * scaleY - 0.5)));
+      const destOffset = (dy * width + dx) * 4;
+      compositeSourceOverPixel(
+        merged.data,
+        destOffset,
+        data[srcOffset],
+        data[srcOffset + 1],
+        data[srcOffset + 2],
+        alpha
+      );
+    }
+  }
+  return merged;
+}
+
+/**
+ * Bake and encode a Prompt-canvas merged raster (Framed/prompt background + ink).
+ * Prefers `background.framedPath` so the underlay matches what the player saw.
+ * @param {object} options Options.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay Overlay RGBA.
+ * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} options.prompt Prompt.
+ * @param {string} [options.format="webp"] Output format.
+ * @returns {Promise<{blob: Blob, format: string, width: number, height: number}|null>}
+ */
+export async function bakeAndEncodePromptCanvasMerged({ overlay, prompt, format = "webp" } = {}) {
+  if ( !hasPromptCanvasBackground(prompt) ) return null;
+  const background = prompt.background ?? {};
+  const underlayPath = background.framedPath || background.path;
+  if ( !underlayPath ) return null;
+  const width = Math.max(1, Math.floor(Number(prompt.canvasWidth) || Number(overlay?.width) || 1));
+  const height = Math.max(1, Math.floor(Number(prompt.canvasHeight) || Number(overlay?.height) || 1));
+  let underlay;
+  try {
+    underlay = await decodeImageToRgba(underlayPath, width, height);
+  } catch (err) {
+    console.warn("drawing-prompts | Prompt-canvas merged underlay load failed", err);
+    return null;
+  }
+  const merged = compositeOverlayOntoUnderlay(underlay, overlay);
+  const encoded = await encodeRgbaBuffer(merged, format);
+  return {
+    blob: encoded.blob,
+    format: encoded.format,
+    width: merged.width,
+    height: merged.height
+  };
+}
+
+/**
+ * Source-over composite of one pixel onto an RGBA buffer (shared with rematerialize).
+ * @param {Uint8ClampedArray} dest Destination buffer.
+ * @param {number} destOffset Byte offset.
+ * @param {number} sr Red.
+ * @param {number} sg Green.
+ * @param {number} sb Blue.
+ * @param {number} sa Alpha 0–255.
+ * @returns {void}
+ */
+function compositeSourceOverPixel(dest, destOffset, sr, sg, sb, sa) {
+  if ( sa >= 255 ) {
+    dest[destOffset] = sr;
+    dest[destOffset + 1] = sg;
+    dest[destOffset + 2] = sb;
+    dest[destOffset + 3] = 255;
+    return;
+  }
+  const srcA = sa / 255;
+  const dstA = dest[destOffset + 3] / 255;
+  const outA = srcA + dstA * (1 - srcA);
+  if ( outA <= 0 ) {
+    dest[destOffset] = 0;
+    dest[destOffset + 1] = 0;
+    dest[destOffset + 2] = 0;
+    dest[destOffset + 3] = 0;
+    return;
+  }
+  const invSrcA = 1 - srcA;
+  dest[destOffset] = Math.round((sr * srcA + dest[destOffset] * dstA * invSrcA) / outA);
+  dest[destOffset + 1] = Math.round((sg * srcA + dest[destOffset + 1] * dstA * invSrcA) / outA);
+  dest[destOffset + 2] = Math.round((sb * srcA + dest[destOffset + 2] * dstA * invSrcA) / outA);
+  dest[destOffset + 3] = Math.round(outA * 255);
 }
 
 /**

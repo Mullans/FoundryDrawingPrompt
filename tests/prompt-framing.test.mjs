@@ -138,18 +138,21 @@ test("Prompt↔source maps round-trip and match source AABB model", () => {
   assert.ok(Math.abs(back.y - 37.5) < 1e-9);
 });
 
-test("dualSaveFilenames puts _full before the extension", () => {
+test("dualSaveFilenames puts _full and _source before the extension", () => {
   assert.deepEqual(dualSaveFilenames("art.webp"), {
     promptCanvas: "art.webp",
-    source: "art_full.webp"
+    source: "art_full.webp",
+    sourceOverlay: "art_source.webp"
   });
   assert.deepEqual(dualSaveFilenames("hero", "png"), {
     promptCanvas: "hero.png",
-    source: "hero_full.png"
+    source: "hero_full.png",
+    sourceOverlay: "hero_source.png"
   });
   assert.deepEqual(dualSaveFilenames("path/with.dots/name.WEBP"), {
     promptCanvas: "name.webp",
-    source: "name_full.webp"
+    source: "name_full.webp",
+    sourceOverlay: "name_source.webp"
   });
 });
 

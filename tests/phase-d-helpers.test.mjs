@@ -161,6 +161,7 @@ test("uniqueDrawingAssetFilenames chooses a collision-free base for primary, ove
     primary: "camp-layout-ada-lovelace-3.webp",
     overlay: "camp-layout-ada-lovelace-3-overlay.webp",
     sourceFull: null,
+    sourceOverlay: null,
     opLog: "camp-layout-ada-lovelace-3-oplog.json"
   });
 
@@ -175,6 +176,7 @@ test("uniqueDrawingAssetFilenames chooses a collision-free base for primary, ove
     primary: "camp-layout-player.webp",
     overlay: null,
     sourceFull: null,
+    sourceOverlay: null,
     opLog: "camp-layout-player-oplog.json"
   });
 
@@ -188,6 +190,7 @@ test("uniqueDrawingAssetFilenames chooses a collision-free base for primary, ove
     primary: "camp-layout.webp",
     overlay: null,
     sourceFull: null,
+    sourceOverlay: null,
     opLog: "camp-layout-oplog.json"
   });
 });

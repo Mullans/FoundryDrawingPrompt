@@ -104,10 +104,11 @@ export function mapSourceToPrompt(geometry, x, y) {
 }
 
 /**
- * Basename pair for dual Save outputs. `_full` is always before the extension.
+ * Basename set for dual Save outputs. `_full` / `_source` are always before the extension.
  * @param {string} name Basename with optional extension, or a path (leaf used).
  * @param {string} [extension] Extension when `name` has none (default webp).
- * @returns {{promptCanvas: string, source: string}} Prompt-canvas and Source Framing leaves.
+ * @returns {{promptCanvas: string, source: string, sourceOverlay: string}}
+ *   Prompt-canvas primary, Source Framing `_full`, and source-space overlay leaves.
  */
 export function dualSaveFilenames(name, extension) {
   const leaf = String(name ?? "").split(/[\\/]/).pop() || "drawing";
@@ -128,7 +129,8 @@ export function dualSaveFilenames(name, extension) {
   stem = stem || "drawing";
   return {
     promptCanvas: `${stem}.${ext}`,
-    source: `${stem}_full.${ext}`
+    source: `${stem}_full.${ext}`,
+    sourceOverlay: `${stem}_source.${ext}`
   };
 }
 

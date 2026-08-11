@@ -8,6 +8,7 @@ import {
   canPlaceFramingView,
   clearFramingViewAssets,
   computeDualSaveGeometry,
+  hasPromptCanvasBackground,
   hasSavedFramingViewAssets,
   hasSourceBackground,
   normalizeFramingView,
@@ -15,7 +16,10 @@ import {
   pickSubmissionPromptCanvasSrc,
   resolveFramingViewAssetPath,
   resolveFullFilename,
-  resolveSubmissionOverlaySize
+  resolveSourceOverlayFilename,
+  resolveSubmissionOverlaySize,
+  shouldWriteMergedSubmission,
+  compositeOverlayOntoUnderlay
 } from "../scripts/prompts/dual-save.mjs";
 import { isSaveGateOpen } from "../scripts/prompts/transitions.mjs";
 import { uniqueDrawingAssetFilenames } from "../scripts/prompts/naming-service.mjs";
@@ -35,7 +39,12 @@ test("resolveFullFilename puts _full before the extension", () => {
   assert.equal(resolveFullFilename("hero-ada", "png"), "hero-ada_full.png");
 });
 
-test("uniqueDrawingAssetFilenames reserves the _full leaf when a source asset is included", () => {
+test("resolveSourceOverlayFilename puts _source before the extension", () => {
+  assert.equal(resolveSourceOverlayFilename("hero-ada", "webp"), "hero-ada_source.webp");
+  assert.equal(resolveSourceOverlayFilename("hero-ada", "png"), "hero-ada_source.png");
+});
+
+test("uniqueDrawingAssetFilenames reserves _full and _source leaves when source assets are included", () => {
   const names = uniqueDrawingAssetFilenames({
     name: "Griffin",
     playerName: "Ada",
@@ -45,6 +54,18 @@ test("uniqueDrawingAssetFilenames reserves the _full leaf when a source asset is
     existingFiles: ["griffin-ada_full.webp"]
   });
   assert.equal(names.sourceFull, "griffin-ada-2_full.webp");
+  assert.equal(names.sourceOverlay, "griffin-ada-2_source.webp");
+
+  const collideSource = uniqueDrawingAssetFilenames({
+    name: "Griffin",
+    playerName: "Ada",
+    extension: "webp",
+    hasMerged: false,
+    hasSourceFull: true,
+    existingFiles: ["griffin-ada_source.webp"]
+  });
+  assert.equal(collideSource.sourceOverlay, "griffin-ada-2_source.webp");
+  assert.equal(collideSource.sourceFull, "griffin-ada-2_full.webp");
 });
 
 test("computeDualSaveGeometry uses prompt framing and natural source dimensions", () => {
@@ -170,6 +191,89 @@ test("dual save Source Framing bake composites remapped ink over source underlay
   assert.deepEqual(getPixel(source, 4, 0, 0), [40, 80, 120, 255]);
   assert.deepEqual(getPixel(source, 4, 3, 3), [40, 80, 120, 255]);
 });
+
+test("source-space overlay bake is remapped ink only; _full keeps source underlay", () => {
+  const geometry = computeDualSaveGeometry({
+    canvasWidth: 4,
+    canvasHeight: 4,
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      fitMode: FIT_MODE.STRETCH,
+      naturalWidth: 4,
+      naturalHeight: 4,
+      framing: { x: 1, y: 1, width: 2, height: 2 }
+    }
+  });
+
+  const sourceUnderlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(sourceUnderlay, 4, x, y, [10, 20, 30, 255]);
+    }
+  }
+
+  const overlay = blankRgba(4, 4);
+  setPixel(overlay, 4, 1, 1, [255, 0, 0, 255]);
+
+  const { source: sourceOverlay } = bakeDualRasters({ geometry, overlay });
+  const { source: full } = bakeDualRasters({ geometry, overlay, sourceUnderlay });
+
+  const mapped = mapPromptToSource(geometry, 1, 1);
+  const sx = Math.round(mapped.x);
+  const sy = Math.round(mapped.y);
+
+  assert.equal(sourceOverlay.width, 4);
+  assert.equal(sourceOverlay.height, 4);
+  assert.deepEqual(getPixel(sourceOverlay, 4, sx, sy), [255, 0, 0, 255]);
+  assert.deepEqual(getPixel(sourceOverlay, 4, 0, 0), [0, 0, 0, 0]);
+
+  assert.deepEqual(getPixel(full, 4, sx, sy), [255, 0, 0, 255]);
+  assert.deepEqual(getPixel(full, 4, 0, 0), [10, 20, 30, 255]);
+});
+
+test("compositeOverlayOntoUnderlay paints ink over a prompt-canvas underlay", () => {
+  const underlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(underlay, 4, x, y, [100, 100, 100, 255]);
+    }
+  }
+  const overlay = blankRgba(4, 4);
+  setPixel(overlay, 4, 2, 1, [0, 255, 0, 255]);
+  const merged = compositeOverlayOntoUnderlay(underlay, overlay);
+  assert.deepEqual(getPixel(merged, 4, 2, 1), [0, 255, 0, 255]);
+  assert.deepEqual(getPixel(merged, 4, 0, 0), [100, 100, 100, 255]);
+});
+
+test("shouldWriteMergedSubmission is true when framed/prompt background exists even without staged merged", () => {
+  const promptWithFramed = {
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      framedPath: "staging/p1-framed.webp",
+      naturalWidth: 800,
+      naturalHeight: 600
+    }
+  };
+  assert.equal(shouldWriteMergedSubmission({
+    mode: "staged",
+    staged: { overlayPath: "staging/a1-overlay.webp", mergedPath: null }
+  }, promptWithFramed), true);
+  assert.equal(hasPromptCanvasBackground(promptWithFramed), true);
+
+  assert.equal(shouldWriteMergedSubmission({
+    mode: "inline",
+    overlay: { dataUrl: "data:image/webp;base64,overlay" },
+    merged: { dataUrl: "data:image/webp;base64,merged" }
+  }, { background: { sourceType: BG_SOURCE.BLANK } }), true);
+
+  assert.equal(shouldWriteMergedSubmission({
+    mode: "staged",
+    staged: { overlayPath: "staging/a1-overlay.webp", mergedPath: null }
+  }, { background: { sourceType: BG_SOURCE.BLANK, path: null } }), false);
+});
+
 test("normalizeFramingView rejects Source Framing without a source and unknown values", () => {
   assert.equal(normalizeFramingView(FRAMING_VIEW.SOURCE, { hasSource: true }), FRAMING_VIEW.SOURCE);
   assert.equal(normalizeFramingView(FRAMING_VIEW.SOURCE, { hasSource: false }), FRAMING_VIEW.PROMPT_CANVAS);
@@ -232,7 +336,7 @@ test("canPlaceFramingView uses the dual Save gate and current view path", () => 
   assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.PROMPT_CANVAS), false);
 });
 
-test("clearFramingViewAssets clears both Framing View paths and re-arms the Save gate", () => {
+test("clearFramingViewAssets clears Framing View paths including sourceOverlayPath", () => {
   const assignment = DrawingAssignment.fromObject({
     id: "a1",
     promptId: "p1",
@@ -244,6 +348,7 @@ test("clearFramingViewAssets clears both Framing View paths and re-arms the Save
       overlayPath: "drawings/hero-overlay.webp",
       mergedPath: "drawings/hero.webp",
       fullPath: "drawings/hero_full.webp",
+      sourceOverlayPath: "drawings/hero_source.webp",
       oplogPath: "drawings/hero-oplog.json"
     }
   });
@@ -255,6 +360,7 @@ test("clearFramingViewAssets clears both Framing View paths and re-arms the Save
 
   assert.equal(assignment.primaryImagePath, null);
   assert.equal(assignment.assets.fullPath, null);
+  assert.equal(assignment.assets.sourceOverlayPath, null);
   assert.equal(assignment.assets.oplogPath, "drawings/hero-oplog.json");
   assert.equal(assignment.savedSubmissionTs, null);
   assert.equal(isSaveGateOpen(assignment), false);

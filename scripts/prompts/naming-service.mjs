@@ -69,10 +69,10 @@ export function promptAssetFolderName({
  * @param {string} [options.playerName] Player display name. Omission preserves legacy base-only names; an explicitly blank value falls back to "player".
  * @param {string} [options.extension="webp"] Image extension.
  * @param {boolean} [options.hasMerged=false] Whether a merged primary file exists.
- * @param {boolean} [options.hasSourceFull=false] Whether a Source Framing `_full` file exists.
+ * @param {boolean} [options.hasSourceFull=false] Whether Source Framing `_full` / `_source` files exist.
  * @param {string[]} [options.existingFiles=[]] Existing file paths or names.
  * @param {string} [options.fallback="drawing"] Fallback slug text.
- * @returns {{slug: string, primary: string, overlay: string|null, sourceFull: string|null, opLog: string}}
+ * @returns {{slug: string, primary: string, overlay: string|null, sourceFull: string|null, sourceOverlay: string|null, opLog: string}}
  */
 export function uniqueDrawingAssetFilenames(options = {}) {
   const {
@@ -104,9 +104,10 @@ export function uniqueDrawingAssetFilenames(options = {}) {
       primary: `${slug}.${ext}`,
       overlay: hasMerged ? `${slug}-overlay.${ext}` : null,
       sourceFull: hasSourceFull ? `${slug}_full.${ext}` : null,
+      sourceOverlay: hasSourceFull ? `${slug}_source.${ext}` : null,
       opLog: `${slug}-oplog.json`
     };
-    const names = [candidate.primary, candidate.overlay, candidate.sourceFull, candidate.opLog]
+    const names = [candidate.primary, candidate.overlay, candidate.sourceFull, candidate.sourceOverlay, candidate.opLog]
       .filter(Boolean)
       .map(name => name.toLowerCase());
     if ( names.every(name => !existing.has(name)) ) return candidate;

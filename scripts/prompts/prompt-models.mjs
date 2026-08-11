@@ -30,6 +30,7 @@ export class DrawingAssignment {
       overlayPath: data.assets?.overlayPath ?? null,
       mergedPath: data.assets?.mergedPath ?? null,
       fullPath: data.assets?.fullPath ?? null,
+      sourceOverlayPath: data.assets?.sourceOverlayPath ?? null,
       oplogPath: data.assets?.oplogPath ?? null,
       thumbPath: data.assets?.thumbPath ?? null,
       folder: data.assets?.folder ?? null,
