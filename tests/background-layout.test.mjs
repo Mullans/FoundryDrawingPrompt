@@ -49,6 +49,19 @@ test("computeBackgroundLayout stretches exactly to the canvas rectangle", () => 
   });
 });
 
+test("computeBackgroundLayout placed fills the canvas like stretch", () => {
+  assert.deepEqual(computeBackgroundLayout(800, 600, 200, 400, FIT_MODE.PLACED), {
+    dx: 0,
+    dy: 0,
+    dw: 800,
+    dh: 600
+  });
+  assert.deepEqual(
+    computeBackgroundLayout(800, 600, 200, 400, FIT_MODE.PLACED),
+    computeBackgroundLayout(800, 600, 200, 400, FIT_MODE.STRETCH)
+  );
+});
+
 test("computeBackgroundLayout fits the whole image inside the canvas (fit-canvas)", () => {
   // Landscape image: limited by height → scale 600/400 = 1.5 → 600×600, centered in x.
   assert.deepEqual(computeBackgroundLayout(800, 600, 400, 400, FIT_MODE.FIT_CANVAS), {

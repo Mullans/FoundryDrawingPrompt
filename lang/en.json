@@ -49,6 +49,7 @@
   "DRAWING-PROMPTS.choices.fitMode.fitHeight": "Fit height",
   "DRAWING-PROMPTS.choices.fitMode.fitCanvas": "Fit canvas",
   "DRAWING-PROMPTS.choices.fitMode.stretch": "Stretch",
+  "DRAWING-PROMPTS.choices.fitMode.placed": "Placed",
   "DRAWING-PROMPTS.choices.exportFormat.webp": "WebP",
   "DRAWING-PROMPTS.choices.exportFormat.png": "PNG",
   "DRAWING-PROMPTS.choices.defaultPermissions.gmOnly": "GM only",

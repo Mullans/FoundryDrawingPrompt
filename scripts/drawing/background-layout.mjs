@@ -15,7 +15,8 @@ export function computeBackgroundLayout(canvasW, canvasH, naturalW, naturalH, fi
   const imageWidth = positiveNumber(naturalW, canvasWidth);
   const imageHeight = positiveNumber(naturalH, canvasHeight);
 
-  if ( fitMode === FIT_MODE.STRETCH ) {
+  // Placed: authored framing rect fills the Prompt canvas (manual delivery mode).
+  if ( fitMode === FIT_MODE.STRETCH || fitMode === FIT_MODE.PLACED ) {
     return { dx: 0, dy: 0, dw: canvasWidth, dh: canvasHeight };
   }
 

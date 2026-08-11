@@ -96,6 +96,10 @@ test("fit modes place the framed region (not full source) into the prompt canvas
     computeFramingGeometry({ ...base, fitMode: FIT_MODE.STRETCH }).framedPlacement,
     { dx: 0, dy: 0, dw: 200, dh: 100 }
   );
+  assert.deepEqual(
+    computeFramingGeometry({ ...base, fitMode: FIT_MODE.PLACED }).framedPlacement,
+    { dx: 0, dy: 0, dw: 200, dh: 100 }
+  );
 
   // FIT_CANVAS shrinks a tall framed region to fit height first.
   const tall = computeFramingGeometry({
@@ -107,6 +111,32 @@ test("fit modes place the framed region (not full source) into the prompt canvas
     canvasHeight: 100
   });
   assert.deepEqual(tall.framedPlacement, { dx: 75, dy: 0, dw: 50, dh: 100 });
+});
+
+test("computeFramingGeometry placed fills framed region like stretch (manual delivery)", () => {
+  // Cropped framing must fill the prompt canvas under Placed, not auto-fit full source.
+  const geometry = computeFramingGeometry({
+    sourceWidth: 100,
+    sourceHeight: 100,
+    framing: { x: 25, y: 25, width: 50, height: 50 },
+    fitMode: FIT_MODE.PLACED,
+    canvasWidth: 100,
+    canvasHeight: 100
+  });
+
+  assert.deepEqual(geometry.framedPlacement, { dx: 0, dy: 0, dw: 100, dh: 100 });
+  assert.deepEqual(geometry.sourceOnCanvas, { x: -50, y: -50, width: 200, height: 200 });
+  assert.deepEqual(
+    geometry.framedPlacement,
+    computeFramingGeometry({
+      sourceWidth: 100,
+      sourceHeight: 100,
+      framing: { x: 25, y: 25, width: 50, height: 50 },
+      fitMode: FIT_MODE.STRETCH,
+      canvasWidth: 100,
+      canvasHeight: 100
+    }).framedPlacement
+  );
 });
 
 test("Prompt↔source maps round-trip and match source AABB model", () => {

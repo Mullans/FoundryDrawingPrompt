@@ -190,7 +190,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#updateFramingEditor();
   };
   #onFormChange = event => {
+    const previousFitMode = this.draft.background.fitMode;
     this.#syncDraftFromForm();
+    if ( event.target?.name === "fitMode" ) {
+      this.#handleFitModeChange(previousFitMode, this.draft.background.fitMode);
+    }
     this.#updateFramingEditor();
     if ( event.target?.name === "selectedUserIds" ) this.#updateSelectedCount();
   };
@@ -578,13 +582,41 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /**
    * Apply a Prompt Framing rect to the draft and refresh previews.
+   * Manual pan/zoom switches Fit mode to Placed; framing reset leaves Fit mode alone
+   * (full-source rect; may remain Placed).
    * @param {{x: number, y: number, width: number, height: number}} framing Framing rect.
+   * @param {{fromPanZoom?: boolean}} [options] When true, set Fit mode to Placed.
    * @returns {void}
    */
-  #applyDraftFraming(framing) {
+  #applyDraftFraming(framing, { fromPanZoom = false } = {}) {
     if ( this.activePrompt || !this.draft.background.path ) return;
     this.draft.background.framing = { ...framing };
+    if ( fromPanZoom ) this.#setDraftFitMode(FIT_MODE.PLACED);
     this.#updateFramingEditor();
+  }
+
+  /**
+   * Set draft Fit mode and keep the fit-mode select in sync without full re-render.
+   * @param {string} fitMode Fit mode value.
+   * @returns {void}
+   */
+  #setDraftFitMode(fitMode) {
+    this.draft.background.fitMode = fitMode;
+    const select = this.element?.querySelector?.("#dp-fit-mode");
+    if ( select && select.value !== fitMode ) select.value = fitMode;
+  }
+
+  /**
+   * React to a Fit mode select change. Non-Placed modes reset framing to full source.
+   * @param {string} previousFitMode Fit mode before the form sync.
+   * @param {string} nextFitMode Fit mode after the form sync.
+   * @returns {void}
+   */
+  #handleFitModeChange(previousFitMode, nextFitMode) {
+    if ( nextFitMode === previousFitMode ) return;
+    if ( nextFitMode === FIT_MODE.PLACED ) return;
+    const full = defaultFramingForBackground(this.draft.background);
+    if ( full ) this.draft.background.framing = { ...full };
   }
 
   /**
@@ -686,7 +718,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       focusY: metrics.height / 2,
       viewportWidth: metrics.width,
       viewportHeight: metrics.height
-    }));
+    }), { fromPanZoom: true });
   }
 
   /**
@@ -706,7 +738,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         dyDisplay: gesture.dy,
         viewportWidth: metrics.width,
         viewportHeight: metrics.height
-      }));
+      }), { fromPanZoom: true });
       return;
     }
     const rect = metrics.canvas.getBoundingClientRect();
@@ -716,7 +748,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       focusY: event.clientY - rect.top,
       viewportWidth: metrics.width,
       viewportHeight: metrics.height
-    }));
+    }), { fromPanZoom: true });
   }
 
   /**
@@ -752,7 +784,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       dyDisplay,
       viewportWidth: metrics.width,
       viewportHeight: metrics.height
-    }));
+    }), { fromPanZoom: true });
   }
 
   /**
@@ -1807,7 +1839,8 @@ function fitModeKey(value) {
     [FIT_MODE.FIT_WIDTH]: "fitWidth",
     [FIT_MODE.FIT_HEIGHT]: "fitHeight",
     [FIT_MODE.FIT_CANVAS]: "fitCanvas",
-    [FIT_MODE.STRETCH]: "stretch"
+    [FIT_MODE.STRETCH]: "stretch",
+    [FIT_MODE.PLACED]: "placed"
   }[value] ?? "fitWidth";
 }
 

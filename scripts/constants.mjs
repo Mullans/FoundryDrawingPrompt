@@ -24,7 +24,9 @@ export const FIT_MODE = Object.freeze({
   FIT_WIDTH: "fit-width",
   FIT_HEIGHT: "fit-height",
   FIT_CANVAS: "fit-canvas",
-  STRETCH: "stretch"
+  STRETCH: "stretch",
+  /** Authored Prompt Framing fills the canvas (same placement rect as Stretch). */
+  PLACED: "placed"
 });
 
 /**

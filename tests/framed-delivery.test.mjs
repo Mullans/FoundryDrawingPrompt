@@ -74,6 +74,10 @@ test("assertBackgroundUnlocked rejects fitMode changes after send", () => {
     () => assertBackgroundUnlocked({ fitMode: FIT_MODE.STRETCH }, current, { sentAt: 1000 }),
     /locked/i
   );
+  assert.throws(
+    () => assertBackgroundUnlocked({ fitMode: FIT_MODE.PLACED }, current, { sentAt: 1000 }),
+    /locked/i
+  );
 });
 
 test("assertBackgroundUnlocked rejects framing changes after send", () => {

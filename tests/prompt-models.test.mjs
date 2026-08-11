@@ -248,6 +248,25 @@ test("DrawingPrompt.applyBackgroundUpdate rejects locked fitMode and framing aft
   assert.doesNotThrow(() => prompt.applyBackgroundUpdate({ path: "maps/other.webp" }));
 });
 
+test("DrawingPrompt accepts and serializes placed fit mode", () => {
+  const prompt = DrawingPrompt.fromObject({
+    id: "p1",
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      fitMode: FIT_MODE.PLACED,
+      naturalWidth: 800,
+      naturalHeight: 600,
+      framing: { x: 40, y: 20, width: 400, height: 300 }
+    }
+  });
+
+  assert.equal(prompt.background.fitMode, FIT_MODE.PLACED);
+  const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(prompt.toObject())));
+  assert.equal(roundTrip.background.fitMode, "placed");
+  assert.deepEqual(roundTrip.background.framing, { x: 40, y: 20, width: 400, height: 300 });
+});
+
 test("DrawingPrompt round-trips a nullable asset folder name without computing it", () => {
   const legacy = DrawingPrompt.fromObject({ id: "p1", createdAt: 1000 });
   assert.equal(legacy.assetFolderName, null);

@@ -111,6 +111,9 @@ Scales the framed region by the minimum factor that fits it entirely inside the 
 **Fit mode — Stretch**:
 Scales the framed region to exactly fill the Prompt canvas, ignoring aspect ratio.
 
+**Fit mode — Placed**:
+Delivers the manually authored Prompt Framing region so it fills the Prompt canvas exactly (same framed placement as Stretch). Not an auto layout of the full source—it is the delivery mode for the current framing rect. Pan or zoom in the framing editor sets Fit mode to Placed; choosing any other fit mode resets framing to the full source. Framing reset restores full-source framing and leaves Fit mode unchanged (Placed may remain Placed with a full-source rect). Locked with Prompt Framing after Send.
+
 ## Timer
 
 **Deadline**:
