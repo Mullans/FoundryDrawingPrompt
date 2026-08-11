@@ -60,7 +60,8 @@ export class DrawingEngine {
   }
 
   /**
-   * Attach to a display canvas and install pointer events.
+   * Attach to the player display canvas (Canvas plate) and install pointer events.
+   * Drawing tools only hit this element; Display stage pan/zoom is wired separately.
    * @param {HTMLCanvasElement} displayCanvasEl Display canvas.
    * @returns {void}
    */

@@ -10,7 +10,8 @@ export const MAX_RELATIVE_ZOOM = 16;
 export const ZOOM_STEP = 1.25;
 
 /**
- * Compute the default fit view for content inside a viewport.
+ * Fit the Canvas plate fully inside the Display stage viewport (open / nav reset).
+ * Letterboxes or pillarboxes while preserving plate aspect; content is not cropped.
  * @param {{contentWidth: number, contentHeight: number, viewportWidth: number, viewportHeight: number}} sizes Sizes.
  * @returns {{scale: number, panX: number, panY: number}}
  */

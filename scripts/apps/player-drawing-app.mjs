@@ -527,7 +527,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   }
 
   /**
-   * Reset to the default fit-to-content view.
+   * Reset navigation so the Canvas plate fits fully in the Display stage.
    * @returns {void}
    */
   #resetNavigation() {
