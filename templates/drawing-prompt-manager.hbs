@@ -150,12 +150,14 @@
           </div>
           {{/if}}
 
-          <div class="dp-preview-frame dp-canvas-plate">
-            {{#if selectedSnapshot}}
-            <img src="{{selectedSnapshot}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.assignmentPreview'}}">
-            {{else}}
-            <p class="dp-empty">{{localize "DRAWING-PROMPTS.manager.empty.noSnapshot"}}</p>
-            {{/if}}
+          <div class="dp-plate-stage" data-dp-review-stage>
+            <div class="dp-preview-frame dp-canvas-plate" data-dp-review-plate>
+              {{#if selectedSnapshot}}
+              <img src="{{selectedSnapshot}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.assignmentPreview'}}">
+              {{else}}
+              <p class="dp-empty">{{localize "DRAWING-PROMPTS.manager.empty.noSnapshot"}}</p>
+              {{/if}}
+            </div>
           </div>
 
           {{#if selectedIsSaved}}
@@ -320,9 +322,11 @@
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.framing"}}</legend>
         <p class="hint">{{localize "DRAWING-PROMPTS.manager.framing.hint"}}</p>
         <div class="dp-framing-editor" data-dp-framing-editor>
-          <div class="dp-preview-frame dp-framing-viewport dp-canvas-plate">
-            <p class="dp-empty" data-dp-framing-empty {{#if draft.hasBackground}}hidden{{/if}}>{{localize "DRAWING-PROMPTS.manager.empty.noBackground"}}</p>
-            <canvas data-dp-framing-viewport aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.framingEditor'}}" {{#unless draft.hasBackground}}hidden{{/unless}}></canvas>
+          <div class="dp-plate-stage" data-dp-framing-stage>
+            <div class="dp-preview-frame dp-framing-viewport dp-canvas-plate">
+              <p class="dp-empty" data-dp-framing-empty {{#if draft.hasBackground}}hidden{{/if}}>{{localize "DRAWING-PROMPTS.manager.empty.noBackground"}}</p>
+              <canvas data-dp-framing-viewport aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.framingEditor'}}" {{#unless draft.hasBackground}}hidden{{/unless}}></canvas>
+            </div>
           </div>
           <div class="dp-framing-controls">
             <button type="button" data-action="framingZoomOut" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomOut'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>

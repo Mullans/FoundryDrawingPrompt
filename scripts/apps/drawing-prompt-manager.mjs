@@ -9,6 +9,7 @@ import {
   zoomFraming
 } from "../drawing/draft-framing-editor.mjs";
 import { defaultFramingForBackground } from "../drawing/framed-background.mjs";
+import { fitPlateInBox } from "../drawing/plate-layout.mjs";
 import { classifyWheelGesture } from "../drawing/player-navigation.mjs";
 import { defaultAssetFolder, normalizePath } from "../prompts/asset-service.mjs";
 import {
@@ -30,6 +31,11 @@ import {
   pickSubmissionPromptCanvasSrc,
   resolveFramingViewAssetPath
 } from "../prompts/dual-save.mjs";
+import {
+  resolvePromptCanvasReviewSrc,
+  resolveReviewPlateAspect,
+  resolveSourceFramingReviewSrc
+} from "../prompts/review-preview.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
@@ -184,6 +190,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #framingEditorHandlers = null;
   #framingResizeObserver = null;
   #framingViewportEl = null;
+  #reviewPlateResizeObserver = null;
   #framingPanPointerId = null;
   #framingPanLast = null;
   #onFormInput = event => {
@@ -241,13 +248,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const assignment = this.activePrompt?.getAssignment(assignmentId);
     if ( !assignment || !this.activePrompt ) return;
     const overlaySrc = overlay ?? this.latestOverlaySnapshots.get(assignmentId) ?? null;
-    if ( !overlaySrc ) return;
-    void this.#resolveSourceFramingPreviewSrc(assignment, overlaySrc).then(remapped => {
+    void this.#resolveSourceFramingPreviewSrc(assignment, overlaySrc).then(src => {
       if ( this.selectedAssignmentId !== assignmentId ) return;
       if ( normalizeFramingView(this.framingView, {
         hasSource: hasSourceBackground(this.activePrompt)
       }) !== FRAMING_VIEW.SOURCE ) return;
-      if ( remapped ) this.#updatePreviewImage(remapped);
+      if ( src ) this.#updatePreviewImage(src);
     });
   }
 
@@ -340,6 +346,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     void this.#ensurePreviewBackgroundImage();
     this.#updateFramingEditor();
     this.#ensureFramingEditor();
+    this.#layoutReviewPlate();
+    this.#ensureReviewPlateStage();
     this.#refreshExpiryTicker();
   }
 
@@ -347,6 +355,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   _onClose(options) {
     super._onClose(options);
     this.#destroyFramingEditor();
+    this.#destroyReviewPlateStage();
     this.#clearExpiryTicker();
     if ( this.constructor.#instance === this ) this.constructor.#instance = null;
   }
@@ -557,6 +566,77 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
+   * Size the compose Canvas plate to draft Prompt canvas aspect inside the void stage.
+   * @returns {void}
+   */
+  #layoutFramingPlate() {
+    if ( this.activePrompt ) return;
+    const stage = this.element?.querySelector("[data-dp-framing-stage]");
+    const plate = stage?.querySelector(".dp-framing-viewport");
+    if ( !stage || !plate ) return;
+    const size = fitPlateInBox({
+      contentWidth: this.draft.canvasWidth,
+      contentHeight: this.draft.canvasHeight,
+      containerWidth: stage.clientWidth,
+      containerHeight: stage.clientHeight
+    });
+    plate.style.width = `${size.width}px`;
+    plate.style.height = `${size.height}px`;
+  }
+
+  /**
+   * Size the review Canvas plate for the current Framing View aspect.
+   * @returns {void}
+   */
+  #layoutReviewPlate() {
+    if ( !this.activePrompt ) return;
+    const stage = this.element?.querySelector("[data-dp-review-stage]");
+    const plate = stage?.querySelector("[data-dp-review-plate]");
+    if ( !stage || !plate ) return;
+    const hasSource = hasSourceBackground(this.activePrompt);
+    const aspect = resolveReviewPlateAspect({
+      framingView: this.framingView,
+      prompt: this.activePrompt,
+      hasSource
+    });
+    const size = fitPlateInBox({
+      contentWidth: aspect.width,
+      contentHeight: aspect.height,
+      containerWidth: stage.clientWidth,
+      containerHeight: stage.clientHeight
+    });
+    plate.style.width = `${size.width}px`;
+    plate.style.height = `${size.height}px`;
+  }
+
+  /**
+   * Observe the review plate stage for void-host resizes.
+   * @returns {void}
+   */
+  #ensureReviewPlateStage() {
+    if ( !this.activePrompt ) {
+      this.#destroyReviewPlateStage();
+      return;
+    }
+    const stage = this.element?.querySelector("[data-dp-review-stage]");
+    if ( !stage ) return;
+    this.#reviewPlateResizeObserver?.disconnect();
+    if ( typeof ResizeObserver !== "undefined" ) {
+      this.#reviewPlateResizeObserver = new ResizeObserver(() => this.#layoutReviewPlate());
+      this.#reviewPlateResizeObserver.observe(stage);
+    }
+  }
+
+  /**
+   * Tear down review plate resize observation.
+   * @returns {void}
+   */
+  #destroyReviewPlateStage() {
+    this.#reviewPlateResizeObserver?.disconnect();
+    this.#reviewPlateResizeObserver = null;
+  }
+
+  /**
    * Repaint the Prompt Framing editor viewport over the source image.
    * @returns {void}
    */
@@ -573,11 +653,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     for ( const button of this.element?.querySelectorAll(".dp-framing-controls button") ?? [] ) {
       button.disabled = !hasImage;
     }
+    // Aspect-true plate first so bitmap metrics match draft canvas W×H.
+    this.#layoutFramingPlate();
     if ( !img ) return;
     const framing = resolveDraftFraming(this.draft.background);
     if ( !framing ) return;
-    // Measure the fixed viewport pane (not the canvas intrinsic size) so bitmap
-    // attrs never drive layout growth / a stretch-looking reflow loop.
+    // Measure the plate (not the void stage) so pan/zoom map to the painted surface.
     const viewportEl = canvasEl.parentElement;
     const viewportWidth = Math.max(
       1,
@@ -662,6 +743,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #ensureFramingEditor() {
     if ( this.activePrompt || this.#framingEditorAttached ) return;
     const root = this.element?.querySelector("[data-dp-framing-editor]");
+    const stage = root?.querySelector("[data-dp-framing-stage]");
     const viewport = root?.querySelector(".dp-framing-viewport");
     if ( !viewport ) return;
 
@@ -686,7 +768,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     window.addEventListener("blur", onBlur);
     if ( typeof ResizeObserver !== "undefined" ) {
       this.#framingResizeObserver = new ResizeObserver(() => this.#updateFramingEditor());
-      this.#framingResizeObserver.observe(viewport);
+      // Observe the void stage so plate re-letterboxes when the pane resizes.
+      this.#framingResizeObserver.observe(stage ?? viewport);
     }
     this.#framingEditorAttached = true;
   }
@@ -968,6 +1051,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     // Session UI only — must not touch clearFramingViewAssets / savedSubmissionTs (Save gate).
     this.framingView = next;
     this.#updateFramingViewToggle();
+    this.#layoutReviewPlate();
     void this.#refreshSelectedPreview();
     this.#updatePlaceActionsForFramingView();
   }
@@ -1344,45 +1428,46 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const snapshot = this.latestSnapshots.get(assignment.id) ?? null;
     const headingSubmitted = assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing");
     const headingLive = game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview");
+    const heading = assignment.status === STATUS.SUBMITTED ? headingSubmitted : headingLive;
 
     if ( view === FRAMING_VIEW.SOURCE ) {
       const src = await this.#resolveSourceFramingPreviewSrc(assignment);
-      return {
-        src,
-        heading: assignment.status === STATUS.SUBMITTED ? headingSubmitted : headingLive
-      };
+      return { src, heading };
     }
 
-    if ( assignment.status === STATUS.SUBMITTED && assignment.primaryImagePath ) {
-      return {
-        src: assignment.primaryImagePath,
-        heading: headingSubmitted
-      };
-    }
+    let pendingSrc = null;
     if ( assignment.status === STATUS.SUBMITTED ) {
       const service = await import("../prompts/prompt-service.mjs");
       const submission = service.getPendingSubmission(assignment.id);
-      return {
-        src: pendingSubmissionPromptCanvasPreviewSrc(submission) ?? snapshot,
-        heading: headingSubmitted
-      };
+      pendingSrc = pendingSubmissionPromptCanvasPreviewSrc(submission);
     }
-    return {
-      src: snapshot,
-      heading: headingLive
-    };
+    const src = resolvePromptCanvasReviewSrc({
+      liveSrc: snapshot,
+      pendingSrc,
+      savedPath: assignment.primaryImagePath ?? null,
+      framedPath: this.activePrompt?.background?.framedPath ?? null
+    });
+    return { src, heading };
   }
 
   /**
    * Resolve Source Framing preview: saved fullPath when gate open for current submission,
-   * otherwise remapped live/pending **overlay only** via dual-Save geometry (never merged/composite).
+   * otherwise remapped live/pending **overlay only** via dual-Save geometry (never merged/composite),
+   * otherwise source image alone when delivery exists.
    * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Assignment.
    * @param {string|null} [overlaySrcHint] Optional live overlay data URL.
    * @returns {Promise<string|null>}
    */
   async #resolveSourceFramingPreviewSrc(assignment, overlaySrcHint = null) {
     const savedFull = resolveFramingViewAssetPath(assignment, FRAMING_VIEW.SOURCE);
-    if ( savedFull && isSaveGateOpen(assignment) ) return savedFull;
+    const savedFullPath = savedFull && isSaveGateOpen(assignment) ? savedFull : null;
+    if ( savedFullPath ) {
+      return resolveSourceFramingReviewSrc({
+        savedFullPath,
+        remappedSrc: null,
+        sourcePath: null
+      });
+    }
 
     let overlaySrc = overlaySrcHint;
     let submission = null;
@@ -1398,35 +1483,47 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         ?? this.latestOverlaySnapshots.get(assignment.id)
         ?? null;
     }
-    if ( !overlaySrc || !this.activePrompt ) return null;
 
-    const cacheKey = sourceFramingPreviewCacheKey(assignment.id, this.activePrompt.id, overlaySrc);
-    const cached = this.#sourceFramingPreviewCache.get(cacheKey);
-    if ( cached ) return cached;
+    let remappedSrc = null;
+    if ( overlaySrc && this.activePrompt ) {
+      const cacheKey = sourceFramingPreviewCacheKey(assignment.id, this.activePrompt.id, overlaySrc);
+      const cached = this.#sourceFramingPreviewCache.get(cacheKey);
+      if ( cached ) {
+        remappedSrc = cached;
+      } else {
+        // Drop other keys for this assignment so reloads don't grow unbounded.
+        for ( const key of this.#sourceFramingPreviewCache.keys() ) {
+          if ( key.startsWith(`${assignment.id}|`) ) this.#sourceFramingPreviewCache.delete(key);
+        }
 
-    // Drop other keys for this assignment so reloads don't grow unbounded.
-    for ( const key of this.#sourceFramingPreviewCache.keys() ) {
-      if ( key.startsWith(`${assignment.id}|`) ) this.#sourceFramingPreviewCache.delete(key);
+        const load = (async () => {
+          try {
+            const dataUrl = await buildSourceFramingPreviewDataUrl({
+              src: overlaySrc,
+              prompt: this.activePrompt,
+              submission
+            });
+            if ( dataUrl ) this.#sourceFramingPreviewCache.set(cacheKey, dataUrl);
+            return dataUrl;
+          } catch (err) {
+            console.warn("drawing-prompts | Source Framing preview remap failed", err);
+            return null;
+          }
+        })();
+        this.#sourceFramingPreviewLoad = load;
+        remappedSrc = await load;
+        if ( this.#sourceFramingPreviewLoad === load ) this.#sourceFramingPreviewLoad = null;
+      }
     }
 
-    const load = (async () => {
-      try {
-        const dataUrl = await buildSourceFramingPreviewDataUrl({
-          src: overlaySrc,
-          prompt: this.activePrompt,
-          submission
-        });
-        if ( dataUrl ) this.#sourceFramingPreviewCache.set(cacheKey, dataUrl);
-        return dataUrl;
-      } catch (err) {
-        console.warn("drawing-prompts | Source Framing preview remap failed", err);
-        return null;
-      }
-    })();
-    this.#sourceFramingPreviewLoad = load;
-    const result = await load;
-    if ( this.#sourceFramingPreviewLoad === load ) this.#sourceFramingPreviewLoad = null;
-    return result;
+    const sourcePath = hasSourceBackground(this.activePrompt)
+      ? (this.activePrompt.background?.path ?? null)
+      : null;
+    return resolveSourceFramingReviewSrc({
+      savedFullPath: null,
+      remappedSrc,
+      sourcePath
+    });
   }
 
   /**
@@ -1602,6 +1699,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const framingView = this.framingView;
     const preview = await this.#selectedPreviewContext(assignment, framingView);
     if ( this.selectedAssignmentId !== assignmentId || this.framingView !== framingView ) return;
+    this.#layoutReviewPlate();
     this.#setPreviewFrame(preview.src);
     const legend = this.element?.querySelector(".dp-preview-panel fieldset > legend");
     if ( legend ) legend.textContent = preview.heading;
@@ -1650,7 +1748,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #setPreviewFrame(src) {
-    const frame = this.element?.querySelector(".is-review .dp-preview-frame");
+    const frame = this.element?.querySelector(".is-review [data-dp-review-plate]")
+      ?? this.element?.querySelector(".is-review .dp-preview-frame");
     if ( !frame ) return;
     if ( src ) {
       let img = frame.querySelector("img");

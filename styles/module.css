@@ -436,8 +436,9 @@
   object-fit: contain;
 }
 
-.drawing-prompts .dp-framing-viewport canvas,
-.drawing-prompts .dp-preview-frame,
+/* Canvas chrome lives on the plate only (compose framing, static review, player box). */
+.drawing-prompts .dp-framing-viewport.dp-canvas-plate,
+.drawing-prompts .dp-preview-frame.dp-canvas-plate,
 .drawing-prompts .dp-canvas-box,
 .drawing-prompts .dp-canvas-box.dp-chrome-checkerboard {
   background-color: var(--dp-checker-b);
@@ -470,14 +471,40 @@
   flex: 1 1 auto;
 }
 
-.drawing-prompts .dp-framing-viewport {
-  /* Fixed pane size: content swaps must not reflow/stretch this box.
-   * Compose: this element is the Canvas plate (chrome + plate accent). */
+/*
+ * Panel void hosts the aspect-true Canvas plate. Chrome and accent stay on the
+ * plate; this shell is plain and absorbs resize (letterbox/pillarbox void).
+ */
+.drawing-prompts .dp-plate-stage {
   position: relative;
-  display: block;
+  display: flex;
   flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
   min-height: 220px;
   height: min(42vh, 360px);
+  overflow: hidden;
+  background: transparent;
+  border: none;
+  outline: none;
+  transition: none !important;
+  animation: none !important;
+}
+
+.drawing-prompts .is-review .dp-plate-stage {
+  min-height: 230px;
+  height: min(48vh, 420px);
+}
+
+.drawing-prompts .dp-framing-viewport {
+  /* Plate size is set in JS to draft canvas W×H within the void stage. */
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
   cursor: grab;
   overflow: hidden;
   /* House style: no motion when the pane or its contents change size. */
@@ -499,6 +526,7 @@
   min-height: 0;
   border: none;
   border-radius: 0;
+  background: transparent;
   transition: none !important;
   animation: none !important;
 }
@@ -526,16 +554,18 @@
 .drawing-prompts .dp-preview-frame {
   position: relative;
   display: grid;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   place-items: center;
-  /* Stable pane: do not grow/shrink with incoming image aspect ratios. */
-  min-height: 220px;
-  height: min(42vh, 360px);
+  /* Default 1×1 until JS sizes the aspect-true plate inside .dp-plate-stage. */
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
-  /* Quiet frame when not a plate; plates use .dp-canvas-plate (accent only). */
-  border: 1px solid var(--dp-panel-border-soft);
-  border-radius: 4px;
+  border: none;
+  border-radius: 0;
   outline: none;
+  background: transparent;
   transition: none !important;
   animation: none !important;
 }
@@ -545,6 +575,13 @@
   border: var(--dp-plate-border);
   outline: none;
   box-shadow: none;
+}
+
+/* Compose + review manager plates: single accent; no border+outline stack. */
+.drawing-prompts .dp-preview-frame.dp-canvas-plate,
+.drawing-prompts .dp-framing-viewport.dp-canvas-plate {
+  border: var(--dp-plate-border);
+  outline: none;
 }
 
 /*
@@ -582,18 +619,7 @@
   font-weight: 600;
 }
 
-.drawing-prompts .is-review .dp-preview-frame {
-  min-height: 230px;
-  height: min(48vh, 420px);
-}
-
-/* Review artwork box: single plate-edge accent (no border+outline stack). */
-.drawing-prompts .is-review .dp-preview-frame.dp-canvas-plate {
-  border: var(--dp-plate-border);
-  outline: none;
-}
-
-/* Image fills the fixed pane; swapping src must not animate or reflow. */
+/* Image fills the aspect-true plate; swapping src must not animate or reflow. */
 .drawing-prompts .dp-preview-frame img {
   position: absolute;
   inset: 0;
