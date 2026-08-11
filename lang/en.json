@@ -150,6 +150,7 @@
   "DRAWING-PROMPTS.manager.alt.backgroundPreview": "Selected background preview",
   "DRAWING-PROMPTS.manager.alt.assignmentPreview": "Latest drawing preview",
   "DRAWING-PROMPTS.manager.empty.noPlayers": "No player users found.",
+  "DRAWING-PROMPTS.manager.empty.noBackground": "Choose a background to set Prompt Framing.",
   "DRAWING-PROMPTS.manager.empty.noSnapshot": "No snapshot has been received for this assignment.",
   "DRAWING-PROMPTS.manager.validation.promptText": "Enter prompt text before sending.",
   "DRAWING-PROMPTS.manager.validation.users": "Select at least one player before sending.",

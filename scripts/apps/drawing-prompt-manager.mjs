@@ -564,8 +564,15 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( this.activePrompt ) return;
     const canvasEl = this.element?.querySelector("[data-dp-framing-viewport]");
     if ( !canvasEl ) return;
+    const emptyEl = this.element?.querySelector("[data-dp-framing-empty]");
     const { path, naturalWidth, naturalHeight } = this.draft.background;
     const img = path && this.#previewBackgroundImage?.path === path ? this.#previewBackgroundImage.img : null;
+    const hasImage = Boolean(img);
+    emptyEl?.toggleAttribute("hidden", hasImage);
+    canvasEl.toggleAttribute("hidden", !hasImage);
+    for ( const button of this.element?.querySelectorAll(".dp-framing-controls button") ?? [] ) {
+      button.disabled = !hasImage;
+    }
     if ( !img ) return;
     const framing = resolveDraftFraming(this.draft.background);
     if ( !framing ) return;
@@ -948,7 +955,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( next === this.framingView ) return;
     // Session UI only — must not touch clearFramingViewAssets / savedSubmissionTs (Save gate).
     this.framingView = next;
-    this.render({ parts: ["body"] });
+    this.#updateFramingViewToggle();
+    void this.#refreshSelectedPreview();
+    this.#updatePlaceActionsForFramingView();
   }
 
   /**
@@ -1557,23 +1566,106 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
+   * Update Framing View toggle selected state without re-rendering the manager body.
+   * @returns {void}
+   */
+  #updateFramingViewToggle() {
+    const toggle = this.element?.querySelector(".dp-framing-view-toggle");
+    if ( !toggle ) return;
+    for ( const button of toggle.querySelectorAll("[data-action='setFramingView']") ) {
+      const selected = button.dataset.framingView === this.framingView;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    }
+  }
+
+  /**
+   * Resolve and paint the selected assignment preview for the current Framing View.
+   * Guards against stale async completions when Framing View or assignment changes mid-resolve.
+   * @returns {Promise<void>}
+   */
+  async #refreshSelectedPreview() {
+    const assignment = this.#selectedAssignment();
+    const assignmentId = this.selectedAssignmentId;
+    const framingView = this.framingView;
+    const preview = await this.#selectedPreviewContext(assignment, framingView);
+    if ( this.selectedAssignmentId !== assignmentId || this.framingView !== framingView ) return;
+    this.#setPreviewFrame(preview.src);
+    const legend = this.element?.querySelector(".dp-preview-panel fieldset > legend");
+    if ( legend ) legend.textContent = preview.heading;
+  }
+
+  /**
+   * Sync place/transform enablement and tooltips after a Framing View change.
+   * @returns {void}
+   */
+  #updatePlaceActionsForFramingView() {
+    const assignment = this.#selectedAssignment();
+    const canPlace = canPlaceFramingView(assignment, this.framingView);
+    const actions = this.element?.querySelector(".dp-submission-actions");
+    if ( !actions ) return;
+    actions.classList.toggle("is-place-disabled", !canPlace);
+    for ( const button of actions.querySelectorAll("[data-action='openPlaceDialog'], [data-action='applyTransform']") ) {
+      button.disabled = !canPlace;
+    }
+    const placementActions = actions.querySelector(".dp-placement-actions");
+    if ( placementActions ) {
+      if ( canPlace ) {
+        placementActions.removeAttribute("data-tooltip");
+      } else {
+        placementActions.dataset.tooltip = game.i18n.localize("DRAWING-PROMPTS.manager.actions.saveFirst");
+      }
+    }
+    const transformWrap = actions.querySelector("[data-action='applyTransform']")?.parentElement;
+    if ( transformWrap ) {
+      if ( canPlace ) transformWrap.removeAttribute("data-tooltip");
+      else transformWrap.dataset.tooltip = game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst");
+    }
+    const savedIndicator = this.element?.querySelector(".dp-saved-indicator");
+    if ( savedIndicator && assignment && isSaveGateOpen(assignment) ) {
+      const path = resolveFramingViewAssetPath(assignment, this.framingView)
+        ?? assignment.primaryImagePath
+        ?? "";
+      if ( path ) {
+        savedIndicator.dataset.tooltip = game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path });
+      }
+    }
+  }
+
+  /**
+   * Update the review-mode preview frame without rerendering the full form.
+   * @param {string|null} src Preview image URL or data URL.
+   * @returns {void}
+   */
+  #setPreviewFrame(src) {
+    const frame = this.element?.querySelector(".is-review .dp-preview-frame");
+    if ( !frame ) return;
+    if ( src ) {
+      let img = frame.querySelector("img");
+      frame.querySelector(".dp-empty")?.remove();
+      if ( !img ) {
+        frame.replaceChildren();
+        img = document.createElement("img");
+        img.alt = game.i18n.localize("DRAWING-PROMPTS.manager.alt.assignmentPreview");
+        frame.append(img);
+      }
+      img.src = src;
+      return;
+    }
+    frame.replaceChildren();
+    const empty = document.createElement("p");
+    empty.className = "dp-empty";
+    empty.textContent = game.i18n.localize("DRAWING-PROMPTS.manager.empty.noSnapshot");
+    frame.append(empty);
+  }
+
+  /**
    * Update the preview image without rerendering the full form.
    * @param {string} dataUrl Snapshot data URL.
    * @returns {void}
    */
   #updatePreviewImage(dataUrl) {
-    const frame = this.element?.querySelector(".dp-preview-frame");
-    if ( !frame ) return;
-    let img = frame.querySelector("img");
-    if ( !img ) {
-      frame.innerHTML = "";
-      img = document.createElement("img");
-      img.alt = game.i18n.localize("DRAWING-PROMPTS.manager.alt.assignmentPreview");
-      frame.append(img);
-    }
-    img.classList.remove("is-fading");
-    img.src = dataUrl;
-    requestAnimationFrame(() => img.classList.add("is-fading"));
+    this.#setPreviewFrame(dataUrl);
   }
 
   /**

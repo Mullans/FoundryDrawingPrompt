@@ -113,11 +113,11 @@ test("mapViewportClientToLogical converts screen coords using the ephemeral view
   assert.deepEqual(logical, { x: 50, y: 50 });
 });
 
-test("isPanModifierActive is true for middle button or space-held primary", () => {
+test("isPanModifierActive is true for middle button, right button, or space-held primary", () => {
   assert.equal(isPanModifierActive({ button: 1, spaceHeld: false }), true);
+  assert.equal(isPanModifierActive({ button: 2, spaceHeld: false }), true);
   assert.equal(isPanModifierActive({ button: 0, spaceHeld: true }), true);
   assert.equal(isPanModifierActive({ button: 0, spaceHeld: false }), false);
-  assert.equal(isPanModifierActive({ button: 2, spaceHeld: false }), false);
 });
 
 test("shouldDrawingToolTakePointer prioritizes drawing over navigation for plain primary", () => {

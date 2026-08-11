@@ -137,12 +137,13 @@ export function mapViewportClientToLogical({
 }
 
 /**
- * Whether middle button or space+primary is requesting pan.
+ * Whether middle button, right button, or space+primary is requesting pan.
  * @param {{button: number, spaceHeld: boolean}} options Options.
  * @returns {boolean}
  */
 export function isPanModifierActive({ button, spaceHeld }) {
-  return Number(button) === 1 || (Number(button) === 0 && Boolean(spaceHeld));
+  const btn = Number(button);
+  return btn === 1 || btn === 2 || (btn === 0 && Boolean(spaceHeld));
 }
 
 /**

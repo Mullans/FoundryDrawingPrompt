@@ -316,28 +316,27 @@
     </div>
 
     <aside class="dp-preview-panel">
-      {{#if draft.hasBackground}}
       <fieldset>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.framing"}}</legend>
         <p class="hint">{{localize "DRAWING-PROMPTS.manager.framing.hint"}}</p>
         <div class="dp-framing-editor" data-dp-framing-editor>
           <div class="dp-preview-frame dp-framing-viewport">
-            <canvas data-dp-framing-viewport aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.framingEditor'}}"></canvas>
+            <p class="dp-empty" data-dp-framing-empty {{#if draft.hasBackground}}hidden{{/if}}>{{localize "DRAWING-PROMPTS.manager.empty.noBackground"}}</p>
+            <canvas data-dp-framing-viewport aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.framingEditor'}}" {{#unless draft.hasBackground}}hidden{{/unless}}></canvas>
           </div>
           <div class="dp-framing-controls">
-            <button type="button" data-action="framingZoomOut" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomOut'}}">
+            <button type="button" data-action="framingZoomOut" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomOut'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
               <i class="fa-solid fa-magnifying-glass-minus" inert></i>
             </button>
-            <button type="button" data-action="framingZoomIn" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomIn'}}">
+            <button type="button" data-action="framingZoomIn" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomIn'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
               <i class="fa-solid fa-magnifying-glass-plus" inert></i>
             </button>
-            <button type="button" data-action="framingReset" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.reset'}}">
+            <button type="button" data-action="framingReset" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.reset'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
               <i class="fa-solid fa-expand" inert></i>
             </button>
           </div>
         </div>
       </fieldset>
-      {{/if}}
     </aside>
   </div>
 

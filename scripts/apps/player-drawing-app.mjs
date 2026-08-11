@@ -444,14 +444,18 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       this.#spaceHeld = false;
       this.#endPanDrag();
     };
+    const onContextMenu = event => {
+      event.preventDefault();
+    };
 
-    this.#navHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur };
+    this.#navHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur, onContextMenu };
     viewport.addEventListener("wheel", onWheel, { passive: false });
     viewport.addEventListener("pointerdown", onPointerDown, true);
     viewport.addEventListener("pointermove", onPointerMove);
     viewport.addEventListener("pointerup", onPointerUp);
     viewport.addEventListener("pointercancel", onPointerUp);
     viewport.addEventListener("dblclick", onDblClick);
+    viewport.addEventListener("contextmenu", onContextMenu);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
@@ -478,6 +482,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       viewport.removeEventListener("pointerup", handlers.onPointerUp);
       viewport.removeEventListener("pointercancel", handlers.onPointerUp);
       viewport.removeEventListener("dblclick", handlers.onDblClick);
+      viewport.removeEventListener("contextmenu", handlers.onContextMenu);
     }
     if ( handlers ) {
       window.removeEventListener("keydown", handlers.onKeyDown);
