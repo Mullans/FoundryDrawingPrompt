@@ -43,14 +43,17 @@
       <output class="dp-opacity-value">{{brushOpacityPercent}}</output>
     </label>
 
-    <label class="dp-chrome-control">
+    <div class="dp-background-control" role="group" aria-label="{{localize "DRAWING-PROMPTS.player.fields.canvasChrome"}}">
       <span>{{localize "DRAWING-PROMPTS.player.fields.canvasChrome"}}</span>
-      <select class="dp-chrome-input">
+      <div class="dp-background-swatches">
         {{#each canvasChromeOptions}}
-        <option value="{{value}}" {{#if selected}}selected{{/if}}>{{localize label}}</option>
+        <button type="button" data-action="setCanvasChrome" data-chrome="{{value}}" class="dp-background-swatch {{#if selected}}is-active{{/if}}" aria-pressed="{{selected}}" data-tooltip aria-label="{{localize label}}">
+          <span class="dp-background-swatch-face dp-background-swatch-{{value}}" aria-hidden="true"></span>
+          <span class="sr-only">{{localize label}}</span>
+        </button>
         {{/each}}
-      </select>
-    </label>
+      </div>
+    </div>
 
     <div class="dp-tool-group">
       <button type="button" data-action="clearLayer" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.actions.clear"}}">

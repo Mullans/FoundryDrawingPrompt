@@ -167,8 +167,8 @@ export function registerSettings() {
     hint: `${PREFIX}.canvasChrome.hint`,
     type: String,
     choices: {
-      [CANVAS_CHROME.WHITE]: "DRAWING-PROMPTS.choices.canvasChrome.white",
       [CANVAS_CHROME.BLACK]: "DRAWING-PROMPTS.choices.canvasChrome.black",
+      [CANVAS_CHROME.WHITE]: "DRAWING-PROMPTS.choices.canvasChrome.white",
       [CANVAS_CHROME.CHECKERBOARD]: "DRAWING-PROMPTS.choices.canvasChrome.checkerboard"
     },
     default: CANVAS_CHROME.CHECKERBOARD

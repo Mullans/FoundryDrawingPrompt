@@ -41,6 +41,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     position: { width: 820, height: 720 },
     actions: {
       setTool: PlayerDrawingApp.#onSetTool,
+      setCanvasChrome: PlayerDrawingApp.#onSetCanvasChrome,
       clearLayer: PlayerDrawingApp.#onClearLayer,
       undo: PlayerDrawingApp.#onUndo,
       redo: PlayerDrawingApp.#onRedo,
@@ -726,10 +727,6 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       this.#engine?.setBrushOpacity(this.#brushOpacity);
       this.#refreshToolbarState();
     });
-    const chromeInput = this.element?.querySelector(".dp-chrome-input");
-    chromeInput?.addEventListener("change", event => {
-      this.#setCanvasChrome(event.currentTarget.value);
-    });
   }
 
   /**
@@ -744,13 +741,13 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   }
 
   /**
-   * Build select options for Canvas chrome.
+   * Build Background swatch options (Canvas chrome preference).
    * @returns {{value: string, label: string, selected: boolean}[]}
    */
   #canvasChromeOptions() {
     return [
-      { value: CANVAS_CHROME.WHITE, label: "DRAWING-PROMPTS.choices.canvasChrome.white", selected: this.#canvasChrome === CANVAS_CHROME.WHITE },
       { value: CANVAS_CHROME.BLACK, label: "DRAWING-PROMPTS.choices.canvasChrome.black", selected: this.#canvasChrome === CANVAS_CHROME.BLACK },
+      { value: CANVAS_CHROME.WHITE, label: "DRAWING-PROMPTS.choices.canvasChrome.white", selected: this.#canvasChrome === CANVAS_CHROME.WHITE },
       {
         value: CANVAS_CHROME.CHECKERBOARD,
         label: "DRAWING-PROMPTS.choices.canvasChrome.checkerboard",
@@ -800,8 +797,11 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       canvas.classList.remove("tool-brush", "tool-eraser", "tool-fill", "tool-eyedropper");
       canvas.classList.add(`tool-${this.#activeTool}`);
     }
-    const chromeInput = root.querySelector(".dp-chrome-input");
-    if ( chromeInput && chromeInput.value !== this.#canvasChrome ) chromeInput.value = this.#canvasChrome;
+    for ( const button of root.querySelectorAll("[data-action='setCanvasChrome']") ) {
+      const selected = button.dataset.chrome === this.#canvasChrome;
+      button.classList.toggle("is-active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    }
     const canvasBox = root.querySelector(".dp-canvas-box");
     if ( canvasBox ) {
       canvasBox.classList.remove(...CANVAS_CHROME_CSS_CLASSES);
@@ -869,6 +869,16 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   static async #onSetTool(_event, target) {
     this.#selectTool(target.dataset.tool);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @param {Event} _event Event.
+   * @param {HTMLElement} target Action target.
+   * @returns {Promise<void>}
+   */
+  static async #onSetCanvasChrome(_event, target) {
+    this.#setCanvasChrome(target.dataset.chrome);
   }
 
   /**
