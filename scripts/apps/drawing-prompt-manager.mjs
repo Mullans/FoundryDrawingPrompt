@@ -7,12 +7,8 @@ import {
   resolveDraftFraming,
   zoomFraming
 } from "../drawing/draft-framing-editor.mjs";
-import { computeFramingGeometry } from "../drawing/prompt-framing.mjs";
-import { defaultFramingForBackground, drawFramedBackground } from "../drawing/framed-background.mjs";
-import {
-  classifyWheelGesture,
-  isPanModifierActive
-} from "../drawing/player-navigation.mjs";
+import { defaultFramingForBackground } from "../drawing/framed-background.mjs";
+import { classifyWheelGesture } from "../drawing/player-navigation.mjs";
 import { defaultAssetFolder, normalizePath } from "../prompts/asset-service.mjs";
 import {
   blankBackground,
@@ -177,8 +173,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #sourceFramingPreviewLoad;
   /**
    * Loaded (and taint-checked) `<img>` for the current draft background, cached
-   * alongside its path so {@link #updateBackgroundPreview} can redraw the preview
-   * canvas cheaply without refetching the image on every input/change event.
+   * alongside its path so {@link #updateFramingEditor} can redraw the framing
+   * viewport cheaply without refetching the image on every input/change event.
    * @type {{path: string, img: HTMLImageElement}|null}
   */
   #previewBackgroundImage = null;
@@ -189,15 +185,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #framingViewportEl = null;
   #framingPanPointerId = null;
   #framingPanLast = null;
-  #framingSpaceHeld = false;
   #onFormInput = () => {
     this.#syncDraftFromForm();
-    this.#updateBackgroundPreview();
     this.#updateFramingEditor();
   };
   #onFormChange = event => {
     this.#syncDraftFromForm();
-    this.#updateBackgroundPreview();
     this.#updateFramingEditor();
     if ( event.target?.name === "selectedUserIds" ) this.#updateSelectedCount();
   };
@@ -335,7 +328,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       form.addEventListener("change", this.#onFormChange);
       this.#formListenersAttached = true;
     }
-    this.#updateBackgroundPreview();
     void this.#ensurePreviewBackgroundImage();
     this.#updateFramingEditor();
     this.#ensureFramingEditor();
@@ -556,37 +548,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Live-repaint the player-preview canvas at Prompt canvas dimensions using Prompt
-   * Framing + Fit mode. Uses the same {@link drawFramedBackground} path as delivery.
-   * @returns {void}
-   */
-  #updateBackgroundPreview() {
-    if ( this.activePrompt ) return;
-    const canvasEl = this.element?.querySelector("[data-dp-background-preview]");
-    if ( !canvasEl ) return;
-    const canvasWidth = Math.max(1, Number(this.draft.canvasWidth) || 1);
-    const canvasHeight = Math.max(1, Number(this.draft.canvasHeight) || 1);
-    canvasEl.width = canvasWidth;
-    canvasEl.height = canvasHeight;
-    const ctx = canvasEl.getContext("2d");
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-    const { path, naturalWidth, naturalHeight, fitMode } = this.draft.background;
-    const img = path && this.#previewBackgroundImage?.path === path ? this.#previewBackgroundImage.img : null;
-    if ( !img ) return;
-    const framing = resolveDraftFraming(this.draft.background);
-    if ( !framing ) return;
-    const geometry = computeFramingGeometry({
-      sourceWidth: naturalWidth,
-      sourceHeight: naturalHeight,
-      framing,
-      fitMode,
-      canvasWidth,
-      canvasHeight
-    });
-    drawFramedBackground(ctx, img, geometry);
-  }
-
-  /**
    * Repaint the Prompt Framing editor viewport over the source image.
    * @returns {void}
    */
@@ -624,7 +585,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( this.activePrompt || !this.draft.background.path ) return;
     this.draft.background.framing = { ...framing };
     this.#updateFramingEditor();
-    this.#updateBackgroundPreview();
   }
 
   /**
@@ -659,22 +619,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       event.preventDefault();
       this.#resetDraftFraming();
     };
-    const onKeyDown = event => {
-      if ( event.code !== "Space" || event.repeat ) return;
-      const target = event.target;
-      if ( target?.closest?.("input, textarea, select, [contenteditable='true']") ) return;
-      this.#framingSpaceHeld = true;
-      if ( this.element?.contains(target) || target === document.body ) event.preventDefault();
-    };
-    const onKeyUp = event => {
-      if ( event.code === "Space" ) this.#framingSpaceHeld = false;
-    };
-    const onBlur = () => {
-      this.#framingSpaceHeld = false;
-      this.#endFramingPan();
-    };
+    const onBlur = () => this.#endFramingPan();
 
-    this.#framingEditorHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur };
+    this.#framingEditorHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onBlur };
     this.#framingViewportEl = viewport;
     viewport.addEventListener("wheel", onWheel, { passive: false });
     viewport.addEventListener("pointerdown", onPointerDown);
@@ -682,8 +629,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     viewport.addEventListener("pointerup", onPointerUp);
     viewport.addEventListener("pointercancel", onPointerUp);
     viewport.addEventListener("dblclick", onDblClick);
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     if ( typeof ResizeObserver !== "undefined" ) {
       this.#framingResizeObserver = new ResizeObserver(() => this.#updateFramingEditor());
@@ -708,17 +653,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       viewport.removeEventListener("pointercancel", handlers.onPointerUp);
       viewport.removeEventListener("dblclick", handlers.onDblClick);
     }
-    if ( handlers ) {
-      window.removeEventListener("keydown", handlers.onKeyDown);
-      window.removeEventListener("keyup", handlers.onKeyUp);
-      window.removeEventListener("blur", handlers.onBlur);
-    }
+    if ( handlers ) window.removeEventListener("blur", handlers.onBlur);
     this.#framingResizeObserver?.disconnect();
     this.#framingResizeObserver = null;
     this.#framingEditorHandlers = null;
     this.#framingViewportEl = null;
     this.#framingEditorAttached = false;
-    this.#framingSpaceHeld = false;
   }
 
   /**
@@ -781,11 +721,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /**
    * Begin a framing-editor pan drag.
+   * Primary (left) button pans; middle button remains an optional alternate.
    * @param {PointerEvent} event Pointer event.
    * @returns {void}
    */
   #onFramingPointerDown(event) {
-    if ( !isPanModifierActive({ button: event.button, spaceHeld: this.#framingSpaceHeld }) ) return;
+    if ( event.button !== 0 && event.button !== 1 ) return;
     if ( !resolveDraftFraming(this.draft.background) ) return;
     event.preventDefault();
     this.#framingPanPointerId = event.pointerId;
@@ -852,7 +793,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         const loaded = await request;
         if ( this.#previewBackgroundLoad?.promise !== promise || this.draft.background.path !== path ) return;
         this.#previewBackgroundImage = { path, img: loaded.img };
-        this.#updateBackgroundPreview();
         this.#updateFramingEditor();
       } catch {
         // Selection-time validation already reports load errors; keep restored drafts blank if the asset disappeared.
