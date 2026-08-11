@@ -77,7 +77,7 @@
   "DRAWING-PROMPTS.manager.sections.players": "Players",
   "DRAWING-PROMPTS.manager.sections.preview": "Preview",
   "DRAWING-PROMPTS.manager.sections.framing": "Prompt Framing",
-  "DRAWING-PROMPTS.manager.framing.hint": "Pan and zoom the source to set the region sent to players. Empty areas outside the source show as canvas chrome for players.",
+  "DRAWING-PROMPTS.manager.framing.hint": "Pan and zoom the source to set the region sent to players. Empty areas outside the source show as the player Background setting.",
   "DRAWING-PROMPTS.manager.framing.reset": "Reset framing",
   "DRAWING-PROMPTS.manager.framing.zoomIn": "Zoom in",
   "DRAWING-PROMPTS.manager.framing.zoomOut": "Zoom out",
