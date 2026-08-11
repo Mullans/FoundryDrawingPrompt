@@ -576,11 +576,23 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( !img ) return;
     const framing = resolveDraftFraming(this.draft.background);
     if ( !framing ) return;
-    const viewport = canvasEl.parentElement?.getBoundingClientRect();
-    const viewportWidth = Math.max(1, Math.round(viewport?.width || canvasEl.clientWidth || 1));
-    const viewportHeight = Math.max(1, Math.round(viewport?.height || canvasEl.clientHeight || 1));
-    canvasEl.width = viewportWidth;
-    canvasEl.height = viewportHeight;
+    // Measure the fixed viewport pane (not the canvas intrinsic size) so bitmap
+    // attrs never drive layout growth / a stretch-looking reflow loop.
+    const viewportEl = canvasEl.parentElement;
+    const viewportWidth = Math.max(
+      1,
+      Math.round(viewportEl?.clientWidth || canvasEl.clientWidth || 1)
+    );
+    const viewportHeight = Math.max(
+      1,
+      Math.round(viewportEl?.clientHeight || canvasEl.clientHeight || 1)
+    );
+    if ( canvasEl.width === viewportWidth && canvasEl.height === viewportHeight ) {
+      // Still repaint (pan/zoom), but skip attribute resize when size is stable.
+    } else {
+      canvasEl.width = viewportWidth;
+      canvasEl.height = viewportHeight;
+    }
     drawFramingEditor(
       canvasEl.getContext("2d"),
       img,
