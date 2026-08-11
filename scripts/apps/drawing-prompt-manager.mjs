@@ -2,6 +2,7 @@ import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, FRAMING_VIEW, INTERNAL, M
 import {
   FRAMING_ZOOM_STEP,
   drawFramingEditor,
+  framingAfterFitModeSelect,
   panFraming,
   resetFraming,
   resolveDraftFraming,
@@ -185,7 +186,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #framingViewportEl = null;
   #framingPanPointerId = null;
   #framingPanLast = null;
-  #onFormInput = () => {
+  #onFormInput = event => {
+    // Defer fitMode to `change`: Chromium fires input then change for <select>,
+    // and syncing fitMode on input would make previous===next on change (skipping
+    // full-source framing reset for non-Placed modes).
+    if ( event.target?.name === "fitMode" ) return;
     this.#syncDraftFromForm();
     this.#updateFramingEditor();
   };
@@ -613,9 +618,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #handleFitModeChange(previousFitMode, nextFitMode) {
-    if ( nextFitMode === previousFitMode ) return;
-    if ( nextFitMode === FIT_MODE.PLACED ) return;
-    const full = defaultFramingForBackground(this.draft.background);
+    const full = framingAfterFitModeSelect(this.draft.background, previousFitMode, nextFitMode);
     if ( full ) this.draft.background.framing = { ...full };
   }
 

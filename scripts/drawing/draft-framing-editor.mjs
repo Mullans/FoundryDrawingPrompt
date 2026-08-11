@@ -1,3 +1,4 @@
+import { FIT_MODE } from "../constants.mjs";
 import { defaultPromptFraming } from "./prompt-framing.mjs";
 
 /** Minimum Prompt Framing edge length in source pixels. */
@@ -30,6 +31,24 @@ export function resolveDraftFraming(background = {}) {
  */
 export function resetFraming(sourceWidth, sourceHeight) {
   return defaultPromptFraming(sourceWidth, sourceHeight);
+}
+
+/**
+ * Resolve Prompt Framing after the GM changes Fit mode in the draft select.
+ * Non-Placed modes reset to full-source framing; same mode or Placed keeps framing.
+ * Pure helper so UI `input`→`change` ordering can be tested without ApplicationV2.
+ * @param {{path?: string|null, naturalWidth?: number|null, naturalHeight?: number|null, framing?: object|null}} background Draft background.
+ * @param {string} previousFitMode Fit mode before the select change.
+ * @param {string} nextFitMode Fit mode after the select change.
+ * @returns {{x: number, y: number, width: number, height: number}|null} Framing to apply, or null to leave unchanged.
+ */
+export function framingAfterFitModeSelect(background, previousFitMode, nextFitMode) {
+  if ( nextFitMode === previousFitMode ) return null;
+  if ( nextFitMode === FIT_MODE.PLACED ) return null;
+  const naturalWidth = Number(background?.naturalWidth);
+  const naturalHeight = Number(background?.naturalHeight);
+  if ( !background?.path || !(naturalWidth > 0 && naturalHeight > 0) ) return null;
+  return defaultPromptFraming(naturalWidth, naturalHeight);
 }
 
 /**
