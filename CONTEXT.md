@@ -83,12 +83,24 @@ Permanently remove a Prompt and its associated data after explicit confirmation.
 
 ## Drawing surface
 
+**Canvas plate**:
+The on-screen rectangle that represents the Prompt canvas at its true aspect ratio (GM width × height). It is the only surface that is “the drawing” for tools and export; Framed background and ink live on the plate. Distinct from any surrounding UI window or navigation padding.
+_Avoid_: Viewport (alone), drawing area (when meaning the outer window)
+
+**Display stage**:
+The larger interactable region around a Canvas plate used for Player navigation (pan/zoom) and padding when the plate is letterboxed. Not Submission coordinate space.
+_Avoid_: Background (when meaning stage), window (alone)
+
 **Canvas chrome**:
-The player-local plain backdrop under the Framed background and drawing (white, black, or transparency checkerboard). Client setting; default checkerboard. Editing aid only; not part of the exported image unless a later product choice says otherwise. No GM lock.
+The client-local plain fill (white, black, or transparency checkerboard) behind plate content. On the **player** workstation it fills the **Display stage** (including chrome outside the plate after letterboxing) so pan/zoom padding is still chrome under-layer—not Framed background and not part of the Submission. On **GM compose framing** and **static GM review** plates it exists only on the Canvas plate. Editing aid; not exported. Client setting; default checkerboard. No GM lock.
 _Avoid_: Background color (when meaning chrome), canvas background (ambiguous with source image)
 
+**Plate border**:
+A thin, client-only accent edge around a Canvas plate so the Prompt canvas bounds stay visible against Chrome or panel void. Not part of exported rasters.
+_Avoid_: Picture frame, window border
+
 **Player navigation**:
-Ephemeral pan and zoom on the Prompt canvas while drawing (fit Framed background by default; reset on reopen). Does not change Prompt Framing, Fit mode, or what was delivered as Framed background. Drawing tools always win over navigation gestures.
+Ephemeral pan and zoom of the Canvas plate within the Display stage (open and navigation-reset fit the plate fully inside the stage; letterbox as needed). Does not change Prompt Framing, Fit mode, or what was delivered as Framed background. Drawing tools map only to plate pixels; stage exterior is navigation-only for pan/zoom gestures.
 _Avoid_: Prompt Framing (for temporary zoom)
 
 ## Background
