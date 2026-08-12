@@ -160,6 +160,13 @@ export function registerSettings() {
     default: ""
   });
 
+  game.settings.register(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS, {
+    scope: "client",
+    config: false,
+    type: String,
+    default: "[]"
+  });
+
   game.settings.register(MODULE_ID, SETTINGS.CANVAS_CHROME, {
     scope: "client",
     config: true,

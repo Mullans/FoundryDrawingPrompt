@@ -1,3 +1,4 @@
+import { FIT_MODE } from "../constants.mjs";
 import { computeBackgroundLayout } from "./background-layout.mjs";
 
 /**
@@ -14,24 +15,63 @@ export function defaultPromptFraming(sourceWidth, sourceHeight) {
 
 /**
  * Full Framing plate in source-pixel space: axis-aligned union of the natural
- * source rect and Prompt Framing (pad outside the source expands the plate).
+ * source rect and the Prompt canvas extent mapped into source space.
+ *
+ * Prompt Framing alone is not enough when Fit letterboxes/pillarboxes — canvas
+ * pad (e.g. hat room above a character) maps outside the framing rect and must
+ * still expand the plate. When canvas/fit are omitted, falls back to
+ * source ∪ Prompt Framing (Stretch-equivalent).
  *
  * @param {object} options
  * @param {number} options.sourceWidth Natural source width.
  * @param {number} options.sourceHeight Natural source height.
  * @param {{x: number, y: number, width: number, height: number}|null} [options.framing]
  *   Prompt Framing in source space (defaults to full source).
+ * @param {{dx: number, dy: number, dw: number, dh: number}|null} [options.framedPlacement]
+ *   Framed region placement on the Prompt canvas (from Fit).
+ * @param {number} [options.canvasWidth] Prompt canvas width.
+ * @param {number} [options.canvasHeight] Prompt canvas height.
  * @returns {{x: number, y: number, width: number, height: number}}
  *   Integer AABB; source sits at offsets `(-x, -y)` within the plate.
  */
-export function computeFullFramingRect({ sourceWidth, sourceHeight, framing = null } = {}) {
+export function computeFullFramingRect({
+  sourceWidth,
+  sourceHeight,
+  framing = null,
+  framedPlacement = null,
+  canvasWidth = null,
+  canvasHeight = null
+} = {}) {
   const sw = positiveNumber(sourceWidth, 1);
   const sh = positiveNumber(sourceHeight, 1);
   const frame = normalizeFraming(framing, sw, sh);
-  const left = Math.min(0, frame.x);
-  const top = Math.min(0, frame.y);
-  const right = Math.max(sw, frame.x + frame.width);
-  const bottom = Math.max(sh, frame.y + frame.height);
+  let left = Math.min(0, frame.x);
+  let top = Math.min(0, frame.y);
+  let right = Math.max(sw, frame.x + frame.width);
+  let bottom = Math.max(sh, frame.y + frame.height);
+
+  const cw = Number(canvasWidth);
+  const ch = Number(canvasHeight);
+  const placement = framedPlacement && typeof framedPlacement === "object" ? framedPlacement : null;
+  if ( placement && cw > 0 && ch > 0 && placement.dw > 0 && placement.dh > 0 ) {
+    const scaleX = placement.dw / frame.width;
+    const scaleY = placement.dh / frame.height;
+    const corners = [
+      [0, 0],
+      [cw, 0],
+      [cw, ch],
+      [0, ch]
+    ];
+    for ( const [cx, cy] of corners ) {
+      const sx = frame.x + (cx - placement.dx) / scaleX;
+      const sy = frame.y + (cy - placement.dy) / scaleY;
+      left = Math.min(left, sx);
+      top = Math.min(top, sy);
+      right = Math.max(right, sx);
+      bottom = Math.max(bottom, sy);
+    }
+  }
+
   const x = Math.floor(left);
   const y = Math.floor(top);
   const maxX = Math.ceil(right);
@@ -83,7 +123,13 @@ export function computeFramingGeometry({
   const cw = positiveNumber(canvasWidth, 1);
   const ch = positiveNumber(canvasHeight, 1);
   const frame = normalizeFraming(framing, sw, sh);
-  const framedPlacement = computeBackgroundLayout(cw, ch, frame.width, frame.height, fitMode);
+  const framedPlacement = computeBackgroundLayout(
+    cw,
+    ch,
+    frame.width,
+    frame.height,
+    fitMode ?? FIT_MODE.STRETCH
+  );
   const scaleX = framedPlacement.dw / frame.width;
   const scaleY = framedPlacement.dh / frame.height;
   const sourceOnCanvas = {
@@ -92,7 +138,14 @@ export function computeFramingGeometry({
     width: sw * scaleX,
     height: sh * scaleY
   };
-  const fullRect = computeFullFramingRect({ sourceWidth: sw, sourceHeight: sh, framing: frame });
+  const fullRect = computeFullFramingRect({
+    sourceWidth: sw,
+    sourceHeight: sh,
+    framing: frame,
+    framedPlacement,
+    canvasWidth: cw,
+    canvasHeight: ch
+  });
 
   return {
     framing: frame,
@@ -190,23 +243,12 @@ export function dualSaveFilenames(name, extension) {
 }
 
 /**
- * Dual raster bake from a synthetic Prompt-canvas overlay (RGBA buffer).
- * Prompt-facing output is canvas-sized; Full Framing (`source` key) is the composition
- * plate sized to fullRect (union of natural source and Prompt Framing) with remapped ink.
- * Pad-outside-source ink is retained on that plate.
- * When `sourceUnderlay` is provided, the natural source is drawn under remapped ink at
- * offsets `(-fullRect.x, -fullRect.y)`; otherwise the plate is transparent + ink.
- *
- * @param {object} options
- * @param {ReturnType<typeof computeFramingGeometry>} options.geometry Framing geometry.
- * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay
- *   Overlay in Prompt canvas coordinates (width/height should match the canvas).
- * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} [options.sourceUnderlay]
- *   Optional source-image RGBA at natural size (drawn under remapped ink).
- * @returns {{
- *   promptCanvas: {width: number, height: number, data: Uint8ClampedArray},
- *   source: {width: number, height: number, data: Uint8ClampedArray}
- * }}
+ * Allocate the Full Framing plate and draw the natural source into it at offsets
+ * `(-fullRect.x, -fullRect.y)`. Without an underlay the plate stays transparent.
+ * @param {ReturnType<typeof computeFramingGeometry>} geometry Framing geometry.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} [sourceUnderlay]
+ *   Optional source-image RGBA at natural size.
+ * @returns {{width: number, height: number, data: Uint8ClampedArray}} Plate sized to fullRect.
  */
 export function initFullPlateFromUnderlay(geometry, sourceUnderlay = null) {
   const sourceWidth = geometry.sourceWidth;
@@ -270,94 +312,168 @@ export function compositeSameSizeSourceOver(base, ink) {
   return base;
 }
 
-export function bakeDualRasters({ geometry, overlay, sourceUnderlay = null } = {}) {
-  const canvasWidth = geometry.canvasWidth;
-  const canvasHeight = geometry.canvasHeight;
-  const sourceWidth = geometry.sourceWidth;
-  const sourceHeight = geometry.sourceHeight;
-  const fullRect = geometry.fullRect ?? computeFullFramingRect({
-    sourceWidth,
-    sourceHeight,
-    framing: geometry.framing
-  });
-  const fullWidth = Math.max(1, Math.round(fullRect.width));
-  const fullHeight = Math.max(1, Math.round(fullRect.height));
-  const promptCanvas = copyRgbaBuffer(overlay, canvasWidth, canvasHeight);
-  const source = initFullPlateFromUnderlay(geometry, sourceUnderlay);
-
-  const overlayWidth = Number(overlay?.width) || canvasWidth;
-  const overlayHeight = Number(overlay?.height) || canvasHeight;
-  // Wire-scaled overlays are smaller than the Prompt canvas; map in canvas space
-  // so Full Framing remapping stays correct after compress/downscale for transit.
-  const toCanvasX = canvasWidth / Math.max(1, overlayWidth);
-  const toCanvasY = canvasHeight / Math.max(1, overlayHeight);
+/**
+ * Nearest-area splat of an overlay RGBA buffer into a plate-sized ink layer.
+ *
+ * Pixel convention shared by every remap here: pixel index `i` covers the continuous
+ * range `[i, i + 1)`, so its center is `i + 0.5` and the pixel holding a continuous
+ * coordinate `c` is `Math.floor(c)`.
+ *
+ * Each overlay pixel covers a rect in plate space and every plate pixel it touches keeps
+ * the most opaque contribution. Ink therefore reaches the plate through a single
+ * source-over composite, so undersampled remaps (many overlay pixels per plate pixel)
+ * cannot darken by stacking alpha, while oversampled ones still fill contiguous blocks.
+ *
+ * @param {object} options Splat options.
+ * @param {{width: number, height: number}} options.plate Target plate dimensions.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} options.overlay
+ *   Overlay RGBA buffer.
+ * @param {(x: number, y: number) => {x: number, y: number}} options.mapPoint
+ *   Overlay-space → plate-space map for continuous coordinates.
+ * @returns {{width: number, height: number, data: Uint8ClampedArray}} Ink layer at plate size.
+ */
+export function splatOverlayInk({ plate, overlay, mapPoint } = {}) {
+  const width = Math.max(1, Math.round(positiveNumber(plate?.width, 1)));
+  const height = Math.max(1, Math.round(positiveNumber(plate?.height, 1)));
+  const ink = {
+    width,
+    height,
+    data: new Uint8ClampedArray(width * height * 4)
+  };
   const data = overlay?.data;
-  if ( !data ) return { promptCanvas, source };
+  const overlayWidth = Math.floor(positiveNumber(overlay?.width, 0));
+  const overlayHeight = Math.floor(positiveNumber(overlay?.height, 0));
+  if ( !data || !overlayWidth || !overlayHeight || typeof mapPoint !== "function" ) return ink;
 
-  // Area splat into Full Framing plate: each overlay pixel covers a canvas rect;
-  // map corners into plate (source − fullRect origin) and fill covered pixels.
   for ( let py = 0; py < overlayHeight; py++ ) {
     for ( let px = 0; px < overlayWidth; px++ ) {
       const srcOffset = (py * overlayWidth + px) * 4;
       const alpha = data[srcOffset + 3];
       if ( !alpha ) continue;
-
-      const c0x = px * toCanvasX;
-      const c1x = (px + 1) * toCanvasX;
-      const c0y = py * toCanvasY;
-      const c1y = (py + 1) * toCanvasY;
-      const corners = [
-        mapPromptToFull(geometry, c0x, c0y),
-        mapPromptToFull(geometry, c1x, c0y),
-        mapPromptToFull(geometry, c0x, c1y),
-        mapPromptToFull(geometry, c1x, c1y)
-      ];
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minY = Infinity;
-      let maxY = -Infinity;
-      for ( const corner of corners ) {
-        if ( corner.x < minX ) minX = corner.x;
-        if ( corner.x > maxX ) maxX = corner.x;
-        if ( corner.y < minY ) minY = corner.y;
-        if ( corner.y > maxY ) maxY = corner.y;
-      }
-
-      const fx0 = Math.max(0, Math.floor(minX));
-      const fx1 = Math.min(fullWidth - 1, Math.ceil(maxX) - 1);
-      const fy0 = Math.max(0, Math.floor(minY));
-      const fy1 = Math.min(fullHeight - 1, Math.ceil(maxY) - 1);
-
-      let xStart = fx0;
-      let xEnd = fx1;
-      let yStart = fy0;
-      let yEnd = fy1;
-      if ( xStart > xEnd || yStart > yEnd ) {
-        const center = mapPromptToFull(
-          geometry,
-          (px + 0.5) * toCanvasX - 0.5,
-          (py + 0.5) * toCanvasY - 0.5
-        );
-        const fx = Math.round(center.x);
-        const fy = Math.round(center.y);
-        if ( fx < 0 || fy < 0 || fx >= fullWidth || fy >= fullHeight ) continue;
-        xStart = xEnd = fx;
-        yStart = yEnd = fy;
-      }
+      const covered = mappedPixelCoverage(mapPoint, px, py, width, height);
+      if ( !covered ) continue;
 
       const r = data[srcOffset];
       const g = data[srcOffset + 1];
       const b = data[srcOffset + 2];
-      for ( let fy = yStart; fy <= yEnd; fy++ ) {
-        for ( let fx = xStart; fx <= xEnd; fx++ ) {
-          const destOffset = (fy * fullWidth + fx) * 4;
-          compositeSourceOver(source.data, destOffset, r, g, b, alpha);
+      for ( let fy = covered.yStart; fy <= covered.yEnd; fy++ ) {
+        for ( let fx = covered.xStart; fx <= covered.xEnd; fx++ ) {
+          keepMostOpaque(ink.data, (fy * width + fx) * 4, r, g, b, alpha);
         }
       }
     }
   }
 
+  return ink;
+}
+
+/**
+ * Dual raster bake from a synthetic Prompt-canvas overlay (RGBA buffer).
+ * Prompt-facing output is canvas-sized; Full Framing (`source` key) is the composition
+ * plate sized to fullRect (union of natural source and Prompt Framing) with remapped ink.
+ * Pad-outside-source ink is retained on that plate.
+ * When `sourceUnderlay` is provided, the natural source is drawn under remapped ink at
+ * offsets `(-fullRect.x, -fullRect.y)`; otherwise the plate is transparent + ink.
+ *
+ * @param {object} options Bake options.
+ * @param {ReturnType<typeof computeFramingGeometry>} options.geometry Framing geometry.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay
+ *   Overlay in Prompt canvas coordinates (width/height should match the canvas).
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} [options.sourceUnderlay]
+ *   Optional source-image RGBA at natural size (drawn under remapped ink).
+ * @returns {{
+ *   promptCanvas: {width: number, height: number, data: Uint8ClampedArray},
+ *   source: {width: number, height: number, data: Uint8ClampedArray}
+ * }}
+ */
+export function bakeDualRasters({ geometry, overlay, sourceUnderlay = null } = {}) {
+  const canvasWidth = geometry.canvasWidth;
+  const canvasHeight = geometry.canvasHeight;
+  const fullRect = geometry.fullRect ?? computeFullFramingRect({
+    sourceWidth: geometry.sourceWidth,
+    sourceHeight: geometry.sourceHeight,
+    framing: geometry.framing
+  });
+  const promptCanvas = copyRgbaBuffer(overlay, canvasWidth, canvasHeight);
+
+  // Wire-scaled overlays are smaller than the Prompt canvas; map in canvas space
+  // so Full Framing remapping stays correct after compress/downscale for transit.
+  const toCanvasX = canvasWidth / Math.max(1, Number(overlay?.width) || canvasWidth);
+  const toCanvasY = canvasHeight / Math.max(1, Number(overlay?.height) || canvasHeight);
+  const ink = splatOverlayInk({
+    plate: {
+      width: Math.max(1, Math.round(fullRect.width)),
+      height: Math.max(1, Math.round(fullRect.height))
+    },
+    overlay,
+    mapPoint: (x, y) => mapPromptToFull(geometry, x * toCanvasX, y * toCanvasY)
+  });
+
+  const source = sourceUnderlay?.data
+    ? compositeSameSizeSourceOver(initFullPlateFromUnderlay(geometry, sourceUnderlay), ink)
+    : ink;
   return { promptCanvas, source };
+}
+
+/**
+ * Plate pixels covered by one overlay pixel, or null when the pixel misses the plate.
+ * Sub-pixel (degenerate) coverage falls back to the plate pixel holding the overlay
+ * pixel center, keeping the pixel-edge convention documented on `splatOverlayInk`.
+ * @param {(x: number, y: number) => {x: number, y: number}} mapPoint Overlay → plate map.
+ * @param {number} px Overlay pixel x index.
+ * @param {number} py Overlay pixel y index.
+ * @param {number} width Plate width.
+ * @param {number} height Plate height.
+ * @returns {{xStart: number, xEnd: number, yStart: number, yEnd: number}|null}
+ */
+function mappedPixelCoverage(mapPoint, px, py, width, height) {
+  const corners = [
+    mapPoint(px, py),
+    mapPoint(px + 1, py),
+    mapPoint(px, py + 1),
+    mapPoint(px + 1, py + 1)
+  ];
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for ( const corner of corners ) {
+    if ( corner.x < minX ) minX = corner.x;
+    if ( corner.x > maxX ) maxX = corner.x;
+    if ( corner.y < minY ) minY = corner.y;
+    if ( corner.y > maxY ) maxY = corner.y;
+  }
+
+  const xStart = Math.max(0, Math.floor(minX));
+  const xEnd = Math.min(width - 1, Math.ceil(maxX) - 1);
+  const yStart = Math.max(0, Math.floor(minY));
+  const yEnd = Math.min(height - 1, Math.ceil(maxY) - 1);
+  if ( xStart <= xEnd && yStart <= yEnd ) return { xStart, xEnd, yStart, yEnd };
+
+  const center = mapPoint(px + 0.5, py + 0.5);
+  const fx = Math.floor(center.x);
+  const fy = Math.floor(center.y);
+  if ( !Number.isFinite(fx) || !Number.isFinite(fy) ) return null;
+  if ( fx < 0 || fy < 0 || fx >= width || fy >= height ) return null;
+  return { xStart: fx, xEnd: fx, yStart: fy, yEnd: fy };
+}
+
+/**
+ * Keep the most opaque contribution for one ink-layer pixel.
+ * @param {Uint8ClampedArray} data Ink layer bytes.
+ * @param {number} offset Byte offset of the pixel.
+ * @param {number} r Red.
+ * @param {number} g Green.
+ * @param {number} b Blue.
+ * @param {number} a Alpha 0–255.
+ * @returns {void}
+ */
+function keepMostOpaque(data, offset, r, g, b, a) {
+  if ( a <= data[offset + 3] ) return;
+  data[offset] = r;
+  data[offset + 1] = g;
+  data[offset + 2] = b;
+  data[offset + 3] = a;
 }
 
 /**
@@ -396,22 +512,37 @@ function compositeSourceOver(dest, destOffset, sr, sg, sb, sa) {
 }
 
 /**
+ * Coerce a persisted / wire Prompt Framing rect. Nullish or non-objects stay null;
+ * does not invent a full-source default (callers that need geometry defaults use
+ * {@link defaultPromptFraming} or geometry APIs).
+ * @param {{x?: number, y?: number, width?: number, height?: number}|null|undefined} framing
+ * @returns {{x: number, y: number, width: number, height: number}|null}
+ */
+export function normalizeStoredFraming(framing) {
+  if ( framing == null ) return null;
+  if ( typeof framing !== "object" ) return null;
+  return {
+    x: Number(framing.x) || 0,
+    y: Number(framing.y) || 0,
+    width: Number(framing.width) || 0,
+    height: Number(framing.height) || 0
+  };
+}
+
+/**
  * @param {{x?: number, y?: number, width?: number, height?: number}|null} framing
  * @param {number} sourceWidth
  * @param {number} sourceHeight
  * @returns {{x: number, y: number, width: number, height: number}}
  */
 function normalizeFraming(framing, sourceWidth, sourceHeight) {
-  if ( !framing || typeof framing !== "object" ) {
-    return defaultPromptFraming(sourceWidth, sourceHeight);
-  }
-  const width = positiveNumber(framing.width, sourceWidth);
-  const height = positiveNumber(framing.height, sourceHeight);
+  const stored = normalizeStoredFraming(framing);
+  if ( !stored ) return defaultPromptFraming(sourceWidth, sourceHeight);
   return {
-    x: finiteNumber(framing.x, 0),
-    y: finiteNumber(framing.y, 0),
-    width,
-    height
+    x: finiteNumber(stored.x, 0),
+    y: finiteNumber(stored.y, 0),
+    width: positiveNumber(stored.width, sourceWidth),
+    height: positiveNumber(stored.height, sourceHeight)
   };
 }
 
@@ -446,11 +577,12 @@ function copyRgbaBuffer(source, width, height) {
 }
 
 /**
+ * Return a positive finite number or fallback.
  * @param {unknown} value
  * @param {number} fallback
  * @returns {number}
  */
-function positiveNumber(value, fallback) {
+export function positiveNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;
 }

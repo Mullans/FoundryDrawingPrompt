@@ -182,13 +182,32 @@ export class PlaceDialog extends HandlebarsApplicationMixin(ApplicationV2) {
     this.#setPlacementActionsDisabled(true);
     try {
       const service = await import("../prompts/prompt-service.mjs");
+      const { DrawingPromptManager } = await import("./drawing-prompt-manager.mjs");
       const framingView = this.framingView;
-      if ( mode === PLACE_MODES.TILE ) {
-        await service.placeAssignmentAsTile(this.assignment.id, { hidden, name, framingView });
-      } else {
-        await service.placeAssignmentAsToken(this.assignment.id, { mode, name, actorUuid, hidden, framingView });
-      }
+      const modeSnapshot = mode;
+      const nameSnapshot = name;
+      const actorUuidSnapshot = actorUuid;
+      const hiddenSnapshot = hidden;
       await this.close();
+      await DrawingPromptManager.withCanvasYield(async () => {
+        if ( modeSnapshot === PLACE_MODES.TILE ) {
+          await service.placeAssignmentAsTile(this.assignment.id, {
+            hidden: hiddenSnapshot,
+            name: nameSnapshot,
+            framingView,
+            interactive: true
+          });
+        } else {
+          await service.placeAssignmentAsToken(this.assignment.id, {
+            mode: modeSnapshot,
+            name: nameSnapshot,
+            actorUuid: actorUuidSnapshot,
+            hidden: hiddenSnapshot,
+            framingView,
+            interactive: true
+          });
+        }
+      });
     } catch (err) {
       ui.notifications.warn(err.message);
       this.#placing = false;

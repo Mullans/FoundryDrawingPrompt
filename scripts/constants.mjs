@@ -77,6 +77,7 @@ export const SETTINGS = Object.freeze({
   DEFAULT_CLONE_SOURCE_ACTOR_UUID: "defaultCloneSourceActorUuid",
   LAST_SAVE_FOLDER: "lastSaveFolder",
   LAST_BRUSH_COLOR: "lastBrushColor",
+  LAST_BRUSH_COLORS: "lastBrushColors",
   CANVAS_CHROME: "canvasChrome",
   AUTO_OPEN_PLAYER_WINDOW: "autoOpenPlayerWindow",
   NOTIFY_PLAYER: "notifyPlayer",

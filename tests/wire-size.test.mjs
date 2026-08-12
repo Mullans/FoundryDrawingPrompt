@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { INTERNAL } from "../scripts/constants.mjs";
 import { estimateSubmissionWireSize, nextWireSizeStep } from "../scripts/drawing/export-service.mjs";
+import { estimateSnapshotPayloadWireBytes, isValidSnapshotPayload } from "../scripts/prompts/wire-validation.mjs";
 
 test("nextWireSizeStep returns done for payloads under the cap", () => {
   assert.deepEqual(nextWireSizeStep({
@@ -79,6 +80,17 @@ test("nextWireSizeStep downscales PNG payloads until the minimum edge", () => {
     width: 2048,
     height: 1024
   }), { action: "oversized" });
+});
+
+test("a combined live snapshot may use the wire budget exactly once", () => {
+  const prefix = "data:image/webp;base64,";
+  const build = totalLength => `${prefix}${"a".repeat(totalLength - prefix.length)}`;
+  const composite = build(Math.floor(INTERNAL.MAX_SNAPSHOT_WIRE_BYTES / 2));
+  const overlay = build(INTERNAL.MAX_SNAPSHOT_WIRE_BYTES - composite.length);
+
+  assert.equal(estimateSnapshotPayloadWireBytes({ composite, overlay }), INTERNAL.MAX_SNAPSHOT_WIRE_BYTES);
+  assert.equal(isValidSnapshotPayload({ composite, overlay }), true);
+  assert.equal(isValidSnapshotPayload({ composite, overlay: `${overlay}a` }), false);
 });
 
 test("estimateSubmissionWireSize includes op-log JSON length", () => {

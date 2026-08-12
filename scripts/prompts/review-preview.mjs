@@ -3,8 +3,8 @@
  * Domain: Framed background seed ladder + Canvas plate aspect for review.
  */
 
-import { FRAMING_VIEW } from "../constants.mjs";
-import { computeFullFramingRect } from "../drawing/prompt-framing.mjs";
+import { FIT_MODE, FRAMING_VIEW } from "../constants.mjs";
+import { computeFramingGeometry } from "../drawing/prompt-framing.mjs";
 import { normalizeFramingView } from "./dual-save.mjs";
 import { resolvePromptFraming } from "./framed-delivery.mjs";
 
@@ -60,7 +60,8 @@ export function resolveSourceFramingReviewSrc({
 
 /**
  * Aspect box for a review Canvas plate under the active Framing View.
- * Prompt-canvas → Prompt W×H; Full Framing → composition plate (source ∪ framing).
+ * Prompt-canvas → Prompt W×H; Full Framing → composition plate
+ * (source ∪ Prompt-canvas mapped into source space, including Fit pad).
  * @param {object} [options] Inputs.
  * @param {string} [options.framingView] Framing View id.
  * @param {{canvasWidth?: number, canvasHeight?: number, background?: object}|null} [options.prompt]
@@ -79,14 +80,17 @@ export function resolveReviewPlateAspect({
     const naturalWidth = Number(background.naturalWidth);
     const naturalHeight = Number(background.naturalHeight);
     if ( naturalWidth > 0 && naturalHeight > 0 ) {
-      const fullRect = computeFullFramingRect({
+      const geometry = computeFramingGeometry({
         sourceWidth: naturalWidth,
         sourceHeight: naturalHeight,
-        framing: resolvePromptFraming(prompt)
+        framing: resolvePromptFraming(prompt),
+        fitMode: background.fitMode ?? FIT_MODE.STRETCH,
+        canvasWidth: prompt?.canvasWidth,
+        canvasHeight: prompt?.canvasHeight
       });
       return {
-        width: Math.max(1, Math.round(fullRect.width)),
-        height: Math.max(1, Math.round(fullRect.height))
+        width: Math.max(1, Math.round(geometry.fullRect.width)),
+        height: Math.max(1, Math.round(geometry.fullRect.height))
       };
     }
   }

@@ -140,10 +140,12 @@ export const emit = {
    * Ask a player client for its latest snapshot.
    * @param {string} userId Target user id.
    * @param {string} assignmentId Assignment id.
+   * @param {object} [options] Request options.
+   * @param {boolean} [options.includeOverlay=false] Whether the GM's Framing View needs overlay (ink-only) bytes.
    * @returns {Promise<*>}
    */
-  requestSnapshot(userId, assignmentId) {
-    return requireSocket().executeAsUser(CALLS.REQUEST_SNAPSHOT, userId, assignmentId);
+  requestSnapshot(userId, assignmentId, { includeOverlay = false } = {}) {
+    return requireSocket().executeAsUser(CALLS.REQUEST_SNAPSHOT, userId, assignmentId, { includeOverlay });
   },
 
   /**

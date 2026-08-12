@@ -5,6 +5,7 @@ import { INTERNAL } from "../scripts/constants.mjs";
 import { buildPendingDir, buildStagingDir } from "../scripts/prompts/asset-service.mjs";
 import {
   estimateOpLogWireBytes,
+  estimateSnapshotPayloadWireBytes,
   isAllowedPendingPath,
   isAllowedStagedPath,
   isValidImageDataUrl,
@@ -12,6 +13,17 @@ import {
   isValidSnapshotPayload,
   normalizeSnapshotPayload
 } from "../scripts/prompts/wire-validation.mjs";
+
+const SNAPSHOT_PREFIX = "data:image/webp;base64,";
+
+/**
+ * Build a snapshot data URL of an exact total length.
+ * @param {number} totalLength Desired data URL length.
+ * @returns {string}
+ */
+function snapshotUrlOfLength(totalLength) {
+  return `${SNAPSHOT_PREFIX}${"a".repeat(Math.max(1, totalLength - SNAPSHOT_PREFIX.length))}`;
+}
 
 test("isValidImageDataUrl accepts webp and png data URLs", () => {
   assert.equal(isValidImageDataUrl("data:image/webp;base64,abc"), true);
@@ -36,6 +48,26 @@ test("isValidSnapshotPayload accepts composite/overlay objects and legacy string
   assert.equal(isValidSnapshotPayload({}), false);
   assert.equal(isValidSnapshotPayload({ composite: "not-image" }), false);
   assert.equal(isValidSnapshotPayload(null), false);
+});
+
+test("isValidSnapshotPayload budgets composite and overlay against one wire cap", () => {
+  const half = snapshotUrlOfLength(Math.floor(INTERNAL.MAX_SNAPSHOT_WIRE_BYTES / 2));
+  const threeQuarters = snapshotUrlOfLength(Math.floor(INTERNAL.MAX_SNAPSHOT_WIRE_BYTES * 0.75));
+
+  assert.equal(isValidSnapshotPayload({ composite: threeQuarters }), true);
+  assert.equal(isValidSnapshotPayload({ overlay: threeQuarters }), true);
+  assert.equal(isValidSnapshotPayload({ composite: half, overlay: half }), true);
+  assert.equal(isValidSnapshotPayload({ composite: threeQuarters, overlay: half }), false);
+  assert.equal(isValidSnapshotPayload({ composite: threeQuarters, overlay: threeQuarters }), false);
+});
+
+test("estimateSnapshotPayloadWireBytes sums composite and overlay bytes", () => {
+  const composite = "data:image/webp;base64,composite";
+  const overlay = "data:image/webp;base64,overlay";
+  assert.equal(estimateSnapshotPayloadWireBytes(composite), composite.length);
+  assert.equal(estimateSnapshotPayloadWireBytes({ composite }), composite.length);
+  assert.equal(estimateSnapshotPayloadWireBytes({ composite, overlay }), composite.length + overlay.length);
+  assert.equal(estimateSnapshotPayloadWireBytes(null), 0);
 });
 
 test("normalizeSnapshotPayload separates composite and overlay", () => {

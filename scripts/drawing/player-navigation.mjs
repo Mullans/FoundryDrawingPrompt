@@ -1,7 +1,10 @@
 /**
  * Ephemeral player navigation (pan/zoom) for the Prompt canvas surface.
  * Pure math only — never mutates Prompt Framing, Fit mode, or delivered Framed background.
+ * Open/reset fit scale comes from plate-layout contain math; this module owns pan/zoom state.
  */
+
+import { containFitScale, createPlateFitView } from "./plate-layout.mjs";
 
 /** Relative zoom cap vs the current fit scale (zoom in). */
 export const MAX_RELATIVE_ZOOM = 16;
@@ -10,15 +13,20 @@ export const MAX_RELATIVE_ZOOM = 16;
 export const ZOOM_STEP = 1.25;
 
 /**
- * Fit the Canvas plate fully inside the Display stage viewport (open / nav reset).
+ * Fit the Canvas plate fully inside the Display stage (open / nav reset).
  * Letterboxes or pillarboxes while preserving plate aspect; content is not cropped.
  * @param {{contentWidth: number, contentHeight: number, viewportWidth: number, viewportHeight: number}} sizes Sizes.
  * @returns {{scale: number, panX: number, panY: number}}
  */
 export function createFitView(sizes) {
-  const { contentWidth, contentHeight, viewportWidth, viewportHeight } = normalizeSizes(sizes);
-  const scale = fitScale(contentWidth, contentHeight, viewportWidth, viewportHeight);
-  return clampView({ scale, panX: 0, panY: 0 }, sizes);
+  const normalized = normalizeSizes(sizes);
+  const view = createPlateFitView({
+    contentWidth: normalized.contentWidth,
+    contentHeight: normalized.contentHeight,
+    containerWidth: normalized.viewportWidth,
+    containerHeight: normalized.viewportHeight
+  });
+  return clampView(view, sizes);
 }
 
 /**
@@ -29,7 +37,12 @@ export function createFitView(sizes) {
  */
 export function clampView(view, sizes) {
   const { contentWidth, contentHeight, viewportWidth, viewportHeight } = normalizeSizes(sizes);
-  const minScale = fitScale(contentWidth, contentHeight, viewportWidth, viewportHeight);
+  const minScale = containFitScale({
+    contentWidth,
+    contentHeight,
+    containerWidth: viewportWidth,
+    containerHeight: viewportHeight
+  });
   const maxScale = minScale * MAX_RELATIVE_ZOOM;
   const scale = clamp(Number(view?.scale) || minScale, minScale, maxScale);
 
@@ -193,18 +206,6 @@ export function classifyWheelGesture({
  */
 export function wheelZoomFactor(deltaY) {
   return Math.exp(-Number(deltaY || 0) * 0.002);
-}
-
-/**
- * Fit scale so content is fully visible inside the viewport.
- * @param {number} contentWidth Content width.
- * @param {number} contentHeight Content height.
- * @param {number} viewportWidth Viewport width.
- * @param {number} viewportHeight Viewport height.
- * @returns {number}
- */
-function fitScale(contentWidth, contentHeight, viewportWidth, viewportHeight) {
-  return Math.min(viewportWidth / contentWidth, viewportHeight / contentHeight);
 }
 
 /**

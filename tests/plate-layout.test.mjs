@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { fitPlateInBox, layoutPlateInStage } from "../scripts/drawing/plate-layout.mjs";
+import {
+  containFitScale,
+  createPlateFitView,
+  fitPlateInBox,
+  layoutPlateFit,
+  layoutPlateInStage
+} from "../scripts/drawing/plate-layout.mjs";
+import { createFitView } from "../scripts/drawing/player-navigation.mjs";
 
 test("fitPlateInBox letterboxes a landscape plate in a square host", () => {
   assert.deepEqual(
@@ -72,5 +79,92 @@ test("fitPlateInBox falls back to 1 for invalid dimensions", () => {
       containerHeight: 0
     }),
     { width: 1, height: 1 }
+  );
+});
+
+test("containFitScale is the shared letterbox/pillarbox invariant", () => {
+  // Landscape in square → width-limited letterbox
+  assert.equal(
+    containFitScale({
+      contentWidth: 200,
+      contentHeight: 100,
+      containerWidth: 100,
+      containerHeight: 100
+    }),
+    0.5
+  );
+  // Portrait in landscape → height-limited pillarbox
+  assert.equal(
+    containFitScale({
+      contentWidth: 100,
+      contentHeight: 200,
+      containerWidth: 200,
+      containerHeight: 100
+    }),
+    0.5
+  );
+});
+
+test("fitPlateInBox CSS size matches containFitScale (floored)", () => {
+  const sizes = {
+    contentWidth: 800,
+    contentHeight: 400,
+    containerWidth: 400,
+    containerHeight: 400
+  };
+  const scale = containFitScale(sizes);
+  const box = fitPlateInBox(sizes);
+  assert.equal(box.width, Math.floor(800 * scale));
+  assert.equal(box.height, Math.floor(400 * scale));
+});
+
+test("createPlateFitView letterboxes and centers free axes", () => {
+  assert.deepEqual(
+    createPlateFitView({
+      contentWidth: 800,
+      contentHeight: 400,
+      containerWidth: 400,
+      containerHeight: 400
+    }),
+    { scale: 0.5, panX: 0, panY: 100 }
+  );
+});
+
+test("layoutPlateFit returns CSS size and open-fit view together", () => {
+  const result = layoutPlateFit({
+    contentWidth: 200,
+    contentHeight: 100,
+    containerWidth: 100,
+    containerHeight: 100
+  });
+  assert.deepEqual(result.size, { width: 100, height: 50 });
+  assert.deepEqual(result.view, { scale: 0.5, panX: 0, panY: 25 });
+});
+
+test("createFitView and createPlateFitView share contain scale for open fit", () => {
+  const sizes = {
+    contentWidth: 800,
+    contentHeight: 400,
+    viewportWidth: 400,
+    viewportHeight: 400
+  };
+  const plateView = createPlateFitView({
+    contentWidth: sizes.contentWidth,
+    contentHeight: sizes.contentHeight,
+    containerWidth: sizes.viewportWidth,
+    containerHeight: sizes.viewportHeight
+  });
+  const navView = createFitView(sizes);
+  assert.equal(navView.scale, plateView.scale);
+  assert.equal(navView.panX, plateView.panX);
+  assert.equal(navView.panY, plateView.panY);
+  assert.equal(
+    navView.scale,
+    containFitScale({
+      contentWidth: sizes.contentWidth,
+      contentHeight: sizes.contentHeight,
+      containerWidth: sizes.viewportWidth,
+      containerHeight: sizes.viewportHeight
+    })
   );
 });

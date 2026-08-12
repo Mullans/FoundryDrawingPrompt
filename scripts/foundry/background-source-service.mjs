@@ -112,8 +112,8 @@ export function resolveCanvasSize(requestedW, requestedH, bgNaturalW, bgNaturalH
   if ( bgWidth > 0 && bgHeight > 0 ) return clampAspect(bgWidth, bgHeight);
 
   return {
-    width: settingDefault(SETTINGS.DEFAULT_CANVAS_WIDTH, 1024),
-    height: settingDefault(SETTINGS.DEFAULT_CANVAS_HEIGHT, 768)
+    width: settingDefault(SETTINGS.DEFAULT_CANVAS_WIDTH, 512),
+    height: settingDefault(SETTINGS.DEFAULT_CANVAS_HEIGHT, 512)
   };
 }
 

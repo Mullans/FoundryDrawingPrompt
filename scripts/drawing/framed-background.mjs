@@ -63,7 +63,8 @@ export function bakeFramedBackgroundRaster({ source, geometry } = {}) {
 
   for ( let py = 0; py < height; py++ ) {
     for ( let px = 0; px < width; px++ ) {
-      const mapped = mapPromptToSource(geometry, px, py);
+      // Pixel-edge convention (see splatOverlayInk): sample the canvas pixel center.
+      const mapped = mapPromptToSource(geometry, px + 0.5, py + 0.5);
       const sx = Math.floor(mapped.x);
       const sy = Math.floor(mapped.y);
       const destOffset = (py * width + px) * 4;
@@ -139,12 +140,12 @@ export function bakeFramedBackgroundCanvas({
 }
 
 /**
- * Encode a baked Framed background canvas for upload.
+ * Encode a baked Framed background canvas for upload or ephemeral preview.
  * @param {HTMLCanvasElement|OffscreenCanvas} canvas Baked canvas.
  * @param {{format?: string, quality?: number}} [options] Encoding options.
- * @returns {Promise<{blob: Blob, format: string}>}
+ * @returns {Promise<{blob: Blob, dataUrl: string, format: string}>}
  */
 export async function encodeFramedBackground(canvas, { format = "webp", quality } = {}) {
   const encoded = await canvasToEncodedImage(canvas, { format, quality });
-  return { blob: encoded.blob, format: encoded.format };
+  return { blob: encoded.blob, dataUrl: encoded.dataUrl, format: encoded.format };
 }
