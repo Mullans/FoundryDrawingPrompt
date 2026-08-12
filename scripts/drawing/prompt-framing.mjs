@@ -208,9 +208,7 @@ export function dualSaveFilenames(name, extension) {
  *   source: {width: number, height: number, data: Uint8ClampedArray}
  * }}
  */
-export function bakeDualRasters({ geometry, overlay, sourceUnderlay = null } = {}) {
-  const canvasWidth = geometry.canvasWidth;
-  const canvasHeight = geometry.canvasHeight;
+export function initFullPlateFromUnderlay(geometry, sourceUnderlay = null) {
   const sourceWidth = geometry.sourceWidth;
   const sourceHeight = geometry.sourceHeight;
   const fullRect = geometry.fullRect ?? computeFullFramingRect({
@@ -220,7 +218,6 @@ export function bakeDualRasters({ geometry, overlay, sourceUnderlay = null } = {
   });
   const fullWidth = Math.max(1, Math.round(fullRect.width));
   const fullHeight = Math.max(1, Math.round(fullRect.height));
-  const promptCanvas = copyRgbaBuffer(overlay, canvasWidth, canvasHeight);
   const source = {
     width: fullWidth,
     height: fullHeight,
@@ -249,6 +246,44 @@ export function bakeDualRasters({ geometry, overlay, sourceUnderlay = null } = {
       }
     }
   }
+
+  return source;
+}
+
+/**
+ * Source-over composite of same-size RGBA buffers (ink onto an existing plate).
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} base Base plate (mutated).
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} ink Ink RGBA at identical dimensions.
+ * @returns {{width: number, height: number, data: Uint8ClampedArray}}
+ */
+export function compositeSameSizeSourceOver(base, ink) {
+  const width = Number(base?.width) || 1;
+  const height = Number(base?.height) || 1;
+  const inkData = ink?.data;
+  if ( !inkData ) return base;
+  for ( let i = 0; i < width * height; i++ ) {
+    const offset = i * 4;
+    const alpha = inkData[offset + 3];
+    if ( !alpha ) continue;
+    compositeSourceOver(base.data, offset, inkData[offset], inkData[offset + 1], inkData[offset + 2], alpha);
+  }
+  return base;
+}
+
+export function bakeDualRasters({ geometry, overlay, sourceUnderlay = null } = {}) {
+  const canvasWidth = geometry.canvasWidth;
+  const canvasHeight = geometry.canvasHeight;
+  const sourceWidth = geometry.sourceWidth;
+  const sourceHeight = geometry.sourceHeight;
+  const fullRect = geometry.fullRect ?? computeFullFramingRect({
+    sourceWidth,
+    sourceHeight,
+    framing: geometry.framing
+  });
+  const fullWidth = Math.max(1, Math.round(fullRect.width));
+  const fullHeight = Math.max(1, Math.round(fullRect.height));
+  const promptCanvas = copyRgbaBuffer(overlay, canvasWidth, canvasHeight);
+  const source = initFullPlateFromUnderlay(geometry, sourceUnderlay);
 
   const overlayWidth = Number(overlay?.width) || canvasWidth;
   const overlayHeight = Number(overlay?.height) || canvasHeight;

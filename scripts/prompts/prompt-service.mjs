@@ -430,25 +430,30 @@ async function resolveRestorationSubmission(assignment, prompt) {
 }
 
 /**
- * Build a wire-safe restoration payload from saved assignment assets (post-Save reopen).
+ * Build a staged restoration payload from saved assignment assets (post-Save reopen).
+ * Uses path-only overlay references — no base64 in the JournalEntry flag.
  * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
  * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
  * @returns {Promise<object|null>}
  */
-async function buildRestorationSubmissionFromSavedAssets(assignment, prompt) {
+export async function buildRestorationSubmissionFromSavedAssets(assignment, prompt) {
   const overlayPath = assignment.assets?.overlayPath;
+  const mergedPath = assignment.assets?.mergedPath ?? null;
   const oplogPath = assignment.assets?.oplogPath;
   if ( !overlayPath || !oplogPath ) return null;
   try {
-    const [opLog, overlayBlob] = await Promise.all([
-      fetchSavedJson(oplogPath),
-      fetchSavedBlob(overlayPath)
-    ]);
-    const format = overlayPath.endsWith(".png") ? "png" : "webp";
+    const opLog = await fetchSavedJson(oplogPath);
+    const overlayFormat = formatFromAssetPath(overlayPath);
+    const mergedFormat = mergedPath ? formatFromAssetPath(mergedPath) : null;
     return {
-      overlay: {
-        dataUrl: await blobToDataUrl(overlayBlob),
-        format
+      mode: "staged",
+      staged: {
+        overlayPath,
+        mergedPath
+      },
+      formats: {
+        overlay: overlayFormat,
+        merged: mergedFormat
       },
       opLog,
       width: Number(assignment.assets?.tileWidth ?? prompt.canvasWidth),
@@ -473,27 +478,14 @@ async function fetchSavedJson(path) {
 }
 
 /**
- * Fetch a world asset blob.
  * @param {string} path Asset path.
- * @returns {Promise<Blob>}
+ * @returns {string}
  */
-async function fetchSavedBlob(path) {
-  const response = await fetch(`/${encodeURI(normalizePath(path))}`);
-  if ( !response.ok ) throw new Error(`HTTP ${response.status}`);
-  return response.blob();
-}
-
-/**
- * @param {Blob} blob Blob.
- * @returns {Promise<string>}
- */
-function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
-    reader.readAsDataURL(blob);
-  });
+function formatFromAssetPath(path) {
+  const ext = String(path ?? "").split(".").pop()?.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if ( ext === "png" ) return "png";
+  if ( ext === "jpg" || ext === "jpeg" ) return "jpeg";
+  return "webp";
 }
 
 /**
@@ -760,7 +752,6 @@ export async function reopenAssignment(assignmentId, userId = null) {
   assignment.markReopened();
   if ( restorationSubmission ) {
     pendingSubmissions.set(assignment.id, restorationSubmission);
-    assignment.pendingSubmission = restorationSubmission;
     cacheSubmission(assignment.id, restorationSubmission);
   }
   await savePrompt(prompt, { assignmentOnly: assignment.id });

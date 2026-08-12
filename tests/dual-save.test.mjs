@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { BG_SOURCE, FIT_MODE, FRAMING_VIEW, STATUS } from "../scripts/constants.mjs";
-import { bakeDualRasters, mapPromptToSource } from "../scripts/drawing/prompt-framing.mjs";
+import { bakeDualRasters, compositeSameSizeSourceOver, initFullPlateFromUnderlay, mapPromptToSource } from "../scripts/drawing/prompt-framing.mjs";
 import { DrawingAssignment } from "../scripts/prompts/prompt-models.mjs";
 import {
   canPlaceFramingView,
@@ -250,6 +250,50 @@ test("source-space overlay bake is remapped ink only; _full keeps source underla
   assert.ok(fullInk >= 1, "_full has remapped ink");
   assert.deepEqual(getPixel(sourceOverlay, 4, 0, 0), [0, 0, 0, 0]);
   assert.deepEqual(getPixel(full, 4, 0, 0), [10, 20, 30, 255]);
+});
+
+test("single-pass _full composite matches two-pass bakeDualRasters reference", () => {
+  const geometry = computeDualSaveGeometry({
+    canvasWidth: 4,
+    canvasHeight: 4,
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      fitMode: FIT_MODE.STRETCH,
+      naturalWidth: 4,
+      naturalHeight: 4,
+      framing: { x: 1, y: 1, width: 2, height: 2 }
+    }
+  });
+
+  const sourceUnderlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(sourceUnderlay, 4, x, y, [10, 20, 30, 255]);
+    }
+  }
+
+  const overlay = blankRgba(4, 4);
+  setPixel(overlay, 4, 1, 1, [255, 0, 0, 255]);
+
+  const { source: inkOnly } = bakeDualRasters({ geometry, overlay, sourceUnderlay: null });
+  const { source: twoPassFull } = bakeDualRasters({ geometry, overlay, sourceUnderlay });
+  const onePassFull = compositeSameSizeSourceOver(
+    initFullPlateFromUnderlay(geometry, sourceUnderlay),
+    inkOnly
+  );
+
+  assert.equal(onePassFull.width, twoPassFull.width);
+  assert.equal(onePassFull.height, twoPassFull.height);
+  for ( let y = 0; y < onePassFull.height; y++ ) {
+    for ( let x = 0; x < onePassFull.width; x++ ) {
+      assert.deepEqual(
+        getPixel(onePassFull, onePassFull.width, x, y),
+        getPixel(twoPassFull, twoPassFull.width, x, y),
+        `pixel mismatch at (${x}, ${y})`
+      );
+    }
+  }
 });
 
 test("compositeOverlayOntoUnderlay paints ink over a prompt-canvas underlay", () => {

@@ -1,5 +1,5 @@
 import { BG_SOURCE, FRAMING_VIEW } from "../constants.mjs";
-import { bakeDualRasters, computeFramingGeometry, dualSaveFilenames } from "../drawing/prompt-framing.mjs";
+import { bakeDualRasters, compositeSameSizeSourceOver, computeFramingGeometry, dualSaveFilenames, initFullPlateFromUnderlay } from "../drawing/prompt-framing.mjs";
 import { canvasToEncodedImage } from "../drawing/export-service.mjs";
 import { resolvePromptFraming } from "./framed-delivery.mjs";
 import { isSaveGateOpen } from "./transitions.mjs";
@@ -278,7 +278,10 @@ export async function bakeAndEncodeSourceSpaceAssets({
   const geometry = computeDualSaveGeometry(prompt);
   const underlay = sourceUnderlay ?? await loadSourceUnderlayRgba(prompt);
   const { source: inkOnly } = bakeDualRasters({ geometry, overlay, sourceUnderlay: null });
-  const { source: fullBuffer } = bakeDualRasters({ geometry, overlay, sourceUnderlay: underlay });
+  const fullBuffer = compositeSameSizeSourceOver(
+    initFullPlateFromUnderlay(geometry, underlay),
+    inkOnly
+  );
   const [sourceOverlay, full] = await Promise.all([
     encodeRgbaBuffer(inkOnly, format),
     encodeRgbaBuffer(fullBuffer, format)
