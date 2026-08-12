@@ -23,7 +23,26 @@ export const FIT_MODE = Object.freeze({
   CENTER: "center",
   FIT_WIDTH: "fit-width",
   FIT_HEIGHT: "fit-height",
-  STRETCH: "stretch"
+  FIT_CANVAS: "fit-canvas",
+  STRETCH: "stretch",
+  /** Authored Prompt Framing fills the canvas (same placement rect as Stretch). */
+  PLACED: "placed"
+});
+
+/**
+ * GM review Framing View: Prompt canvas (player-facing) or Full Framing
+ * (union of source + Prompt Framing plate). Client-session selection; does not re-arm the Save gate.
+ */
+export const FRAMING_VIEW = Object.freeze({
+  PROMPT_CANVAS: "prompt-canvas",
+  FULL: "full"
+});
+
+/** Player-local Canvas chrome under the Framed background (editing aid only). */
+export const CANVAS_CHROME = Object.freeze({
+  WHITE: "white",
+  BLACK: "black",
+  CHECKERBOARD: "checkerboard"
 });
 
 export const INTERNAL = Object.freeze({
@@ -38,7 +57,8 @@ export const INTERNAL = Object.freeze({
   MAX_SUBMISSION_BYTES: 4 * 1024 * 1024,
   MAX_OPLOG_BYTES: 512 * 1024,
   WIRE_QUALITY_STEPS: Object.freeze([0.8, 0.6, 0.45]),
-  WIRE_DOWNSCALE_STEP: 0.75
+  WIRE_DOWNSCALE_STEP: 0.75,
+  LEGACY_FIT_MODE_MIGRATED: "legacyFitModeMigrated"
 });
 
 export const SETTINGS = Object.freeze({
@@ -57,6 +77,7 @@ export const SETTINGS = Object.freeze({
   DEFAULT_CLONE_SOURCE_ACTOR_UUID: "defaultCloneSourceActorUuid",
   LAST_SAVE_FOLDER: "lastSaveFolder",
   LAST_BRUSH_COLOR: "lastBrushColor",
+  CANVAS_CHROME: "canvasChrome",
   AUTO_OPEN_PLAYER_WINDOW: "autoOpenPlayerWindow",
   NOTIFY_PLAYER: "notifyPlayer",
   LIVE_PREVIEW: "livePreview"

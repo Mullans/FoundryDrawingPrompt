@@ -1,45 +1,62 @@
-# Issue tracker: GitHub
+# Issue tracker: Linear
 
-Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Issues and PRDs for this repo live in **Linear**. Use the **Linear MCP** (`plugin-linear-linear`) for all ticket operations. Do **not** create work tickets as GitHub issues.
+
+## Defaults
+
+| Setting | Value |
+|---------|-------|
+| Team | `Scratchprojects` (key `SCR`) |
+| Project | `Drawing Prompts` |
+| Identifiers | `SCR-N` (e.g. `SCR-5`), never bare GitHub `#N` for work tickets |
+| Workspace URL | https://linear.app/scratchprojects |
+
+Triage labels: see `docs/agents/triage-labels.md`. They already exist on the Linear team.
+
+PRs, code review, and CI stay on GitHub (`gh` for those only).
 
 ## Conventions
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
-- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
-- **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+Discover tool schemas with MCP inspection before first use in a session if unsure. Pass Markdown descriptions with real newlines (no escaped `\n`).
 
-Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
+- **Create an issue**: `save_issue` with `title`, `team: "Scratchprojects"`, `project: "Drawing Prompts"`, and `description` body. Add triage labels via `labels` (e.g. `["needs-triage"]`).
+- **Read an issue**: `get_issue` with the identifier (`SCR-N` or UUID). Load thread with `list_comments` (`issueId`).
+- **List issues**: `list_issues` with filters as needed — `team`, `project: "Drawing Prompts"`, `label` (e.g. `ready-for-agent`), `state`, `assignee` (`"me"` or `null` for unassigned), `includeArchived: false`.
+- **Comment on an issue**: `save_comment` with `issueId` (identifier or UUID) and body.
+- **Apply / replace labels**: `save_issue` with `id: "SCR-N"` and `labels: ["…"]` — this **replaces** the full label set; include every label that should remain.
+- **Close / cancel**: `save_issue` with `id: "SCR-N"` and `state: "Done"` (completed) or `state: "Canceled"` (won't do / abandoned). Prefer a `save_comment` first with the resolution note.
+- **Claim**: `save_issue` with `id: "SCR-N"` and `assignee: "me"`.
+- **Priority** (optional): `priority` on `save_issue` — `0` none, `1` urgent, `2` high, `3` medium, `4` low.
+
+If Linear MCP is unauthenticated, run `mcp_auth` for server `plugin-linear-linear` before other tools.
 
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
 
-When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
+When set to `yes`, external **GitHub PRs** are intake only (not the issue tracker). Use `gh pr` then **mirror** accepted requests into Linear via `save_issue` with `needs-triage` or the appropriate triage label:
 
 - **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
 - **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
-- **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
+- **Comment on PR**: `gh pr comment`. Do not treat the PR as the durable ticket — create/update Linear instead.
 
-GitHub shares one number space across issues and PRs, so a bare `#42` may be either — resolve with `gh pr view 42` and fall back to `gh issue view 42`.
+GitHub `#N` may be an issue or PR. Resolve with `gh pr view N` then `gh issue view N` only when referring to historical GitHub artifacts. New work uses `SCR-N`.
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue.
+Create a Linear issue (`save_issue` on team `Scratchprojects`, project `Drawing Prompts`).
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Run `get_issue` for `SCR-N` (or the given Linear URL/id) and `list_comments` on that issue.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
+Used by `/wayfinder`. The **map** is a single Linear issue with **child** issues as tickets.
 
-- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
-- **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: GitHub's **native issue dependencies** — the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only — the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
-- **Claim**: `gh issue edit <n> --add-assignee @me` — the session's first write.
-- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+- **Map**: one issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `save_issue` with `labels: ["wayfinder:map"]` (and any other labels that must stay). Prefer project `Drawing Prompts`.
+- **Child ticket**: `save_issue` with `parentId` set to the map's identifier (`SCR-N`). Put `Part of SCR-<map>` at the top of the child body for human readability. Labels: `wayfinder:<type>` (`research` / `prototype` / `grilling` / `task`). Once claimed, set `assignee` to the driving dev (`"me"` or their user id).
+- **Blocking**: Linear relations on `save_issue` — `blockedBy: ["SCR-…"]` (append-only) for open blockers; `blocks` for the inverse. A ticket is unblocked when every blocker is **Done** or **Canceled**. Where relations are unavailable, fall back to a `Blocked by: SCR-N, SCR-M` line at the top of the child body.
+- **Frontier query**: `list_issues` for open children of the map (`parentId` when supported by the query, otherwise filter project/team results by parent in the map body / `get_issue` children). Drop any with an open blocker or an assignee; first in map order wins.
+- **Claim**: `save_issue` with `id: "SCR-N"` and `assignee: "me"` — the session's first write.
+- **Resolve**: `save_comment` with the answer, then `save_issue` with `state: "Done"`, then append a context pointer (gist + link) to the map issue's Decisions-so-far (`save_issue` `patch` or full description update on the map).

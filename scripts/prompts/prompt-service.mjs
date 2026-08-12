@@ -1,21 +1,37 @@
-import { FILES_UPLOAD_PERMISSION, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { FILES_UPLOAD_PERMISSION, FRAMING_VIEW, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
 import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { buildTileData } from "../foundry/tile-placement-service.mjs";
-import { isForge, resolvePromptAssetLocation } from "../foundry/path-provider.mjs";
+import { isForge } from "../foundry/path-provider.mjs";
 import { PLACE_MODES, buildTokenData, pickActorType, validatePlaceSelection } from "../foundry/token-placement-service.mjs";
 import { CALLS, emit } from "../socket.mjs";
-import { browseFiles, defaultAssetFolder, ensureDir, normalizePath, pendingDir, stagingDir, uploadBlob, uploadDataUrl, uploadJson } from "./asset-service.mjs";
+import { ensureDir, normalizePath, pendingDir, stagingDir, uploadDataUrl } from "./asset-service.mjs";
+import {
+  isStagedSubmission,
+  saveAssignmentAssets,
+  stagedFetchUrl,
+  submissionTileHeight,
+  submissionTileWidth
+} from "./assignment-save.mjs";
 import { getAssignment as getClientAssignment, updateStatus, updateTimerState, upsertAssignment } from "./client-store.mjs";
 import { createPromptEntry, deletePromptEntry, getPromptIdForAssignment, loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
-import { defaultAssignmentAssetName, promptAssetFolderName, uniqueDrawingAssetFilenames } from "./naming-service.mjs";
+import { defaultAssignmentAssetName } from "./naming-service.mjs";
+import { prepareFramedBackgroundForSend, serializeBackgroundForPlayer } from "./framed-delivery.mjs";
+import {
+  clearFramingViewAssets,
+  hasSavedFramingViewAssets,
+  hasSourceBackground,
+  normalizeFramingView,
+  resolveFramingViewAssetPath,
+  resolveTileDimensionsForFramingView
+} from "./dual-save.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
 import { adjustTimer, evaluateSubmissionTiming, normalizeTimerState, pauseTimer, resetTimer, resumeTimer, stopTimer } from "./timer-service.mjs";
 import { TimerUpdateQueue } from "./timer-update-queue.mjs";
 import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, isSaveGateOpen, validateSubmissionPayload } from "./transitions.mjs";
 import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
-import { isValidSnapshotDataUrl } from "./wire-validation.mjs";
+import { isValidSnapshotPayload } from "./wire-validation.mjs";
 
 const pendingSubmissions = new Map();
 const timerUpdateQueue = new TimerUpdateQueue();
@@ -100,18 +116,45 @@ function validateKnownPlayerAssignment(assignmentId) {
 function payloadFor(prompt, assignment) {
   return {
     assignment: assignment.toObject(),
-    prompt: {
-      id: prompt.id,
-      gmUserId: prompt.gmUserId,
-      promptText: prompt.promptText,
-      drawingName: prompt.drawingName,
-      canvasWidth: prompt.canvasWidth,
-      canvasHeight: prompt.canvasHeight,
-      background: { ...prompt.background },
-      sentAt: prompt.sentAt,
-      timerSeconds: prompt.timerSeconds,
-      ...prompt.timerState
-    }
+    prompt: playerPromptPayload(prompt)
+  };
+}
+
+/**
+ * Build the player-safe prompt slice for wire payloads.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {object}
+ */
+function playerPromptPayload(prompt) {
+  return {
+    id: prompt.id,
+    gmUserId: prompt.gmUserId,
+    promptText: prompt.promptText,
+    drawingName: prompt.drawingName,
+    canvasWidth: prompt.canvasWidth,
+    canvasHeight: prompt.canvasHeight,
+    background: serializeBackgroundForPlayer(prompt),
+    sentAt: prompt.sentAt,
+    timerSeconds: prompt.timerSeconds,
+    ...prompt.timerState
+  };
+}
+
+/**
+ * Build a reopen payload that restores the player's last submission without
+ * echoing the full pending blob on the assignment record.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @param {object|null} restorationSubmission Submission to restore.
+ * @returns {object}
+ */
+function payloadForReopen(prompt, assignment, restorationSubmission) {
+  const assignmentObj = assignment.toObject();
+  delete assignmentObj.pendingSubmission;
+  return {
+    assignment: assignmentObj,
+    prompt: playerPromptPayload(prompt),
+    restorationSubmission: restorationSubmission ?? null
   };
 }
 
@@ -158,8 +201,19 @@ export async function createAndSendPrompt(draft) {
   }, draft.selectedUserIds);
 
   await createPromptEntry(prompt);
-  // Prompt creation requires a full save to establish prompt-level and all assignment state.
-  await savePrompt(prompt);
+  try {
+    await prepareFramedBackgroundForSend(prompt);
+    // Prompt creation requires a full save to establish prompt-level and all assignment state.
+    await savePrompt(prompt);
+  } catch (err) {
+    // Compensate: a failed Send must not leave a sticky undelivered prompt (retry would duplicate).
+    try {
+      await deletePromptEntry(prompt.id);
+    } catch (cleanupError) {
+      console.warn("drawing-prompts | could not remove prompt after failed send prep", cleanupError);
+    }
+    throw err;
+  }
   Hooks.callAll("drawing-prompts.promptCreated", prompt);
 
   if ( Object.values(prompt.assignments).some(a => game.users.get(a.userId)?.can(FILES_UPLOAD_PERMISSION)) ) {
@@ -170,7 +224,7 @@ export async function createAndSendPrompt(draft) {
     }
   }
 
-  const deliveries = deliverPromptAssignments(prompt);
+  const deliveries = await deliverPromptAssignments(prompt);
   if ( draft.awaitDeliveries ) await deliveries;
   return prompt;
 }
@@ -258,11 +312,24 @@ async function broadcastTimerState(prompt) {
 }
 
 /**
+ * Ensure a sent prompt has a baked Framed background before player delivery.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<void>}
+ */
+async function ensureFramedBackgroundDelivered(prompt) {
+  const background = prompt.background ?? {};
+  if ( !background.path || background.framedPath ) return;
+  await prepareFramedBackgroundForSend(prompt);
+  await savePrompt(prompt);
+}
+
+/**
  * Deliver active assignments for a prompt and return their settlement promise.
  * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
  * @returns {Promise<PromiseSettledResult<void>[]>}
  */
-function deliverPromptAssignments(prompt) {
+async function deliverPromptAssignments(prompt) {
+  await ensureFramedBackgroundDelivered(prompt);
   const deliveries = Object.values(prompt.assignments)
     .filter(assignment => game.users.get(assignment.userId)?.active)
     .map(assignment => emit.openDrawingPrompt(assignment.userId, payloadFor(prompt, assignment))
@@ -351,7 +418,80 @@ export function getPendingSubmission(assignmentId) {
 }
 
 /**
- * Save assignment assets.
+ * Resolve a submission payload that can restore the player's last drawing on reopen.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<object|null>}
+ */
+async function resolveRestorationSubmission(assignment, prompt) {
+  const pending = getPendingSubmission(assignment.id);
+  if ( pending ) return pending;
+  return buildRestorationSubmissionFromSavedAssets(assignment, prompt);
+}
+
+/**
+ * Build a staged restoration payload from saved assignment assets (post-Save reopen).
+ * Uses path-only overlay references — no base64 in the JournalEntry flag.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<object|null>}
+ */
+export async function buildRestorationSubmissionFromSavedAssets(assignment, prompt) {
+  const overlayPath = assignment.assets?.overlayPath;
+  const mergedPath = assignment.assets?.mergedPath ?? null;
+  const oplogPath = assignment.assets?.oplogPath;
+  if ( !overlayPath || !oplogPath ) return null;
+  try {
+    const opLog = await fetchSavedJson(oplogPath);
+    const overlayFormat = formatFromAssetPath(overlayPath);
+    const mergedFormat = mergedPath ? formatFromAssetPath(mergedPath) : null;
+    return {
+      mode: "staged",
+      staged: {
+        overlayPath,
+        mergedPath
+      },
+      formats: {
+        overlay: overlayFormat,
+        merged: mergedFormat
+      },
+      opLog,
+      width: Number(assignment.assets?.tileWidth ?? prompt.canvasWidth),
+      height: Number(assignment.assets?.tileHeight ?? prompt.canvasHeight),
+      receiptTs: assignment.submittedAt ?? Date.now()
+    };
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not build restoration payload from saved assets`, assignment.id, err);
+    return null;
+  }
+}
+
+/**
+ * Fetch a world asset JSON file.
+ * @param {string} path Asset path.
+ * @returns {Promise<object>}
+ */
+async function fetchSavedJson(path) {
+  const response = await fetch(`/${encodeURI(normalizePath(path))}`);
+  if ( !response.ok ) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+/**
+ * @param {string} path Asset path.
+ * @returns {string}
+ */
+function formatFromAssetPath(path) {
+  const ext = String(path ?? "").split(".").pop()?.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if ( ext === "png" ) return "png";
+  if ( ext === "jpg" || ext === "jpeg" ) return "jpeg";
+  return "webp";
+}
+
+/**
+ * Save assignment assets (public GM entry).
+ * Dual Framing View write + Save gate live in {@link saveAssignmentAssets}; this
+ * wrapper owns auth, pending resolution, journal persist, and hooks only.
  * @param {string} assignmentId Assignment id.
  * @param {{name?: string, folder?: string}} [options] Save options.
  * @returns {Promise<import("./prompt-models.mjs").DrawingAssignment>}
@@ -369,47 +509,20 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   if ( !submission && !alreadySaved ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.pendingSubmissionLost"));
 
   if ( submission ) {
-    prompt.assetFolderName ??= promptAssetFolderName({
-      promptId: prompt.id,
-      promptText: prompt.promptText,
-      sentAt: prompt.sentAt,
-      createdAt: prompt.createdAt
-    });
-    const location = resolvePromptAssetLocation({
-      selectedParent: folder,
-      rememberedParent: game.settings.get(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER),
-      defaultParent: defaultAssetFolder(),
-      assignmentFolder: assignment.assets?.folder,
-      promptFolderName: prompt.assetFolderName
-    });
-    const dir = location.final;
-    await ensureDir(dir);
-    const hasMerged = hasMergedSubmission(submission);
-    const filenames = uniqueDrawingAssetFilenames({
+    await saveAssignmentAssets({
+      prompt,
+      assignment,
+      submission,
       name: resolvedName,
-      playerName: assignment.userName,
-      extension: extensionFor(primarySubmissionFormat(submission, hasMerged)),
-      hasMerged,
-      existingFiles: await browseFiles(dir),
-      fallback: game.i18n.localize("DRAWING-PROMPTS.manager.saveDialog.defaultSlug")
+      folder
     });
-    const [primary, opLog, overlay] = await uploadSubmissionAssets(dir, filenames, submission, hasMerged);
-    assignment.assets.overlayPath = hasMerged ? overlay.path : primary.path;
-    assignment.assets.mergedPath = hasMerged ? primary.path : null;
-    assignment.assets.oplogPath = opLog.path;
-    assignment.assets.folder = dir;
-    assignment.assets.tileWidth = submissionTileWidth(submission, prompt);
-    assignment.assets.tileHeight = submissionTileHeight(submission, prompt);
-    assignment.pendingSubmission = null;
-    assignment.savedSubmissionTs = assignment.submittedAt;
-    await game.settings.set(MODULE_ID, SETTINGS.LAST_SAVE_FOLDER, location.parent);
     pendingSubmissions.delete(assignment.id);
     clearCachedSubmission(assignment.id);
   } else if ( alreadySaved && assignment.status === STATUS.SUBMITTED && assignment.primaryImagePath ) {
     assignment.savedSubmissionTs ??= assignment.submittedAt;
+    assignment.assets.name = resolvedName;
   }
 
-  assignment.assets.name = resolvedName;
   await savePrompt(prompt, { assignmentOnly: assignment.id });
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentSaved", prompt, assignment);
@@ -417,17 +530,27 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   return assignment;
 }
 
+export { stagedFetchUrl };
+
 /**
  * Place an assignment as a Scene Tile.
  * @param {string} assignmentId Assignment id.
- * @param {{hidden?: boolean, name?: string}} [options] Placement options.
+ * @param {{hidden?: boolean, name?: string, framingView?: string}} [options] Placement options.
  * @returns {Promise<object>}
  */
-export async function placeAssignmentAsTile(assignmentId, { hidden = false, name = "" } = {}) {
-  const { prompt, assignment, scene } = requirePlacementContext(assignmentId);
+export async function placeAssignmentAsTile(assignmentId, { hidden = false, name = "", framingView = FRAMING_VIEW.PROMPT_CANVAS } = {}) {
+  const { prompt, assignment, scene, imagePath } = requirePlacementContext(assignmentId, framingView);
   const submission = getPendingSubmission(assignmentId);
-  const tileWidth = assignment.assets.tileWidth ?? submissionTileWidth(submission, prompt);
-  const tileHeight = assignment.assets.tileHeight ?? submissionTileHeight(submission, prompt);
+  const promptCanvasFallback = {
+    width: assignment.assets.tileWidth ?? submissionTileWidth(submission, prompt),
+    height: assignment.assets.tileHeight ?? submissionTileHeight(submission, prompt)
+  };
+  const { width: tileWidth, height: tileHeight } = resolveTileDimensionsForFramingView(
+    prompt,
+    assignment,
+    framingView,
+    promptCanvasFallback
+  );
   if ( submission?.wireScaled && !isStagedSubmission(submission) ) {
     ui.notifications.warn(game.i18n.format("DRAWING-PROMPTS.manager.warnings.wireScaledPlacement", {
       width: tileWidth,
@@ -435,7 +558,7 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false, name
     }));
   }
   const tileData = buildTileData({
-    src: assignment.primaryImagePath,
+    src: imagePath,
     name: String(name || assignment.assets.name || "").trim(),
     width: tileWidth,
     height: tileHeight,
@@ -471,16 +594,17 @@ export async function placeAssignmentAsTile(assignmentId, { hidden = false, name
  * @param {string} [options.name] Actor name for New Actor or Copy Actor.
  * @param {string} [options.actorUuid] Source world Actor UUID.
  * @param {boolean} [options.hidden=false] Whether the Token is hidden.
+ * @param {string} [options.framingView] Framing View whose saved raster is placed.
  * @returns {Promise<object>}
  */
-export async function placeAssignmentAsToken(assignmentId, { mode, name = "", actorUuid = "", hidden = false } = {}) {
-  const { prompt, assignment, scene } = requirePlacementContext(assignmentId);
+export async function placeAssignmentAsToken(assignmentId, { mode, name = "", actorUuid = "", hidden = false, framingView = FRAMING_VIEW.PROMPT_CANVAS } = {}) {
+  const { prompt, assignment, scene, imagePath } = requirePlacementContext(assignmentId, framingView);
   const validationError = mode === PLACE_MODES.TILE ? "invalidMode" : validatePlaceSelection({ mode, name, actorUuid });
   if ( validationError ) {
     throw new Error(game.i18n.localize(`DRAWING-PROMPTS.placeDialog.validation.${validationError}`));
   }
 
-  const src = assignment.primaryImagePath;
+  const src = imagePath;
   let actor;
   let createdActor = false;
   if ( mode === PLACE_MODES.NEW_ACTOR ) {
@@ -541,12 +665,13 @@ export async function placeAssignmentAsToken(assignmentId, { mode, name = "", ac
 /**
  * Apply a saved assignment drawing to the GM's currently controlled tokens.
  * @param {string} assignmentId Assignment id.
+ * @param {{framingView?: string}} [options] Framing View whose saved raster is applied.
  * @returns {Promise<object[]>} Token placeables that received the drawing.
  */
-export async function applyAssignmentTransform(assignmentId) {
-  const { assignment } = requireTransformContext(assignmentId);
+export async function applyAssignmentTransform(assignmentId, { framingView = FRAMING_VIEW.PROMPT_CANVAS } = {}) {
+  const { assignment, imagePath } = requireTransformContext(assignmentId, framingView);
   const { applyTransformToControlledTokens } = await import("../foundry/token-transform-service.mjs");
-  return applyTransformToControlledTokens(assignment);
+  return applyTransformToControlledTokens(assignment, { imagePath });
 }
 
 /**
@@ -622,12 +747,21 @@ export async function reopenAssignment(assignmentId, userId = null) {
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
+  const restorationSubmission = await resolveRestorationSubmission(assignment, prompt);
+  if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
   assignment.markReopened();
-  assignment.pendingSubmission = null;
-  pendingSubmissions.delete(assignment.id);
-  clearCachedSubmission(assignment.id);
+  if ( restorationSubmission ) {
+    pendingSubmissions.set(assignment.id, restorationSubmission);
+    cacheSubmission(assignment.id, restorationSubmission);
+  }
   await savePrompt(prompt, { assignmentOnly: assignment.id });
-  if ( game.users.get(assignment.userId)?.active ) await emit.reopenDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
+  await ensureFramedBackgroundDelivered(prompt);
+  if ( game.users.get(assignment.userId)?.active ) {
+    await emit.reopenDrawingPrompt(
+      assignment.userId,
+      payloadForReopen(prompt, assignment, restorationSubmission)
+    );
+  }
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentReopened", prompt, assignment);
   await refreshManager();
@@ -649,6 +783,7 @@ export async function resendAssignment(assignmentId) {
     return;
   }
   if ( game.users.get(assignment.userId)?.active ) {
+    await ensureFramedBackgroundDelivered(prompt);
     await emit.openDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
     Hooks.callAll("drawing-prompts.assignmentSent", prompt, assignment);
   }
@@ -840,18 +975,18 @@ async function handleAssignmentOpened(assignmentId, userId) {
  * Handle a snapshot on the owning GM.
  * @param {string} assignmentId Assignment id.
  * @param {string} userId Player user id.
- * @param {string} snapshotDataUrl Snapshot data URL.
+ * @param {string|{composite?: string, overlay?: string}} snapshotPayload Snapshot payload.
  * @returns {Promise<void>}
  */
-async function handleDrawingSnapshot(assignmentId, userId, snapshotDataUrl) {
+async function handleDrawingSnapshot(assignmentId, userId, snapshotPayload) {
   const { assignment } = validateOwningGMSender(assignmentId, userId);
-  if ( !isValidSnapshotDataUrl(snapshotDataUrl) ) {
+  if ( !isValidSnapshotPayload(snapshotPayload) ) {
     console.debug(`${MODULE_ID} | ignored invalid snapshot payload shape for assignment ${assignmentId}`);
     return;
   }
   const decision = evaluateSnapshot(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("snapshot", assignment, decision.reason);
-  receiveManagerSnapshot(assignmentId, snapshotDataUrl);
+  receiveManagerSnapshot(assignmentId, snapshotPayload);
 }
 
 /**
@@ -871,6 +1006,7 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   }
   const decision = evaluateSubmission(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("submitted", assignment, decision.reason);
+  if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
   const now = Date.now();
   if ( assignment.status === STATUS.PENDING ) assignment.markOpened(now);
   const timing = evaluateSubmissionTiming(prompt.timerState, now);
@@ -1075,33 +1211,43 @@ function assertPromptOwner(prompt) {
 /**
  * Validate common server-side placement requirements.
  * @param {string} assignmentId Assignment id.
- * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment, scene: object}}
+ * @param {string} [framingView] Framing View whose asset is placed.
+ * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment, scene: object, imagePath: string}}
  */
-function requirePlacementContext(assignmentId) {
+function requirePlacementContext(assignmentId, framingView = FRAMING_VIEW.PROMPT_CANVAS) {
   assertGM();
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
-  if ( !assignment.primaryImagePath || !isSaveGateOpen(assignment) ) {
+  const imagePath = resolveFramingViewAssetPath(
+    assignment,
+    normalizeFramingView(framingView, { hasSource: hasSourceBackground(prompt) })
+  );
+  if ( !imagePath || !isSaveGateOpen(assignment) ) {
     throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
   }
   const scene = globalThis.canvas?.scene;
   if ( !scene ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.noScene"));
-  return { prompt, assignment, scene };
+  return { prompt, assignment, scene, imagePath };
 }
 
 /**
  * Validate common server-side transform requirements without requiring an active Scene.
  * @param {string} assignmentId Assignment id.
- * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment}}
+ * @param {string} [framingView] Framing View whose asset is applied.
+ * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment, imagePath: string}}
  */
-function requireTransformContext(assignmentId) {
+function requireTransformContext(assignmentId, framingView = FRAMING_VIEW.PROMPT_CANVAS) {
   assertGM();
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
-  if ( !assignment.primaryImagePath || !isSaveGateOpen(assignment) ) {
+  const imagePath = resolveFramingViewAssetPath(
+    assignment,
+    normalizeFramingView(framingView, { hasSource: hasSourceBackground(prompt) })
+  );
+  if ( !imagePath || !isSaveGateOpen(assignment) ) {
     throw new Error(game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst"));
   }
-  return { prompt, assignment };
+  return { prompt, assignment, imagePath };
 }
 
 /**
@@ -1191,26 +1337,6 @@ function submissionPersistedOnDisk(submission) {
 }
 
 /**
- * Resolve tile width from a submission payload.
- * @param {object|null} submission Submission payload.
- * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
- * @returns {number}
- */
-function submissionTileWidth(submission, prompt) {
-  return Number(submission?.originalWidth ?? submission?.width ?? prompt.canvasWidth);
-}
-
-/**
- * Resolve tile height from a submission payload.
- * @param {object|null} submission Submission payload.
- * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
- * @returns {number}
- */
-function submissionTileHeight(submission, prompt) {
-  return Number(submission?.originalHeight ?? submission?.height ?? prompt.canvasHeight);
-}
-
-/**
  * Resolve a non-empty drawing asset name.
  * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
  * @param {string|undefined} explicitName Explicit name.
@@ -1224,95 +1350,6 @@ function resolveDrawingName(prompt, explicitName) {
 }
 
 /**
- * Upload submission assets through the shared naming tail.
- * @param {string} dir Target directory.
- * @param {object} filenames Resolved filenames.
- * @param {object} submission Submission payload.
- * @param {boolean} hasMerged Whether a merged image exists.
- * @returns {Promise<[{path: string}, {path: string}, {path: string}|undefined]>} Uploaded assets.
- */
-async function uploadSubmissionAssets(dir, filenames, submission, hasMerged) {
-  if ( isStagedSubmission(submission) ) {
-    const primaryPath = hasMerged ? submission.staged.mergedPath : submission.staged.overlayPath;
-    const uploads = [
-      uploadStagedPath(dir, filenames.primary, primaryPath, submission.receiptTs),
-      uploadJson(dir, filenames.opLog, submission.opLog ?? {})
-    ];
-    if ( hasMerged ) uploads.push(uploadStagedPath(dir, filenames.overlay, submission.staged.overlayPath, submission.receiptTs));
-    return Promise.all(uploads);
-  }
-
-  const primaryDataUrl = hasMerged ? submission.merged?.dataUrl : submission.overlay?.dataUrl;
-  const uploads = [
-    uploadDataUrl(dir, filenames.primary, primaryDataUrl),
-    uploadJson(dir, filenames.opLog, submission.opLog ?? {})
-  ];
-  if ( hasMerged ) uploads.push(uploadDataUrl(dir, filenames.overlay, submission.overlay?.dataUrl));
-  return Promise.all(uploads);
-}
-
-/**
- * Upload a staged file path into the GM-selected final folder.
- * @param {string} dir Target directory.
- * @param {string} filename Target filename.
- * @param {string} path Staged source path.
- * @param {number} receiptTs Receipt timestamp.
- * @returns {Promise<{path: string}>} Uploaded final asset.
- */
-async function uploadStagedPath(dir, filename, path, receiptTs) {
-  const blob = await fetchStagedBlob(path, receiptTs);
-  return uploadBlob(dir, filename, blob);
-}
-
-/**
- * Fetch a staged server file as a Blob.
- * @param {string} path Staged source path.
- * @param {number} receiptTs Receipt timestamp.
- * @returns {Promise<Blob>} Staged Blob.
- */
-async function fetchStagedBlob(path, receiptTs) {
-  try {
-    const response = await fetch(stagedFetchUrl(path, receiptTs));
-    if ( !response.ok ) throw new Error(`HTTP ${response.status}`);
-    return response.blob();
-  } catch (err) {
-    console.warn("drawing-prompts | staged submission file fetch failed", path, err);
-    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.stagedSubmissionUnavailable"));
-  }
-}
-
-/**
- * Resolve whether a submission uses staged file paths.
- * @param {object} submission Submission payload.
- * @returns {boolean} Whether staged.
- */
-function isStagedSubmission(submission) {
-  return submission?.mode === "staged";
-}
-
-/**
- * Resolve whether a submission includes merged output.
- * @param {object} submission Submission payload.
- * @returns {boolean} Whether merged output exists.
- */
-function hasMergedSubmission(submission) {
-  return isStagedSubmission(submission)
-    ? Boolean(submission.staged?.mergedPath)
-    : Boolean(submission.merged?.dataUrl);
-}
-
-/**
- * Resolve the primary image format for naming.
- * @param {object} submission Submission payload.
- * @param {boolean} hasMerged Whether merged output exists.
- * @returns {string} Export format.
- */
-function primarySubmissionFormat(submission, hasMerged) {
-  if ( isStagedSubmission(submission) ) return (hasMerged ? submission.formats?.merged : submission.formats?.overlay) ?? "webp";
-  return (hasMerged ? submission.merged?.format : submission.overlay?.format) ?? "webp";
-}
-
-/**
  * Resolve a preview image source for a pending submission.
  * @param {object} submission Submission payload.
  * @returns {string|null} Preview source.
@@ -1323,19 +1360,6 @@ function submissionPreviewSrc(submission) {
     return path ? cacheBustedAssetSrc(path, submission.receiptTs) : null;
   }
   return submission?.merged?.dataUrl ?? submission?.overlay?.dataUrl ?? null;
-}
-
-/**
- * Build a fetch URL for a staged asset. Absolute URLs (e.g. Forge's Assets
- * Library) are used as-is; local paths are treated as root-relative.
- * @param {string} path Asset path.
- * @param {number} receiptTs Receipt timestamp.
- * @returns {string} Fetch URL.
- */
-export function stagedFetchUrl(path, receiptTs) {
-  const ts = `ts=${encodeURIComponent(String(receiptTs ?? Date.now()))}`;
-  if ( /^https?:\/\//i.test(path) ) return `${path}${path.includes("?") ? "&" : "?"}${ts}`;
-  return `/${encodeURI(normalizePath(path))}?${ts}`;
 }
 
 /**

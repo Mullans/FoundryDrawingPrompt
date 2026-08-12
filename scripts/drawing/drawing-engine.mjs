@@ -45,7 +45,7 @@ export class DrawingEngine {
     this.width = Math.max(1, Math.floor(Number(width) || 1));
     this.height = Math.max(1, Math.floor(Number(height) || 1));
     this.#background = background;
-    this.#fitMode = fitMode || FIT_MODE.FIT_WIDTH;
+    this.#fitMode = fitMode || FIT_MODE.FIT_CANVAS;
     this.#bgCanvas = createCanvas(this.width, this.height);
     this.#drawCanvas = createCanvas(this.width, this.height);
     this.#bgCtx = this.#bgCanvas.getContext("2d", { willReadFrequently: true });
@@ -60,7 +60,8 @@ export class DrawingEngine {
   }
 
   /**
-   * Attach to a display canvas and install pointer events.
+   * Attach to the player display canvas (Canvas plate) and install pointer events.
+   * Drawing tools only hit this element; Display stage pan/zoom is wired separately.
    * @param {HTMLCanvasElement} displayCanvasEl Display canvas.
    * @returns {void}
    */
@@ -257,12 +258,33 @@ export class DrawingEngine {
    * @returns {string}
    */
   getCompositeSnapshot({ maxEdge, quality, type = "image/webp" } = {}) {
-    const scale = Math.min(1, Number(maxEdge || Math.max(this.width, this.height)) / Math.max(this.width, this.height));
-    const canvas = createCanvas(Math.max(1, Math.round(this.width * scale)), Math.max(1, Math.round(this.height * scale)));
+    const canvas = this.#snapshotCanvas(maxEdge);
     const context = canvas.getContext("2d");
     context.drawImage(this.#bgCanvas, 0, 0, canvas.width, canvas.height);
     context.drawImage(this.#drawCanvas, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL(type, quality);
+  }
+
+  /**
+   * Build a downscaled overlay-only (ink) data URL with transparent background.
+   * Used for Full Framing live remap — same ink layer dual Save bakes, not bg+ink.
+   * @param {{maxEdge: number, quality?: number, type?: string}} options Snapshot options.
+   * @returns {string}
+   */
+  getOverlaySnapshot({ maxEdge, quality, type = "image/webp" } = {}) {
+    const canvas = this.#snapshotCanvas(maxEdge);
+    canvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL(type, quality);
+  }
+
+  /**
+   * Create a downscaled snapshot canvas sized by max edge.
+   * @param {number} maxEdge Max edge length in pixels.
+   * @returns {HTMLCanvasElement|OffscreenCanvas}
+   */
+  #snapshotCanvas(maxEdge) {
+    const scale = Math.min(1, Number(maxEdge || Math.max(this.width, this.height)) / Math.max(this.width, this.height));
+    return createCanvas(Math.max(1, Math.round(this.width * scale)), Math.max(1, Math.round(this.height * scale)));
   }
 
   /**
@@ -308,6 +330,44 @@ export class DrawingEngine {
    */
   getOpLog() {
     return this.#opLog.toJSON();
+  }
+
+  /**
+   * Replace the draw layer from a serialized operation log.
+   * @param {{ops?: object[], pointer?: number}} serialized Serialized log.
+   * @returns {void}
+   */
+  loadOpLog(serialized) {
+    this.#opLog = OperationLog.fromSerialized(serialized);
+    this.#checkpoints = [];
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    this.#restoreToPointer(this.#opLog.pointer);
+    this.#emitChange();
+  }
+
+  /**
+   * Replace the draw layer from raw RGBA pixels (overlay-only restore).
+   * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} rgba Pixel buffer.
+   * @returns {void}
+   */
+  loadOverlayRgba({ width, height, data }) {
+    const w = Math.max(1, Math.floor(Number(width) || 1));
+    const h = Math.max(1, Math.floor(Number(height) || 1));
+    this.#drawCtx.clearRect(0, 0, this.width, this.height);
+    if ( w === this.width && h === this.height ) {
+      this.#drawCtx.putImageData(new ImageData(data, w, h), 0, 0);
+    } else {
+      const canvas = createCanvas(w, h);
+      canvas.getContext("2d").putImageData(new ImageData(data, w, h), 0, 0);
+      this.#drawCtx.drawImage(canvas, 0, 0, this.width, this.height);
+    }
+    this.#opLog = new OperationLog();
+    this.#checkpoints = [];
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    this.#markDirty();
+    this.#emitChange();
   }
 
   /**

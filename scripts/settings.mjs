@@ -1,4 +1,4 @@
-import { FIT_MODE, INTERNAL, MODULE_ID, SETTINGS } from "./constants.mjs";
+import { CANVAS_CHROME, FIT_MODE, INTERNAL, MODULE_ID, SETTINGS } from "./constants.mjs";
 import { CloneSourceSettings } from "./apps/clone-source-settings.mjs";
 
 const PREFIX = "DRAWING-PROMPTS.settings";
@@ -91,9 +91,10 @@ export function registerSettings() {
       [FIT_MODE.CENTER]: "DRAWING-PROMPTS.choices.fitMode.center",
       [FIT_MODE.FIT_WIDTH]: "DRAWING-PROMPTS.choices.fitMode.fitWidth",
       [FIT_MODE.FIT_HEIGHT]: "DRAWING-PROMPTS.choices.fitMode.fitHeight",
+      [FIT_MODE.FIT_CANVAS]: "DRAWING-PROMPTS.choices.fitMode.fitCanvas",
       [FIT_MODE.STRETCH]: "DRAWING-PROMPTS.choices.fitMode.stretch"
     },
-    default: FIT_MODE.FIT_WIDTH
+    default: FIT_MODE.FIT_CANVAS
   });
 
   game.settings.register(MODULE_ID, SETTINGS.EXPORT_FORMAT, {
@@ -159,6 +160,20 @@ export function registerSettings() {
     default: ""
   });
 
+  game.settings.register(MODULE_ID, SETTINGS.CANVAS_CHROME, {
+    scope: "client",
+    config: true,
+    name: `${PREFIX}.canvasChrome.name`,
+    hint: `${PREFIX}.canvasChrome.hint`,
+    type: String,
+    choices: {
+      [CANVAS_CHROME.BLACK]: "DRAWING-PROMPTS.choices.canvasChrome.black",
+      [CANVAS_CHROME.WHITE]: "DRAWING-PROMPTS.choices.canvasChrome.white",
+      [CANVAS_CHROME.CHECKERBOARD]: "DRAWING-PROMPTS.choices.canvasChrome.checkerboard"
+    },
+    default: CANVAS_CHROME.CHECKERBOARD
+  });
+
   game.settings.register(MODULE_ID, SETTINGS.AUTO_OPEN_PLAYER_WINDOW, {
     ...common,
     name: `${PREFIX}.autoOpenPlayerWindow.name`,
@@ -182,4 +197,24 @@ export function registerSettings() {
     type: Boolean,
     default: true
   });
+
+  game.settings.register(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED, {
+    scope: "world",
+    config: false,
+    type: Boolean,
+    default: false
+  });
+}
+
+/**
+ * One-time migration: worlds that inherited the old Fit Width module default.
+ * @returns {Promise<void>}
+ */
+export async function migrateLegacySettings() {
+  if ( !game.user.isGM ) return;
+  if ( game.settings.get(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED) ) return;
+  if ( game.settings.get(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE) === FIT_MODE.FIT_WIDTH ) {
+    await game.settings.set(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_CANVAS);
+  }
+  await game.settings.set(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED, true);
 }

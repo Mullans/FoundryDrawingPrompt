@@ -1,5 +1,18 @@
-import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
-import { computeBackgroundLayout } from "../drawing/background-layout.mjs";
+import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, FRAMING_VIEW, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import {
+  FRAMING_ZOOM_STEP,
+  drawFramingEditor,
+  framingAfterFitModeSelect,
+  framingForPlacedStart,
+  lockFramingToCanvasAspect,
+  panFraming,
+  resetFraming,
+  resolveDraftFraming,
+  zoomFraming
+} from "../drawing/draft-framing-editor.mjs";
+import { defaultFramingForBackground } from "../drawing/framed-background.mjs";
+import { fitPlateInBox, layoutPlateInStage } from "../drawing/plate-layout.mjs";
+import { classifyWheelGesture } from "../drawing/player-navigation.mjs";
 import { defaultAssetFolder, normalizePath } from "../prompts/asset-service.mjs";
 import {
   blankBackground,
@@ -11,10 +24,25 @@ import {
   resolveCanvasSize
 } from "../foundry/background-source-service.mjs";
 import { defaultAssignmentAssetName } from "../prompts/naming-service.mjs";
+import {
+  buildSourceFramingPreviewDataUrl,
+  canPlaceFramingView,
+  hasSourceBackground,
+  normalizeFramingView,
+  pickSubmissionOverlaySrc,
+  pickSubmissionPromptCanvasSrc,
+  resolveFramingViewAssetPath
+} from "../prompts/dual-save.mjs";
+import {
+  resolvePromptCanvasReviewSrc,
+  resolveReviewPlateAspect,
+  resolveSourceFramingReviewSrc
+} from "../prompts/review-preview.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { formatClock, formatTimerAdjustment, formatTimerState } from "../utils/timer-chip.mjs";
+import { normalizeSnapshotPayload } from "../prompts/wire-validation.mjs";
 
 const { ApplicationV2, DialogV2, HandlebarsApplicationMixin } = foundry.applications.api;
 const SNAPSHOT_KEY_PREFIX = "drawing-prompts.snap.";
@@ -61,7 +89,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       openPlaceDialog: DrawingPromptManager.#onOpenPlaceDialog,
       applyTransform: DrawingPromptManager.#onApplyTransform,
       finishPrompt: DrawingPromptManager.#onFinishPrompt,
-      switchPrompt: DrawingPromptManager.#onSwitchPrompt
+      switchPrompt: DrawingPromptManager.#onSwitchPrompt,
+      setFramingView: DrawingPromptManager.#onSetFramingView,
+      framingZoomIn: DrawingPromptManager.#onFramingZoomIn,
+      framingZoomOut: DrawingPromptManager.#onFramingZoomOut,
+      framingReset: DrawingPromptManager.#onFramingReset
     }
   };
 
@@ -110,11 +142,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /**
    * Deliver a snapshot to the open manager, if any.
    * @param {string} assignmentId Assignment id.
-   * @param {string} dataUrl Snapshot data URL.
+   * @param {string|{composite?: string, overlay?: string}} snapshotPayload Snapshot payload.
    * @returns {void}
    */
-  static receiveSnapshotOpen(assignmentId, dataUrl) {
-    this.#instance?.receiveSnapshot(assignmentId, dataUrl);
+  static receiveSnapshotOpen(assignmentId, snapshotPayload) {
+    this.#instance?.receiveSnapshot(assignmentId, snapshotPayload);
   }
 
   constructor() {
@@ -130,8 +162,15 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     };
     this.activePrompt = null;
     this.latestSnapshots = new Map();
+    /** @type {Map<string, string>} Latest overlay-only (ink) live snapshots for Full Framing remaps. */
+    this.latestOverlaySnapshots = new Map();
     this.selectedAssignmentId = null;
     this.windowOpenByAssignment = new Map();
+    /** @type {string} GM review Framing View for the open manager session. */
+    this.framingView = FRAMING_VIEW.PROMPT_CANVAS;
+    /** @type {Map<string, string>} Cached Full Framing live-remap data URLs by assignment. */
+    this.#sourceFramingPreviewCache = new Map();
+    this.#sourceFramingPreviewLoad = null;
     this.#expiryTimerId = null;
     this.#expiryStateSignature = "";
   }
@@ -139,21 +178,38 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #expiryTimerId;
   #expiryStateSignature;
   #formListenersAttached = false;
+  #sourceFramingPreviewCache;
+  #sourceFramingPreviewLoad;
   /**
    * Loaded (and taint-checked) `<img>` for the current draft background, cached
-   * alongside its path so {@link #updateBackgroundPreview} can redraw the preview
-   * canvas cheaply without refetching the image on every input/change event.
+   * alongside its path so {@link #updateFramingEditor} can redraw the framing
+   * viewport cheaply without refetching the image on every input/change event.
    * @type {{path: string, img: HTMLImageElement}|null}
   */
   #previewBackgroundImage = null;
   #previewBackgroundLoad = null;
-  #onFormInput = () => {
+  #framingEditorAttached = false;
+  #framingEditorHandlers = null;
+  #framingResizeObserver = null;
+  #framingViewportEl = null;
+  #reviewPlateResizeObserver = null;
+  #framingPanPointerId = null;
+  #framingPanLast = null;
+  #onFormInput = event => {
+    // Defer fitMode to `change`: Chromium fires input then change for <select>,
+    // and syncing fitMode on input would make previous===next on change (skipping
+    // full-source framing reset for non-Placed modes).
+    if ( event.target?.name === "fitMode" ) return;
     this.#syncDraftFromForm();
-    this.#updateBackgroundPreview();
+    this.#updateFramingEditor();
   };
   #onFormChange = event => {
+    const previousFitMode = this.draft.background.fitMode;
     this.#syncDraftFromForm();
-    this.#updateBackgroundPreview();
+    if ( event.target?.name === "fitMode" ) {
+      this.#handleFitModeChange(previousFitMode, this.draft.background.fitMode);
+    }
+    this.#updateFramingEditor();
     if ( event.target?.name === "selectedUserIds" ) this.#updateSelectedCount();
   };
 
@@ -169,14 +225,38 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /**
    * Receive a player snapshot for preview.
    * @param {string} assignmentId Assignment id.
-   * @param {string} dataUrl Snapshot data URL.
+   * @param {string|{composite?: string, overlay?: string}} snapshotPayload Composite and/or overlay data URLs.
    * @returns {void}
    */
-  receiveSnapshot(assignmentId, dataUrl) {
-    this.latestSnapshots.set(assignmentId, dataUrl);
-    this.#cacheSnapshot(assignmentId, dataUrl);
+  receiveSnapshot(assignmentId, snapshotPayload) {
+    const { composite, overlay } = normalizeSnapshotPayload(snapshotPayload);
+    if ( composite ) {
+      this.latestSnapshots.set(assignmentId, composite);
+      this.#cacheSnapshot(assignmentId, composite);
+    }
+    if ( overlay ) this.latestOverlaySnapshots.set(assignmentId, overlay);
+
     this.selectedAssignmentId ??= assignmentId;
-    if ( this.selectedAssignmentId === assignmentId ) this.#updatePreviewImage(dataUrl);
+    if ( this.selectedAssignmentId !== assignmentId ) return;
+
+    const view = normalizeFramingView(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
+    if ( view !== FRAMING_VIEW.FULL ) {
+      if ( composite ) this.#updatePreviewImage(composite);
+      return;
+    }
+
+    const assignment = this.activePrompt?.getAssignment(assignmentId);
+    if ( !assignment || !this.activePrompt ) return;
+    const overlaySrc = overlay ?? this.latestOverlaySnapshots.get(assignmentId) ?? null;
+    void this.#resolveSourceFramingPreviewSrc(assignment, overlaySrc).then(src => {
+      if ( this.selectedAssignmentId !== assignmentId ) return;
+      if ( normalizeFramingView(this.framingView, {
+        hasSource: hasSourceBackground(this.activePrompt)
+      }) !== FRAMING_VIEW.FULL ) return;
+      if ( src ) this.#updatePreviewImage(src);
+    });
   }
 
   /**
@@ -216,8 +296,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const users = userValues().filter(user => !user.isGM);
     const rows = users.map(user => this.#rowContext(user));
     const selectedAssignment = this.#selectedAssignment();
-    const selectedPreview = await this.#selectedPreviewContext(selectedAssignment);
+    const hasSource = hasSourceBackground(this.activePrompt);
+    this.framingView = normalizeFramingView(this.framingView, { hasSource });
+    const framingView = this.framingView;
+    const selectedPreview = await this.#selectedPreviewContext(selectedAssignment, framingView);
     const hasActivePrompt = Boolean(this.activePrompt);
+    const viewAssetPath = resolveFramingViewAssetPath(selectedAssignment, framingView);
+    const savedAndGateOpen = isSaveGateOpen(selectedAssignment);
     return {
       draft: this.#draftContext(),
       rows,
@@ -236,19 +321,23 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       canResendAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
       canFinishPrompt: Boolean(this.activePrompt),
       promptQueue: this.#promptQueueContext(),
-      selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !isSaveGateOpen(selectedAssignment),
-      selectedIsSaved: Boolean(selectedAssignment?.primaryImagePath),
-      selectedSavedTooltip: selectedAssignment?.primaryImagePath
-        ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: selectedAssignment.primaryImagePath })
-        : "",
-      selectedCanPlace: isSaveGateOpen(selectedAssignment),
+      selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !savedAndGateOpen,
+      selectedIsSaved: savedAndGateOpen,
+      selectedSavedTooltip: viewAssetPath
+        ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: viewAssetPath })
+        : selectedAssignment?.primaryImagePath
+          ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: selectedAssignment.primaryImagePath })
+          : "",
+      selectedCanPlace: canPlaceFramingView(selectedAssignment, framingView),
       saveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.manager.actions.saveFirst"),
-      transformSaveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst")
+      transformSaveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst"),
+      framingViewToggle: this.#framingViewToggleContext(hasSource, framingView)
     };
   }
 
   /** @override */
   async _onRender(context, options) {
+    this.#destroyFramingEditor();
     await super._onRender(context, options);
     const form = this.#formElement();
     if ( form && !this.#formListenersAttached ) {
@@ -256,14 +345,19 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       form.addEventListener("change", this.#onFormChange);
       this.#formListenersAttached = true;
     }
-    this.#updateBackgroundPreview();
     void this.#ensurePreviewBackgroundImage();
+    this.#updateFramingEditor();
+    this.#ensureFramingEditor();
+    this.#layoutReviewPlate();
+    this.#ensureReviewPlateStage();
     this.#refreshExpiryTicker();
   }
 
   /** @override */
   _onClose(options) {
     super._onClose(options);
+    this.#destroyFramingEditor();
+    this.#destroyReviewPlateStage();
     this.#clearExpiryTicker();
     if ( this.constructor.#instance === this ) this.constructor.#instance = null;
   }
@@ -352,9 +446,16 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       this.draft.background = {
         sourceType,
         path: loaded.path,
-        fitMode: this.draft.background.fitMode || setting(SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_WIDTH),
+        fitMode: this.draft.background.fitMode || setting(SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_CANVAS),
         naturalWidth: loaded.naturalWidth,
-        naturalHeight: loaded.naturalHeight
+        naturalHeight: loaded.naturalHeight,
+        framing: defaultFramingForBackground({
+          sourceType,
+          path: loaded.path,
+          naturalWidth: loaded.naturalWidth,
+          naturalHeight: loaded.naturalHeight
+        }),
+        framedPath: null
       };
       this.#previewBackgroundImage = { path: loaded.path, img: loaded.img };
       const dims = resolveCanvasSize(this.draft.canvasWidth, this.draft.canvasHeight, loaded.naturalWidth, loaded.naturalHeight);
@@ -467,32 +568,390 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Live-repaint the WYSIWYG background preview canvas to match the current draft
-   * dimensions, fit mode, and background image without a full body rerender. The
-   * canvas element's width/height attributes are set to the draft canvas size, giving
-   * it a correct intrinsic aspect ratio as a replaced element (CSS max-width/max-height
-   * then letterboxes it reliably, unlike aspect-ratio on a non-replaced div). The
-   * background is composited with the same {@link computeBackgroundLayout} math
-   * {@link DrawingEngine#renderBackground} (drawing-engine.mjs) uses for the player
-   * canvas, so the two can never drift. A blank/missing background simply leaves the
-   * canvas transparent, letting the checkerboard CSS backdrop show through.
+   * Size the compose Canvas plate to draft Prompt canvas aspect inside the void stage.
+   * Stage uses min-height:0 + height/max-height caps so the host can shrink with the window
+   * even though the plate child has explicit px size.
    * @returns {void}
    */
-  #updateBackgroundPreview() {
+  #layoutFramingPlate() {
     if ( this.activePrompt ) return;
-    const canvasEl = this.element?.querySelector("[data-dp-background-preview]");
+    const stage = this.element?.querySelector("[data-dp-framing-stage]");
+    const plate = stage?.querySelector(".dp-framing-viewport");
+    if ( !stage || !plate ) return;
+    layoutPlateInStage(plate, stage, {
+      width: this.draft.canvasWidth,
+      height: this.draft.canvasHeight
+    });
+  }
+
+  /**
+   * Size the review Canvas plate for the current Framing View aspect.
+   * @returns {void}
+   */
+  #layoutReviewPlate() {
+    if ( !this.activePrompt ) return;
+    const stage = this.element?.querySelector("[data-dp-review-stage]");
+    const plate = stage?.querySelector("[data-dp-review-plate]");
+    if ( !stage || !plate ) return;
+    const hasSource = hasSourceBackground(this.activePrompt);
+    const aspect = resolveReviewPlateAspect({
+      framingView: this.framingView,
+      prompt: this.activePrompt,
+      hasSource
+    });
+    layoutPlateInStage(plate, stage, aspect);
+  }
+
+  /**
+   * Observe the review plate stage for void-host resizes.
+   * @returns {void}
+   */
+  #ensureReviewPlateStage() {
+    if ( !this.activePrompt ) {
+      this.#destroyReviewPlateStage();
+      return;
+    }
+    const stage = this.element?.querySelector("[data-dp-review-stage]");
+    const host = this.element?.querySelector(".dp-preview-panel fieldset");
+    if ( !stage ) return;
+    this.#reviewPlateResizeObserver?.disconnect();
+    if ( typeof ResizeObserver !== "undefined" ) {
+      this.#reviewPlateResizeObserver = new ResizeObserver(() => this.#layoutReviewPlate());
+      this.#reviewPlateResizeObserver.observe(stage);
+      if ( host ) this.#reviewPlateResizeObserver.observe(host);
+    }
+  }
+
+  /**
+   * Tear down review plate resize observation.
+   * @returns {void}
+   */
+  #destroyReviewPlateStage() {
+    this.#reviewPlateResizeObserver?.disconnect();
+    this.#reviewPlateResizeObserver = null;
+  }
+
+  /**
+   * Repaint the Prompt Framing editor viewport over the source image.
+   * @returns {void}
+   */
+  #updateFramingEditor() {
+    if ( this.activePrompt ) return;
+    const canvasEl = this.element?.querySelector("[data-dp-framing-viewport]");
     if ( !canvasEl ) return;
-    const canvasWidth = Math.max(1, Number(this.draft.canvasWidth) || 1);
-    const canvasHeight = Math.max(1, Number(this.draft.canvasHeight) || 1);
-    canvasEl.width = canvasWidth;
-    canvasEl.height = canvasHeight;
-    const ctx = canvasEl.getContext("2d");
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-    const { path, naturalWidth, naturalHeight, fitMode } = this.draft.background;
+    const emptyEl = this.element?.querySelector("[data-dp-framing-empty]");
+    const { path, naturalWidth, naturalHeight } = this.draft.background;
     const img = path && this.#previewBackgroundImage?.path === path ? this.#previewBackgroundImage.img : null;
+    const hasImage = Boolean(img);
+    emptyEl?.toggleAttribute("hidden", hasImage);
+    canvasEl.toggleAttribute("hidden", !hasImage);
+    for ( const button of this.element?.querySelectorAll(".dp-framing-controls button") ?? [] ) {
+      button.disabled = !hasImage;
+    }
+    // Aspect-true plate first so bitmap metrics match draft canvas W×H.
+    this.#layoutFramingPlate();
     if ( !img ) return;
-    const rect = computeBackgroundLayout(canvasWidth, canvasHeight, naturalWidth, naturalHeight, fitMode);
-    ctx.drawImage(img, rect.dx, rect.dy, rect.dw, rect.dh);
+    const framing = resolveDraftFraming(this.draft.background);
+    if ( !framing ) return;
+    // Measure the plate (not the void stage) so pan/zoom map to the painted surface.
+    const viewportEl = canvasEl.parentElement;
+    const viewportWidth = Math.max(
+      1,
+      Math.round(viewportEl?.clientWidth || canvasEl.clientWidth || 1)
+    );
+    const viewportHeight = Math.max(
+      1,
+      Math.round(viewportEl?.clientHeight || canvasEl.clientHeight || 1)
+    );
+    if ( canvasEl.width === viewportWidth && canvasEl.height === viewportHeight ) {
+      // Still repaint (pan/zoom), but skip attribute resize when size is stable.
+    } else {
+      canvasEl.width = viewportWidth;
+      canvasEl.height = viewportHeight;
+    }
+    drawFramingEditor(canvasEl.getContext("2d"), img, {
+      framing,
+      sourceWidth: naturalWidth,
+      sourceHeight: naturalHeight,
+      fitMode: this.draft.background.fitMode,
+      canvasWidth: this.draft.canvasWidth,
+      canvasHeight: this.draft.canvasHeight,
+      viewportWidth,
+      viewportHeight
+    });
+  }
+
+  /**
+   * Apply a Prompt Framing rect to the draft and refresh previews.
+   * Manual pan/zoom switches Fit mode to Placed and locks crop aspect to GM canvas dims
+   * (only Stretch may use anisotropic fill of non-matching ROI).
+   * Framing reset leaves Fit mode alone (full-source rect; may remain Placed).
+   * @param {{x: number, y: number, width: number, height: number}} framing Framing rect.
+   * @param {{fromPanZoom?: boolean}} [options] When true, set Fit mode to Placed and lock aspect.
+   * @returns {void}
+   */
+  #applyDraftFraming(framing, { fromPanZoom = false } = {}) {
+    if ( this.activePrompt || !this.draft.background.path ) return;
+    let next = { ...framing };
+    if ( fromPanZoom ) {
+      const canvasWidth = this.draft.canvasWidth;
+      const canvasHeight = this.draft.canvasHeight;
+      const previousFitMode = this.draft.background.fitMode;
+      const enteringPlaced = previousFitMode !== FIT_MODE.PLACED;
+      if ( enteringPlaced && (
+        previousFitMode === FIT_MODE.STRETCH || !framingMatchesCanvasAspect(next, canvasWidth, canvasHeight)
+      ) ) {
+        next = framingForPlacedStart({
+          sourceWidth: this.draft.background.naturalWidth,
+          sourceHeight: this.draft.background.naturalHeight,
+          framing: next,
+          canvasWidth,
+          canvasHeight
+        });
+      } else {
+        next = lockFramingToCanvasAspect(next, canvasWidth, canvasHeight);
+      }
+      this.draft.background.framing = next;
+      this.#setDraftFitMode(FIT_MODE.PLACED);
+    } else {
+      this.draft.background.framing = next;
+    }
+    this.#updateFramingEditor();
+  }
+
+  /**
+   * Set draft Fit mode and keep the fit-mode select in sync without full re-render.
+   * @param {string} fitMode Fit mode value.
+   * @returns {void}
+   */
+  #setDraftFitMode(fitMode) {
+    this.draft.background.fitMode = fitMode;
+    const select = this.element?.querySelector?.("#dp-fit-mode");
+    if ( select && select.value !== fitMode ) select.value = fitMode;
+  }
+
+  /**
+   * React to a Fit mode select change.
+   * Non-Placed modes reset framing to full source.
+   * Placed: seed a canvas-aspect ROI containing the current framing (Fit Canvas-like start).
+   * @param {string} previousFitMode Fit mode before the form sync.
+   * @param {string} nextFitMode Fit mode after the form sync.
+   * @returns {void}
+   */
+  #handleFitModeChange(previousFitMode, nextFitMode) {
+    if ( nextFitMode === FIT_MODE.PLACED ) {
+      const { naturalWidth, naturalHeight, path } = this.draft.background;
+      if ( !path || !(Number(naturalWidth) > 0 && Number(naturalHeight) > 0) ) return;
+      const current = resolveDraftFraming(this.draft.background);
+      this.draft.background.framing = framingForPlacedStart({
+        sourceWidth: naturalWidth,
+        sourceHeight: naturalHeight,
+        framing: current,
+        canvasWidth: this.draft.canvasWidth,
+        canvasHeight: this.draft.canvasHeight
+      });
+      return;
+    }
+    const full = framingAfterFitModeSelect(this.draft.background, previousFitMode, nextFitMode);
+    if ( full ) this.draft.background.framing = { ...full };
+  }
+
+  /**
+   * Resolve the framing editor viewport canvas and its display size.
+   * @returns {{canvas: HTMLCanvasElement, width: number, height: number}|null}
+   */
+  #framingViewportMetrics() {
+    const canvas = this.element?.querySelector("[data-dp-framing-viewport]");
+    if ( !canvas ) return null;
+    return {
+      canvas,
+      width: Math.max(1, canvas.width || canvas.clientWidth || 1),
+      height: Math.max(1, canvas.height || canvas.clientHeight || 1)
+    };
+  }
+
+  /**
+   * Attach pan/zoom handlers to the Prompt Framing editor viewport.
+   * @returns {void}
+   */
+  #ensureFramingEditor() {
+    if ( this.activePrompt || this.#framingEditorAttached ) return;
+    const root = this.element?.querySelector("[data-dp-framing-editor]");
+    const stage = root?.querySelector("[data-dp-framing-stage]");
+    const viewport = root?.querySelector(".dp-framing-viewport");
+    if ( !viewport ) return;
+
+    const onWheel = event => this.#onFramingWheel(event);
+    const onPointerDown = event => this.#onFramingPointerDown(event);
+    const onPointerMove = event => this.#onFramingPointerMove(event);
+    const onPointerUp = event => this.#onFramingPointerUp(event);
+    const onDblClick = event => {
+      event.preventDefault();
+      this.#resetDraftFraming();
+    };
+    const onBlur = () => this.#endFramingPan();
+
+    this.#framingEditorHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onBlur };
+    this.#framingViewportEl = viewport;
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    viewport.addEventListener("pointerdown", onPointerDown);
+    viewport.addEventListener("pointermove", onPointerMove);
+    viewport.addEventListener("pointerup", onPointerUp);
+    viewport.addEventListener("pointercancel", onPointerUp);
+    viewport.addEventListener("dblclick", onDblClick);
+    window.addEventListener("blur", onBlur);
+    if ( typeof ResizeObserver !== "undefined" ) {
+      this.#framingResizeObserver = new ResizeObserver(() => this.#updateFramingEditor());
+      // Observe the void stage so plate re-letterboxes when the pane resizes.
+      this.#framingResizeObserver.observe(stage ?? viewport);
+    }
+    this.#framingEditorAttached = true;
+  }
+
+  /**
+   * Tear down Prompt Framing editor listeners.
+   * @returns {void}
+   */
+  #destroyFramingEditor() {
+    this.#endFramingPan();
+    const viewport = this.#framingViewportEl;
+    const handlers = this.#framingEditorHandlers;
+    if ( viewport && handlers ) {
+      viewport.removeEventListener("wheel", handlers.onWheel);
+      viewport.removeEventListener("pointerdown", handlers.onPointerDown);
+      viewport.removeEventListener("pointermove", handlers.onPointerMove);
+      viewport.removeEventListener("pointerup", handlers.onPointerUp);
+      viewport.removeEventListener("pointercancel", handlers.onPointerUp);
+      viewport.removeEventListener("dblclick", handlers.onDblClick);
+    }
+    if ( handlers ) window.removeEventListener("blur", handlers.onBlur);
+    this.#framingResizeObserver?.disconnect();
+    this.#framingResizeObserver = null;
+    this.#framingEditorHandlers = null;
+    this.#framingViewportEl = null;
+    this.#framingEditorAttached = false;
+  }
+
+  /**
+   * Reset Prompt Framing to the full source image.
+   * @returns {void}
+   */
+  #resetDraftFraming() {
+    const { naturalWidth, naturalHeight, path } = this.draft.background;
+    if ( !path || !(Number(naturalWidth) > 0 && Number(naturalHeight) > 0) ) return;
+    this.#applyDraftFraming(resetFraming(naturalWidth, naturalHeight));
+  }
+
+  /**
+   * Zoom the draft Prompt Framing about the viewport center.
+   * @param {number} factor Zoom factor (>1 zooms in).
+   * @returns {void}
+   */
+  #zoomDraftFraming(factor) {
+    const framing = resolveDraftFraming(this.draft.background);
+    const metrics = this.#framingViewportMetrics();
+    if ( !framing || !metrics ) return;
+    this.#applyDraftFraming(zoomFraming(framing, {
+      factor,
+      focusX: metrics.width / 2,
+      focusY: metrics.height / 2,
+      viewportWidth: metrics.width,
+      viewportHeight: metrics.height,
+      canvasWidth: this.draft.canvasWidth,
+      canvasHeight: this.draft.canvasHeight
+    }), { fromPanZoom: true });
+  }
+
+  /**
+   * Handle wheel / trackpad gestures on the framing editor.
+   * @param {WheelEvent} event Wheel event.
+   * @returns {void}
+   */
+  #onFramingWheel(event) {
+    const framing = resolveDraftFraming(this.draft.background);
+    const metrics = this.#framingViewportMetrics();
+    if ( !framing || !metrics ) return;
+    event.preventDefault();
+    const gesture = classifyWheelGesture(event);
+    if ( gesture.type === "pan" ) {
+      this.#applyDraftFraming(panFraming(framing, {
+        dxDisplay: gesture.dx,
+        dyDisplay: gesture.dy,
+        viewportWidth: metrics.width,
+        viewportHeight: metrics.height,
+        canvasWidth: this.draft.canvasWidth,
+        canvasHeight: this.draft.canvasHeight
+      }), { fromPanZoom: true });
+      return;
+    }
+    const rect = metrics.canvas.getBoundingClientRect();
+    this.#applyDraftFraming(zoomFraming(framing, {
+      factor: gesture.factor,
+      focusX: event.clientX - rect.left,
+      focusY: event.clientY - rect.top,
+      viewportWidth: metrics.width,
+      viewportHeight: metrics.height,
+      canvasWidth: this.draft.canvasWidth,
+      canvasHeight: this.draft.canvasHeight
+    }), { fromPanZoom: true });
+  }
+
+  /**
+   * Begin a framing-editor pan drag.
+   * Primary (left) button pans; middle button remains an optional alternate.
+   * @param {PointerEvent} event Pointer event.
+   * @returns {void}
+   */
+  #onFramingPointerDown(event) {
+    if ( event.button !== 0 && event.button !== 1 ) return;
+    if ( !resolveDraftFraming(this.draft.background) ) return;
+    event.preventDefault();
+    this.#framingPanPointerId = event.pointerId;
+    this.#framingPanLast = { x: event.clientX, y: event.clientY };
+    event.currentTarget?.setPointerCapture?.(event.pointerId);
+  }
+
+  /**
+   * Continue a framing-editor pan drag.
+   * @param {PointerEvent} event Pointer event.
+   * @returns {void}
+   */
+  #onFramingPointerMove(event) {
+    if ( this.#framingPanPointerId !== event.pointerId || !this.#framingPanLast ) return;
+    const framing = resolveDraftFraming(this.draft.background);
+    const metrics = this.#framingViewportMetrics();
+    if ( !framing || !metrics ) return;
+    const dxDisplay = event.clientX - this.#framingPanLast.x;
+    const dyDisplay = event.clientY - this.#framingPanLast.y;
+    this.#framingPanLast = { x: event.clientX, y: event.clientY };
+    this.#applyDraftFraming(panFraming(framing, {
+      dxDisplay,
+      dyDisplay,
+      viewportWidth: metrics.width,
+      viewportHeight: metrics.height,
+      canvasWidth: this.draft.canvasWidth,
+      canvasHeight: this.draft.canvasHeight
+    }), { fromPanZoom: true });
+  }
+
+  /**
+   * End a framing-editor pan drag.
+   * @param {PointerEvent} [event] Pointer event.
+   * @returns {void}
+   */
+  #onFramingPointerUp(event) {
+    if ( event && this.#framingPanPointerId !== event.pointerId ) return;
+    event?.currentTarget?.releasePointerCapture?.(this.#framingPanPointerId);
+    this.#endFramingPan();
+  }
+
+  /**
+   * Clear framing-editor pan drag state.
+   * @returns {void}
+   */
+  #endFramingPan() {
+    this.#framingPanPointerId = null;
+    this.#framingPanLast = null;
   }
 
   /**
@@ -513,7 +972,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         const loaded = await request;
         if ( this.#previewBackgroundLoad?.promise !== promise || this.draft.background.path !== path ) return;
         this.#previewBackgroundImage = { path, img: loaded.img };
-        this.#updateBackgroundPreview();
+        this.#updateFramingEditor();
       } catch {
         // Selection-time validation already reports load errors; keep restored drafts blank if the asset disappeared.
       } finally {
@@ -586,6 +1045,32 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
+   * Build Framing View toggle context for review mode.
+   * @param {boolean} hasSource Whether Full Framing is available for this Prompt.
+   * @param {string} framingView Current Framing View.
+   * @returns {{visible: boolean, options: object[]}}
+   */
+  #framingViewToggleContext(hasSource, framingView) {
+    if ( !hasSource ) return { visible: false, options: [] };
+    return {
+      visible: true,
+      label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.label"),
+      options: [
+        {
+          value: FRAMING_VIEW.PROMPT_CANVAS,
+          selected: framingView === FRAMING_VIEW.PROMPT_CANVAS,
+          label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.promptCanvas")
+        },
+        {
+          value: FRAMING_VIEW.FULL,
+          selected: framingView === FRAMING_VIEW.FULL,
+          label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.fullFraming")
+        }
+      ]
+    };
+  }
+
+  /**
    * Build fit mode select options.
    * @returns {object[]}
    */
@@ -595,6 +1080,40 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       selected: value === this.draft.background.fitMode,
       label: game.i18n.localize(`DRAWING-PROMPTS.choices.fitMode.${fitModeKey(value)}`)
     }));
+  }
+
+  /**
+   * @this {DrawingPromptManager}
+   * @returns {void}
+   */
+  static #onSetFramingView(_event, target) {
+    const hasSource = hasSourceBackground(this.activePrompt);
+    const next = normalizeFramingView(target?.dataset?.framingView, { hasSource });
+    if ( next === this.framingView ) return;
+    // Session UI only — must not touch clearFramingViewAssets / savedSubmissionTs (Save gate).
+    this.framingView = next;
+    this.#updateFramingViewToggle();
+    this.#layoutReviewPlate();
+    void this.#refreshSelectedPreview();
+    this.#updatePlaceActionsForFramingView();
+  }
+
+  /**
+   * @this {DrawingPromptManager}
+   * @returns {void}
+   */
+  static #onFramingZoomIn() {
+    this.#zoomDraftFraming(FRAMING_ZOOM_STEP);
+  }
+
+  /** @this {DrawingPromptManager} */
+  static #onFramingZoomOut() {
+    this.#zoomDraftFraming(1 / FRAMING_ZOOM_STEP);
+  }
+
+  /** @this {DrawingPromptManager} */
+  static #onFramingReset() {
+    this.#resetDraftFraming();
   }
 
   /**
@@ -712,6 +1231,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /** @this {DrawingPromptManager} */
   static async #onShowPreview() {
     this.#syncDraftFromForm();
+    const { serializeFramedBackgroundForPreview } = await import("../prompts/framed-delivery.mjs");
+    const background = await serializeFramedBackgroundForPreview(this.draft);
     const { PlayerDrawingApp } = await import("./player-drawing-app.mjs");
     await PlayerDrawingApp.open({
       assignment: { id: "preview", userId: game.user.id, status: STATUS.OPENED },
@@ -722,7 +1243,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         drawingName: this.draft.drawingName,
         canvasWidth: this.draft.canvasWidth,
         canvasHeight: this.draft.canvasHeight,
-        background: { ...this.draft.background },
+        background,
         timerSeconds: this.draft.timerSeconds,
         deadlineAt: null
       }
@@ -789,9 +1310,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const assignmentId = target.dataset.assignmentId || this.selectedAssignmentId;
     const assignment = this.activePrompt?.getAssignment(assignmentId);
     if ( !assignment ) return;
+    const framingView = normalizeFramingView(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
+    const imagePath = resolveFramingViewAssetPath(assignment, framingView);
     const { PlaceDialog } = await import("./place-dialog.mjs");
     try {
-      await PlaceDialog.open(assignment);
+      await PlaceDialog.open(assignment, { framingView, imagePath });
     } catch (err) {
       ui.notifications.warn(err.message);
     }
@@ -801,9 +1326,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   static async #onApplyTransform(_event, target) {
     const assignmentId = target.dataset.assignmentId || this.selectedAssignmentId;
     if ( !assignmentId ) return;
+    const framingView = normalizeFramingView(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
     const service = await import("../prompts/prompt-service.mjs");
     try {
-      await service.applyAssignmentTransform(assignmentId);
+      await service.applyAssignmentTransform(assignmentId, { framingView });
     } catch (err) {
       ui.notifications.warn(err.message);
     }
@@ -845,6 +1373,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       this.activePrompt = null;
       this.selectedAssignmentId = null;
       this.latestSnapshots.clear();
+      this.latestOverlaySnapshots.clear();
       const adoption = await this.adoptMostRecentActivePrompt();
       await this.render({ parts: ["body"] });
       if ( adoption.adopted ) {
@@ -927,34 +1456,118 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /**
    * Resolve preview source and heading for the selected assignment.
    * @param {import("../prompts/prompt-models.mjs").DrawingAssignment|null} assignment Selected assignment.
+   * @param {string} [framingView] Framing View for this preview.
    * @returns {Promise<{src: string|null, heading: string}>}
    */
-  async #selectedPreviewContext(assignment) {
+  async #selectedPreviewContext(assignment, framingView = FRAMING_VIEW.PROMPT_CANVAS) {
     if ( !assignment ) {
       return {
         src: null,
         heading: game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview")
       };
     }
+    const view = normalizeFramingView(framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
     const snapshot = this.latestSnapshots.get(assignment.id) ?? null;
-    if ( assignment.status === STATUS.SUBMITTED && assignment.primaryImagePath ) {
-      return {
-        src: assignment.primaryImagePath,
-        heading: assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing")
-      };
+    const headingSubmitted = assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing");
+    const headingLive = game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview");
+    const heading = assignment.status === STATUS.SUBMITTED ? headingSubmitted : headingLive;
+
+    if ( view === FRAMING_VIEW.FULL ) {
+      const src = await this.#resolveSourceFramingPreviewSrc(assignment);
+      return { src, heading };
     }
+
+    let pendingSrc = null;
     if ( assignment.status === STATUS.SUBMITTED ) {
       const service = await import("../prompts/prompt-service.mjs");
       const submission = service.getPendingSubmission(assignment.id);
-      return {
-        src: pendingSubmissionPreviewSrc(submission) ?? snapshot,
-        heading: assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing")
-      };
+      pendingSrc = pendingSubmissionPromptCanvasPreviewSrc(submission);
     }
-    return {
-      src: snapshot,
-      heading: game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview")
-    };
+    const src = resolvePromptCanvasReviewSrc({
+      liveSrc: snapshot,
+      pendingSrc,
+      savedPath: assignment.primaryImagePath ?? null,
+      framedPath: this.activePrompt?.background?.framedPath ?? null
+    });
+    return { src, heading };
+  }
+
+  /**
+   * Resolve Full Framing preview: saved fullPath when gate open for current submission,
+   * otherwise remapped live/pending **overlay only** via dual-Save geometry (never merged/composite),
+   * otherwise source image alone when delivery exists.
+   * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Assignment.
+   * @param {string|null} [overlaySrcHint] Optional live overlay data URL.
+   * @returns {Promise<string|null>}
+   */
+  async #resolveSourceFramingPreviewSrc(assignment, overlaySrcHint = null) {
+    const savedFull = resolveFramingViewAssetPath(assignment, FRAMING_VIEW.FULL);
+    const savedFullPath = savedFull && isSaveGateOpen(assignment) ? savedFull : null;
+    if ( savedFullPath ) {
+      return resolveSourceFramingReviewSrc({
+        savedFullPath,
+        remappedSrc: null,
+        sourcePath: null
+      });
+    }
+
+    let overlaySrc = overlaySrcHint;
+    let submission = null;
+    if ( assignment.status === STATUS.SUBMITTED ) {
+      const service = await import("../prompts/prompt-service.mjs");
+      submission = service.getPendingSubmission(assignment.id);
+      overlaySrc = pendingSubmissionOverlayPreviewSrc(submission)
+        ?? this.latestOverlaySnapshots.get(assignment.id)
+        ?? overlaySrcHint
+        ?? null;
+    } else {
+      overlaySrc = overlaySrcHint
+        ?? this.latestOverlaySnapshots.get(assignment.id)
+        ?? null;
+    }
+
+    let remappedSrc = null;
+    if ( overlaySrc && this.activePrompt ) {
+      const cacheKey = sourceFramingPreviewCacheKey(assignment.id, this.activePrompt.id, overlaySrc);
+      const cached = this.#sourceFramingPreviewCache.get(cacheKey);
+      if ( cached ) {
+        remappedSrc = cached;
+      } else {
+        // Drop other keys for this assignment so reloads don't grow unbounded.
+        for ( const key of this.#sourceFramingPreviewCache.keys() ) {
+          if ( key.startsWith(`${assignment.id}|`) ) this.#sourceFramingPreviewCache.delete(key);
+        }
+
+        const load = (async () => {
+          try {
+            const dataUrl = await buildSourceFramingPreviewDataUrl({
+              src: overlaySrc,
+              prompt: this.activePrompt,
+              submission
+            });
+            if ( dataUrl ) this.#sourceFramingPreviewCache.set(cacheKey, dataUrl);
+            return dataUrl;
+          } catch (err) {
+            console.warn("drawing-prompts | Full Framing preview remap failed", err);
+            return null;
+          }
+        })();
+        this.#sourceFramingPreviewLoad = load;
+        remappedSrc = await load;
+        if ( this.#sourceFramingPreviewLoad === load ) this.#sourceFramingPreviewLoad = null;
+      }
+    }
+
+    const sourcePath = hasSourceBackground(this.activePrompt)
+      ? (this.activePrompt.background?.path ?? null)
+      : null;
+    return resolveSourceFramingReviewSrc({
+      savedFullPath: null,
+      remappedSrc,
+      sourcePath
+    });
   }
 
   /**
@@ -1027,6 +1640,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#adoptDraftFromPrompt();
     this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
     this.latestSnapshots.clear();
+    this.latestOverlaySnapshots.clear();
+    this.#sourceFramingPreviewCache.clear();
+    this.framingView = normalizeFramingView(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
+    });
     this.#hydrateSnapshotCache();
     await this.#hydrateSubmissionCache();
     if ( isSocketReady() ) {
@@ -1101,23 +1719,109 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
+   * Update Framing View toggle selected state without re-rendering the manager body.
+   * @returns {void}
+   */
+  #updateFramingViewToggle() {
+    const toggle = this.element?.querySelector(".dp-framing-view-toggle");
+    if ( !toggle ) return;
+    for ( const button of toggle.querySelectorAll("[data-action='setFramingView']") ) {
+      const selected = button.dataset.framingView === this.framingView;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    }
+  }
+
+  /**
+   * Resolve and paint the selected assignment preview for the current Framing View.
+   * Guards against stale async completions when Framing View or assignment changes mid-resolve.
+   * @returns {Promise<void>}
+   */
+  async #refreshSelectedPreview() {
+    const assignment = this.#selectedAssignment();
+    const assignmentId = this.selectedAssignmentId;
+    const framingView = this.framingView;
+    const preview = await this.#selectedPreviewContext(assignment, framingView);
+    if ( this.selectedAssignmentId !== assignmentId || this.framingView !== framingView ) return;
+    this.#layoutReviewPlate();
+    this.#setPreviewFrame(preview.src);
+    const legend = this.element?.querySelector(".dp-preview-panel fieldset > legend");
+    if ( legend ) legend.textContent = preview.heading;
+  }
+
+  /**
+   * Sync place/transform enablement and tooltips after a Framing View change.
+   * @returns {void}
+   */
+  #updatePlaceActionsForFramingView() {
+    const assignment = this.#selectedAssignment();
+    const canPlace = canPlaceFramingView(assignment, this.framingView);
+    const actions = this.element?.querySelector(".dp-submission-actions");
+    if ( !actions ) return;
+    actions.classList.toggle("is-place-disabled", !canPlace);
+    for ( const button of actions.querySelectorAll("[data-action='openPlaceDialog'], [data-action='applyTransform']") ) {
+      button.disabled = !canPlace;
+    }
+    const placementActions = actions.querySelector(".dp-placement-actions");
+    if ( placementActions ) {
+      if ( canPlace ) {
+        placementActions.removeAttribute("data-tooltip");
+      } else {
+        placementActions.dataset.tooltip = game.i18n.localize("DRAWING-PROMPTS.manager.actions.saveFirst");
+      }
+    }
+    const transformWrap = actions.querySelector("[data-action='applyTransform']")?.parentElement;
+    if ( transformWrap ) {
+      if ( canPlace ) transformWrap.removeAttribute("data-tooltip");
+      else transformWrap.dataset.tooltip = game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst");
+    }
+    const savedIndicator = this.element?.querySelector(".dp-saved-indicator");
+    if ( savedIndicator && assignment && isSaveGateOpen(assignment) ) {
+      const path = resolveFramingViewAssetPath(assignment, this.framingView)
+        ?? assignment.primaryImagePath
+        ?? "";
+      if ( path ) {
+        savedIndicator.dataset.tooltip = game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path });
+      }
+    }
+  }
+
+  /**
+   * Update the review-mode preview frame without rerendering the full form.
+   * @param {string|null} src Preview image URL or data URL.
+   * @returns {void}
+   */
+  #setPreviewFrame(src) {
+    const frame = this.element?.querySelector(".is-review [data-dp-review-plate]")
+      ?? this.element?.querySelector(".is-review .dp-preview-frame");
+    if ( !frame ) return;
+    if ( src ) {
+      let img = frame.querySelector("img");
+      frame.querySelector(".dp-empty")?.remove();
+      if ( !img ) {
+        frame.replaceChildren();
+        img = document.createElement("img");
+        img.alt = game.i18n.localize("DRAWING-PROMPTS.manager.alt.assignmentPreview");
+        frame.append(img);
+      }
+      img.src = src;
+      this.#layoutReviewPlate();
+      return;
+    }
+    frame.replaceChildren();
+    const empty = document.createElement("p");
+    empty.className = "dp-empty";
+    empty.textContent = game.i18n.localize("DRAWING-PROMPTS.manager.empty.noSnapshot");
+    frame.append(empty);
+  }
+
+  /**
    * Update the preview image without rerendering the full form.
    * @param {string} dataUrl Snapshot data URL.
    * @returns {void}
    */
   #updatePreviewImage(dataUrl) {
-    const frame = this.element?.querySelector(".dp-preview-frame");
-    if ( !frame ) return;
-    let img = frame.querySelector("img");
-    if ( !img ) {
-      frame.innerHTML = "";
-      img = document.createElement("img");
-      img.alt = game.i18n.localize("DRAWING-PROMPTS.manager.alt.assignmentPreview");
-      frame.append(img);
-    }
-    img.classList.remove("is-fading");
-    img.src = dataUrl;
-    requestAnimationFrame(() => img.classList.add("is-fading"));
+    this.#setPreviewFrame(dataUrl);
   }
 
   /**
@@ -1304,16 +2008,61 @@ function userCanUploadFiles(user) {
 }
 
 /**
- * Resolve a preview source from a cached pending submission.
+ * Resolve a Prompt-canvas preview source from a cached pending submission (prefers merged).
  * @param {object|null} submission Submission payload.
  * @returns {string|null} Preview source.
  */
-function pendingSubmissionPreviewSrc(submission) {
+function pendingSubmissionPromptCanvasPreviewSrc(submission) {
+  const src = pickSubmissionPromptCanvasSrc(submission);
+  if ( !src ) return null;
   if ( submission?.mode === "staged" ) {
-    const path = submission.staged?.mergedPath ?? submission.staged?.overlayPath;
-    return path ? `${encodeURI(path)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}` : null;
+    return `${encodeURI(src)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}`;
   }
-  return submission?.merged?.dataUrl ?? submission?.overlay?.dataUrl ?? null;
+  return src;
+}
+
+/**
+ * Resolve an overlay-only preview source for Full Framing remap (never merged).
+ * @param {object|null} submission Submission payload.
+ * @returns {string|null} Overlay path or data URL.
+ */
+function pendingSubmissionOverlayPreviewSrc(submission) {
+  const src = pickSubmissionOverlaySrc(submission);
+  if ( !src ) return null;
+  if ( submission?.mode === "staged" ) {
+    return `${encodeURI(src)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}`;
+  }
+  return src;
+}
+
+/**
+ * Compact cache key for Full Framing remapped previews (avoid storing full data URLs as keys).
+ * @param {string} assignmentId Assignment id.
+ * @param {string} promptId Prompt id.
+ * @param {string} src Prompt-canvas image source.
+ * @returns {string}
+ */
+function sourceFramingPreviewCacheKey(assignmentId, promptId, src) {
+  const value = String(src ?? "");
+  const head = value.slice(0, 48);
+  const tail = value.length > 64 ? value.slice(-24) : "";
+  return `${assignmentId}|${promptId}|${value.length}|${head}|${tail}`;
+}
+
+/**
+ * Whether a framing ROI matches Prompt canvas aspect closely enough for isotropic Placed fill.
+ * @param {{width?: number, height?: number}} framing Framing rect.
+ * @param {number} canvasWidth Canvas width.
+ * @param {number} canvasHeight Canvas height.
+ * @returns {boolean}
+ */
+function framingMatchesCanvasAspect(framing, canvasWidth, canvasHeight) {
+  const fw = Number(framing?.width);
+  const fh = Number(framing?.height);
+  const cw = Number(canvasWidth);
+  const ch = Number(canvasHeight);
+  if ( !(fw > 0 && fh > 0 && cw > 0 && ch > 0) ) return false;
+  return Math.abs(fw / fh - cw / ch) < 1e-3;
 }
 
 /**
@@ -1356,7 +2105,9 @@ function fitModeKey(value) {
     [FIT_MODE.CENTER]: "center",
     [FIT_MODE.FIT_WIDTH]: "fitWidth",
     [FIT_MODE.FIT_HEIGHT]: "fitHeight",
-    [FIT_MODE.STRETCH]: "stretch"
+    [FIT_MODE.FIT_CANVAS]: "fitCanvas",
+    [FIT_MODE.STRETCH]: "stretch",
+    [FIT_MODE.PLACED]: "placed"
   }[value] ?? "fitWidth";
 }
 

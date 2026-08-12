@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
-import { STATUS } from "../scripts/constants.mjs";
+import { BG_SOURCE, FIT_MODE, STATUS } from "../scripts/constants.mjs";
 import { DrawingAssignment, DrawingPrompt } from "../scripts/prompts/prompt-models.mjs";
 
 beforeEach(() => {
@@ -52,11 +52,15 @@ test("DrawingAssignment tolerates missing serialized fields", () => {
     name: null,
     overlayPath: null,
     mergedPath: null,
+    fullPath: null,
+    sourceOverlayPath: null,
     oplogPath: null,
     thumbPath: null,
     folder: null,
     tileWidth: null,
-    tileHeight: null
+    tileHeight: null,
+    fullTileWidth: null,
+    fullTileHeight: null
   });
   assert.equal(serialized.pendingSubmission, null);
   assert.deepEqual(serialized.placements, []);
@@ -200,6 +204,69 @@ test("DrawingPrompt timerState setter keeps serialization canonical", () => {
   assert.equal(serialized.timerStatus, "none");
   assert.equal(serialized.deadlineAt, null);
   assert.equal(serialized.remainingMs, null);
+});
+
+test("DrawingPrompt defaults background framing to null and round-trips explicit framing", () => {
+  const prompt = DrawingPrompt.fromObject({
+    id: "p1",
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      fitMode: FIT_MODE.FIT_WIDTH,
+      naturalWidth: 800,
+      naturalHeight: 600
+    }
+  });
+
+  assert.equal(prompt.background.framing, null);
+  assert.equal(prompt.background.framedPath, null);
+
+  prompt.background.framing = { x: 0, y: 0, width: 800, height: 600 };
+  const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(prompt.toObject())));
+  assert.deepEqual(roundTrip.background.framing, { x: 0, y: 0, width: 800, height: 600 });
+});
+
+test("DrawingPrompt.applyBackgroundUpdate rejects locked fitMode and framing after send", () => {
+  const prompt = DrawingPrompt.fromObject({
+    id: "p1",
+    sentAt: 1000,
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      fitMode: FIT_MODE.FIT_WIDTH,
+      naturalWidth: 800,
+      naturalHeight: 600,
+      framing: { x: 0, y: 0, width: 800, height: 600 },
+      framedPath: "drawing-prompts/staging/p1-framed.webp"
+    }
+  });
+
+  assert.equal(prompt.isBackgroundLocked, true);
+  assert.throws(() => prompt.applyBackgroundUpdate({ fitMode: FIT_MODE.STRETCH }), /locked/i);
+  assert.throws(
+    () => prompt.applyBackgroundUpdate({ framing: { x: 10, y: 0, width: 800, height: 600 } }),
+    /locked/i
+  );
+  assert.doesNotThrow(() => prompt.applyBackgroundUpdate({ path: "maps/other.webp" }));
+});
+
+test("DrawingPrompt accepts and serializes placed fit mode", () => {
+  const prompt = DrawingPrompt.fromObject({
+    id: "p1",
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/dungeon.webp",
+      fitMode: FIT_MODE.PLACED,
+      naturalWidth: 800,
+      naturalHeight: 600,
+      framing: { x: 40, y: 20, width: 400, height: 300 }
+    }
+  });
+
+  assert.equal(prompt.background.fitMode, FIT_MODE.PLACED);
+  const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(prompt.toObject())));
+  assert.equal(roundTrip.background.fitMode, "placed");
+  assert.deepEqual(roundTrip.background.framing, { x: 40, y: 20, width: 400, height: 300 });
 });
 
 test("DrawingPrompt round-trips a nullable asset folder name without computing it", () => {

@@ -1,6 +1,19 @@
-import { INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { CANVAS_CHROME, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { CANVAS_CHROME_CSS_CLASSES, canvasChromeCssClass, normalizeCanvasChrome } from "../drawing/canvas-chrome.mjs";
 import { DrawingEngine } from "../drawing/drawing-engine.mjs";
+import {
+  ZOOM_STEP,
+  classifyWheelGesture,
+  clampView,
+  createFitView,
+  cssTransform,
+  isPanModifierActive,
+  panView,
+  shouldDrawingToolTakePointer,
+  zoomView
+} from "../drawing/player-navigation.mjs";
 import { buildFullSubmission, buildSubmission } from "../drawing/export-service.mjs";
+import { restoreEngineFromSubmission } from "../drawing/submission-restore.mjs";
 import { loadBackgroundImage } from "../foundry/background-source-service.mjs";
 import { canStageUploads, stageSubmissionImages } from "../prompts/asset-service.mjs";
 import { updateStatus } from "../prompts/client-store.mjs";
@@ -29,9 +42,13 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     position: { width: 820, height: 720 },
     actions: {
       setTool: PlayerDrawingApp.#onSetTool,
+      setCanvasChrome: PlayerDrawingApp.#onSetCanvasChrome,
       clearLayer: PlayerDrawingApp.#onClearLayer,
       undo: PlayerDrawingApp.#onUndo,
       redo: PlayerDrawingApp.#onRedo,
+      zoomIn: PlayerDrawingApp.#onZoomIn,
+      zoomOut: PlayerDrawingApp.#onZoomOut,
+      resetView: PlayerDrawingApp.#onResetView,
       submit: PlayerDrawingApp.#onSubmit,
       reject: PlayerDrawingApp.#onReject,
       closeWindow: PlayerDrawingApp.#onCloseWindow
@@ -56,6 +73,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     let app = this.#registry.get(assignmentId);
     if ( app ) {
       app.assignmentPayload = assignmentPayload;
+      app.#restorationKey = null;
       await app.render({ force: true });
       app.bringToFront();
       return app;
@@ -118,6 +136,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.mode = mode;
     this.#background = assignmentPayload.prompt.background ?? {};
     this.#color = initialBrushColor();
+    this.#canvasChrome = initialCanvasChrome();
   }
 
   #background;
@@ -133,15 +152,24 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #color = "#000000";
   #brushSize = 8;
   #brushOpacity = 1;
+  #canvasChrome = CANVAS_CHROME.CHECKERBOARD;
   #unsubscribers = [];
   #wireScaledWarned = false;
+  /** @type {{scale: number, panX: number, panY: number}|null} Ephemeral view; reset on open. */
+  #navView = null;
+  #navViewport = null;
+  #navHandlers = null;
+  #navResizeObserver = null;
+  #spaceHeld = false;
+  /** @type {string|null} Restoration payload already applied for this open. */
+  #restorationKey = null;
+  /** @type {{pointerId: number, lastX: number, lastY: number}|null} */
+  #panDrag = null;
 
   /** @override */
   async _prepareContext(options) {
     const assignment = this.assignmentPayload.assignment;
     const prompt = this.assignmentPayload.prompt;
-    const width = Math.max(1, Number(prompt.canvasWidth) || 1);
-    const height = Math.max(1, Number(prompt.canvasHeight) || 1);
     return {
       assignment,
       prompt,
@@ -149,7 +177,6 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       isPreview: this.mode === "preview",
       hasTimer: this.mode === "preview" ? Number(prompt.timerSeconds) > 0 : prompt.timerStatus !== "none",
       timerText: this.#timerText(),
-      canvasStyle: `aspect-ratio: ${width} / ${height};`,
       backgroundError: this.#backgroundError,
       backgroundLoading: this.#backgroundState === "loading",
       activeTool: this.#activeTool,
@@ -157,6 +184,9 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       brushSize: this.#brushSize,
       brushOpacity: this.#brushOpacity,
       brushOpacityPercent: formatPercent(this.#brushOpacity),
+      canvasChrome: this.#canvasChrome,
+      canvasChromeClass: canvasChromeCssClass(this.#canvasChrome),
+      canvasChromeOptions: this.#canvasChromeOptions(),
       canUndo: this.#engine?.canUndo ?? false,
       canRedo: this.#engine?.canRedo ?? false,
       toolButtons: this.#toolButtons()
@@ -176,6 +206,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     await super._onRender(context, options);
     this.#startTimer();
     await this.#ensureEngine();
+    this.#ensureNavigation();
     this.#wireToolbarInputs();
     this.#refreshToolbarState();
   }
@@ -185,6 +216,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     super._onClose(options);
     if ( this.#timerId ) window.clearInterval(this.#timerId);
     this.#timerId = null;
+    this.#destroyNavigation();
     this.#destroyEngine();
     this.constructor.#registry.delete(this.assignmentPayload.assignment.id);
 
@@ -289,10 +321,12 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( this.#engineReadyPromise ) {
       await this.#engineReadyPromise;
       this.#engine?.attach(canvas);
+      await this.#applyRestoration(this.#engine);
       return;
     }
     if ( this.#engine ) {
       this.#engine.attach(canvas);
+      await this.#applyRestoration(this.#engine);
       return;
     }
     this.#engineReadyPromise = this.#createEngine(canvas).finally(() => {
@@ -350,6 +384,25 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     ];
     this.#engine = engine;
     engine.attach(canvas);
+    await this.#applyRestoration(engine);
+  }
+
+  /**
+   * Restore a submitted drawing when the GM reopens the assignment.
+   * @param {import("../drawing/drawing-engine.mjs").DrawingEngine} engine Drawing engine.
+   * @returns {Promise<void>}
+   */
+  async #applyRestoration(engine) {
+    const submission = this.assignmentPayload?.restorationSubmission;
+    if ( !submission ) return;
+    const key = restorationKey(submission);
+    if ( this.#restorationKey === key ) return;
+    try {
+      const restored = await restoreEngineFromSubmission(engine, submission, this.assignmentPayload.prompt);
+      if ( restored ) this.#restorationKey = key;
+    } catch (err) {
+      console.warn("drawing-prompts | failed to restore reopened submission", err);
+    }
   }
 
   /**
@@ -363,6 +416,276 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.#unsubscribers = [];
     this.#engine?.destroy();
     this.#engine = null;
+  }
+
+  /**
+   * Attach ephemeral pan/zoom navigation to the player viewport (resets per open).
+   * @returns {void}
+   */
+  #ensureNavigation() {
+    const viewport = this.element?.querySelector(".dp-canvas-viewport");
+    const canvas = this.element?.querySelector(".dp-display-canvas");
+    if ( !viewport || !canvas || this.#backgroundError ) {
+      this.#destroyNavigation();
+      return;
+    }
+
+    if ( this.#navViewport !== viewport ) {
+      this.#destroyNavigation({ keepView: true });
+      this.#navViewport = viewport;
+      this.#wireNavigation(viewport);
+    }
+
+    this.#sizeNavCanvas(canvas);
+    if ( !this.#navView ) this.#resetNavigation();
+    else this.#applyNavigation();
+  }
+
+  /**
+   * Wire pointer/wheel/keyboard handlers for player navigation.
+   * @param {HTMLElement} viewport Viewport element.
+   * @returns {void}
+   */
+  #wireNavigation(viewport) {
+    const onWheel = event => this.#onNavWheel(event);
+    const onPointerDown = event => this.#onNavPointerDown(event);
+    const onPointerMove = event => this.#onNavPointerMove(event);
+    const onPointerUp = event => this.#onNavPointerUp(event);
+    const onDblClick = event => {
+      event.preventDefault();
+      this.#resetNavigation();
+    };
+    const onKeyDown = event => {
+      if ( event.code !== "Space" || event.repeat || !this.rendered ) return;
+      const target = event.target;
+      if ( target?.closest?.("input, textarea, select, [contenteditable='true']") ) return;
+      this.#spaceHeld = true;
+      if ( this.element?.contains(target) || target === document.body ) event.preventDefault();
+    };
+    const onKeyUp = event => {
+      if ( event.code === "Space" ) this.#spaceHeld = false;
+    };
+    const onBlur = () => {
+      this.#spaceHeld = false;
+      this.#endPanDrag();
+    };
+    const onContextMenu = event => {
+      event.preventDefault();
+    };
+
+    this.#navHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur, onContextMenu };
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    viewport.addEventListener("pointerdown", onPointerDown, true);
+    viewport.addEventListener("pointermove", onPointerMove);
+    viewport.addEventListener("pointerup", onPointerUp);
+    viewport.addEventListener("pointercancel", onPointerUp);
+    viewport.addEventListener("dblclick", onDblClick);
+    viewport.addEventListener("contextmenu", onContextMenu);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+
+    if ( typeof ResizeObserver !== "undefined" ) {
+      this.#navResizeObserver = new ResizeObserver(() => this.#onNavViewportResize());
+      this.#navResizeObserver.observe(viewport);
+    }
+  }
+
+  /**
+   * Tear down navigation listeners. Optionally keep the ephemeral view across rewires.
+   * @param {{keepView?: boolean}} [options] Options.
+   * @returns {void}
+   */
+  #destroyNavigation({ keepView = false } = {}) {
+    this.#endPanDrag();
+    const viewport = this.#navViewport;
+    const handlers = this.#navHandlers;
+    if ( viewport && handlers ) {
+      viewport.removeEventListener("wheel", handlers.onWheel);
+      viewport.removeEventListener("pointerdown", handlers.onPointerDown, true);
+      viewport.removeEventListener("pointermove", handlers.onPointerMove);
+      viewport.removeEventListener("pointerup", handlers.onPointerUp);
+      viewport.removeEventListener("pointercancel", handlers.onPointerUp);
+      viewport.removeEventListener("dblclick", handlers.onDblClick);
+      viewport.removeEventListener("contextmenu", handlers.onContextMenu);
+    }
+    if ( handlers ) {
+      window.removeEventListener("keydown", handlers.onKeyDown);
+      window.removeEventListener("keyup", handlers.onKeyUp);
+      window.removeEventListener("blur", handlers.onBlur);
+    }
+    this.#navResizeObserver?.disconnect();
+    this.#navResizeObserver = null;
+    this.#navHandlers = null;
+    this.#navViewport = null;
+    this.#spaceHeld = false;
+    if ( !keepView ) this.#navView = null;
+  }
+
+  /**
+   * Content and viewport sizes for the active navigation session.
+   * @returns {{contentWidth: number, contentHeight: number, viewportWidth: number, viewportHeight: number}|null}
+   */
+  #navSizes() {
+    const viewport = this.#navViewport ?? this.element?.querySelector(".dp-canvas-viewport");
+    if ( !viewport ) return null;
+    const prompt = this.assignmentPayload.prompt;
+    return {
+      contentWidth: Math.max(1, Number(prompt.canvasWidth) || 1),
+      contentHeight: Math.max(1, Number(prompt.canvasHeight) || 1),
+      viewportWidth: Math.max(1, viewport.clientWidth || 1),
+      viewportHeight: Math.max(1, viewport.clientHeight || 1)
+    };
+  }
+
+  /**
+   * Size the display canvas to Prompt canvas pixels (transform provides fit).
+   * @param {HTMLCanvasElement} canvas Canvas element.
+   * @returns {void}
+   */
+  #sizeNavCanvas(canvas) {
+    const sizes = this.#navSizes();
+    if ( !sizes ) return;
+    canvas.style.width = `${sizes.contentWidth}px`;
+    canvas.style.height = `${sizes.contentHeight}px`;
+    canvas.style.transformOrigin = "0 0";
+  }
+
+  /**
+   * Reset navigation so the Canvas plate fits fully in the Display stage.
+   * @returns {void}
+   */
+  #resetNavigation() {
+    const sizes = this.#navSizes();
+    if ( !sizes ) return;
+    this.#navView = createFitView(sizes);
+    this.#applyNavigation();
+  }
+
+  /**
+   * Re-clamp and paint the current view after a viewport resize.
+   * @returns {void}
+   */
+  #onNavViewportResize() {
+    const sizes = this.#navSizes();
+    if ( !sizes ) return;
+    if ( !this.#navView ) this.#navView = createFitView(sizes);
+    else this.#navView = clampView(this.#navView, sizes);
+    this.#applyNavigation();
+  }
+
+  /**
+   * Apply CSS transform for the ephemeral navigation state.
+   * @returns {void}
+   */
+  #applyNavigation() {
+    const canvas = this.element?.querySelector(".dp-display-canvas");
+    const sizes = this.#navSizes();
+    if ( !canvas || !sizes || !this.#navView ) return;
+    this.#sizeNavCanvas(canvas);
+    this.#navView = clampView(this.#navView, sizes);
+    canvas.style.transform = cssTransform(this.#navView);
+  }
+
+  /**
+   * Zoom by a multiplicative factor about the viewport center (or given point).
+   * @param {number} factor Zoom factor.
+   * @param {{focusX?: number, focusY?: number}} [focus] Optional focus in viewport coords.
+   * @returns {void}
+   */
+  #zoomNavigation(factor, focus = {}) {
+    const sizes = this.#navSizes();
+    if ( !sizes || !this.#navView ) return;
+    this.#navView = zoomView(this.#navView, sizes, {
+      factor,
+      focusX: focus.focusX,
+      focusY: focus.focusY
+    });
+    this.#applyNavigation();
+  }
+
+  /**
+   * Handle wheel / trackpad navigation gestures.
+   * @param {WheelEvent} event Event.
+   * @returns {void}
+   */
+  #onNavWheel(event) {
+    const sizes = this.#navSizes();
+    if ( !sizes || !this.#navView ) return;
+    event.preventDefault();
+    const gesture = classifyWheelGesture(event);
+    const rect = this.#navViewport.getBoundingClientRect();
+    if ( gesture.type === "zoom" ) {
+      this.#navView = zoomView(this.#navView, sizes, {
+        factor: gesture.factor,
+        focusX: event.clientX - rect.left,
+        focusY: event.clientY - rect.top
+      });
+    } else {
+      this.#navView = panView(this.#navView, sizes, { dx: gesture.dx, dy: gesture.dy });
+    }
+    this.#applyNavigation();
+  }
+
+  /**
+   * Start pan only when navigation modifiers win over drawing tools.
+   * @param {PointerEvent} event Event.
+   * @returns {void}
+   */
+  #onNavPointerDown(event) {
+    if ( shouldDrawingToolTakePointer({ button: event.button, spaceHeld: this.#spaceHeld }) ) return;
+    if ( !isPanModifierActive({ button: event.button, spaceHeld: this.#spaceHeld }) ) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.#panDrag = { pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY };
+    this.#navViewport?.setPointerCapture?.(event.pointerId);
+    this.#navViewport?.classList.add("is-panning");
+  }
+
+  /**
+   * Continue an active pan drag.
+   * @param {PointerEvent} event Event.
+   * @returns {void}
+   */
+  #onNavPointerMove(event) {
+    if ( !this.#panDrag || event.pointerId !== this.#panDrag.pointerId ) return;
+    event.preventDefault();
+    const sizes = this.#navSizes();
+    if ( !sizes || !this.#navView ) return;
+    const dx = event.clientX - this.#panDrag.lastX;
+    const dy = event.clientY - this.#panDrag.lastY;
+    this.#panDrag.lastX = event.clientX;
+    this.#panDrag.lastY = event.clientY;
+    this.#navView = panView(this.#navView, sizes, { dx, dy });
+    this.#applyNavigation();
+  }
+
+  /**
+   * End pan drag.
+   * @param {PointerEvent} [event] Event.
+   * @returns {void}
+   */
+  #onNavPointerUp(event) {
+    if ( !this.#panDrag ) return;
+    if ( event && event.pointerId !== this.#panDrag.pointerId ) return;
+    this.#endPanDrag(event?.pointerId);
+  }
+
+  /**
+   * Clear pan drag state.
+   * @param {number} [pointerId] Pointer id to release.
+   * @returns {void}
+   */
+  #endPanDrag(pointerId) {
+    if ( !this.#panDrag ) return;
+    const id = pointerId ?? this.#panDrag.pointerId;
+    try {
+      this.#navViewport?.releasePointerCapture?.(id);
+    } catch ( _err ) {
+      // Pointer may already be released.
+    }
+    this.#panDrag = null;
+    this.#navViewport?.classList.remove("is-panning");
   }
 
   /**
@@ -383,10 +706,15 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   async #sendSnapshot() {
     if ( !this.#canSendSnapshots() || !this.#engine ) return;
-    const snapshot = this.#engine.getCompositeSnapshot({
+    const opts = {
       maxEdge: INTERNAL.SNAPSHOT_MAX_EDGE,
       quality: INTERNAL.SNAPSHOT_QUALITY
-    });
+    };
+    // Composite for Prompt-canvas live; overlay-only for Full Framing remap (matches dual Save).
+    const snapshot = {
+      composite: this.#engine.getCompositeSnapshot(opts),
+      overlay: this.#engine.getOverlaySnapshot(opts)
+    };
     await emit.drawingSnapshot(
       this.assignmentPayload.prompt.gmUserId,
       this.assignmentPayload.assignment.id,
@@ -432,6 +760,33 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   }
 
   /**
+   * Apply a Canvas chrome preference (client setting + surface class).
+   * @param {string} value Chrome choice.
+   * @returns {void}
+   */
+  #setCanvasChrome(value) {
+    this.#canvasChrome = normalizeCanvasChrome(value);
+    void game.settings.set(MODULE_ID, SETTINGS.CANVAS_CHROME, this.#canvasChrome);
+    this.#refreshToolbarState();
+  }
+
+  /**
+   * Build Background swatch options (Canvas chrome preference).
+   * @returns {{value: string, label: string, selected: boolean}[]}
+   */
+  #canvasChromeOptions() {
+    return [
+      { value: CANVAS_CHROME.BLACK, label: "DRAWING-PROMPTS.choices.canvasChrome.black", selected: this.#canvasChrome === CANVAS_CHROME.BLACK },
+      { value: CANVAS_CHROME.WHITE, label: "DRAWING-PROMPTS.choices.canvasChrome.white", selected: this.#canvasChrome === CANVAS_CHROME.WHITE },
+      {
+        value: CANVAS_CHROME.CHECKERBOARD,
+        label: "DRAWING-PROMPTS.choices.canvasChrome.checkerboard",
+        selected: this.#canvasChrome === CANVAS_CHROME.CHECKERBOARD
+      }
+    ];
+  }
+
+  /**
    * Select a tool.
    * @param {string} tool Tool name.
    * @returns {void}
@@ -471,6 +826,16 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( canvas ) {
       canvas.classList.remove("tool-brush", "tool-eraser", "tool-fill", "tool-eyedropper");
       canvas.classList.add(`tool-${this.#activeTool}`);
+    }
+    for ( const button of root.querySelectorAll("[data-action='setCanvasChrome']") ) {
+      const selected = button.dataset.chrome === this.#canvasChrome;
+      button.classList.toggle("is-active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    }
+    const canvasBox = root.querySelector(".dp-canvas-box");
+    if ( canvasBox ) {
+      canvasBox.classList.remove(...CANVAS_CHROME_CSS_CLASSES);
+      canvasBox.classList.add(canvasChromeCssClass(this.#canvasChrome));
     }
   }
 
@@ -538,6 +903,16 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
 
   /**
    * @this {PlayerDrawingApp}
+   * @param {Event} _event Event.
+   * @param {HTMLElement} target Action target.
+   * @returns {Promise<void>}
+   */
+  static async #onSetCanvasChrome(_event, target) {
+    this.#setCanvasChrome(target.dataset.chrome);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
    * @returns {Promise<void>}
    */
   static async #onClearLayer() {
@@ -565,6 +940,30 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   static async #onRedo() {
     this.#engine?.redo();
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @returns {Promise<void>}
+   */
+  static async #onZoomIn() {
+    this.#zoomNavigation(ZOOM_STEP);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @returns {Promise<void>}
+   */
+  static async #onZoomOut() {
+    this.#zoomNavigation(1 / ZOOM_STEP);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @returns {Promise<void>}
+   */
+  static async #onResetView() {
+    this.#resetNavigation();
   }
 
   /**
@@ -612,6 +1011,14 @@ function initialBrushColor() {
 }
 
 /**
+ * Resolve the initial Canvas chrome for this client.
+ * @returns {string}
+ */
+function initialCanvasChrome() {
+  return normalizeCanvasChrome(game.settings.get(MODULE_ID, SETTINGS.CANVAS_CHROME));
+}
+
+/**
  * Normalize CSS hex to #rrggbb.
  * @param {string} value Value.
  * @returns {string|null}
@@ -623,4 +1030,16 @@ function normalizeHex(value) {
     return `#${text[1]}${text[1]}${text[2]}${text[2]}${text[3]}${text[3]}`.toLowerCase();
   }
   return null;
+}
+
+/**
+ * Dedupe key for a restoration payload.
+ * @param {object} submission Submission payload.
+ * @returns {string}
+ */
+function restorationKey(submission) {
+  if ( submission?.overlay?.dataUrl ) return `overlay:${submission.overlay.dataUrl.length}:${submission.receiptTs ?? 0}`;
+  if ( submission?.staged?.overlayPath ) return `staged:${submission.staged.overlayPath}:${submission.receiptTs ?? 0}`;
+  if ( submission?.opLog?.ops?.length ) return `oplog:${submission.opLog.ops.length}:${submission.opLog.pointer ?? 0}`;
+  return "empty";
 }

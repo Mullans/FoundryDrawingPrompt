@@ -88,7 +88,7 @@ No build step (plain ESM). Use this lifecycle for each verification batch:
 
 ### Issue tracker
 
-Issues are maintained in GitHub Issues for `Mullans/FoundryDrawingPrompt` through the `gh` CLI.
+Issues and PRDs are maintained in **Linear** (team `Scratchprojects`, project `Drawing Prompts`) via the Linear MCP. Code and PRs stay on GitHub (`Mullans/FoundryDrawingPrompt`); do not open work tickets as GitHub issues.
 
 See `docs/agents/issue-tracker.md`.
 

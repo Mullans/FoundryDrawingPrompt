@@ -133,12 +133,31 @@
         <fieldset>
           <legend>{{selectedPreviewHeading}}</legend>
 
-          <div class="dp-preview-frame">
-            {{#if selectedSnapshot}}
-            <img src="{{selectedSnapshot}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.assignmentPreview'}}">
-            {{else}}
-            <p class="dp-empty">{{localize "DRAWING-PROMPTS.manager.empty.noSnapshot"}}</p>
-            {{/if}}
+          {{#if framingViewToggle.visible}}
+          <div class="dp-framing-view-toggle" role="group" aria-label="{{framingViewToggle.label}}">
+            <span class="dp-framing-view-label">{{framingViewToggle.label}}</span>
+            <div class="dp-button-strip">
+              {{#each framingViewToggle.options}}
+              <button type="button"
+                      data-action="setFramingView"
+                      data-framing-view="{{this.value}}"
+                      class="{{#if this.selected}}is-selected{{/if}}"
+                      aria-pressed="{{this.selected}}">
+                <span>{{this.label}}</span>
+              </button>
+              {{/each}}
+            </div>
+          </div>
+          {{/if}}
+
+          <div class="dp-plate-stage" data-dp-review-stage>
+            <div class="dp-preview-frame dp-canvas-plate" data-dp-review-plate>
+              {{#if selectedSnapshot}}
+              <img src="{{selectedSnapshot}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.assignmentPreview'}}">
+              {{else}}
+              <p class="dp-empty">{{localize "DRAWING-PROMPTS.manager.empty.noSnapshot"}}</p>
+              {{/if}}
+            </div>
           </div>
 
           {{#if selectedIsSaved}}
@@ -300,12 +319,26 @@
 
     <aside class="dp-preview-panel">
       <fieldset>
-        <legend>{{localize "DRAWING-PROMPTS.manager.sections.preview"}}</legend>
-
-        <div class="dp-preview-frame">
-          <canvas class="dp-background-preview" data-dp-background-preview
-                  width="{{draft.canvasWidth}}" height="{{draft.canvasHeight}}"
-                  aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.backgroundPreview'}}"></canvas>
+        <legend>{{localize "DRAWING-PROMPTS.manager.sections.framing"}}</legend>
+        <p class="hint">{{localize "DRAWING-PROMPTS.manager.framing.hint"}}</p>
+        <div class="dp-framing-editor" data-dp-framing-editor>
+          <div class="dp-plate-stage" data-dp-framing-stage>
+            <div class="dp-preview-frame dp-framing-viewport dp-canvas-plate">
+              <p class="dp-empty" data-dp-framing-empty {{#if draft.hasBackground}}hidden{{/if}}>{{localize "DRAWING-PROMPTS.manager.empty.noBackground"}}</p>
+              <canvas data-dp-framing-viewport aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.framingEditor'}}" {{#unless draft.hasBackground}}hidden{{/unless}}></canvas>
+            </div>
+          </div>
+          <div class="dp-framing-controls">
+            <button type="button" data-action="framingZoomOut" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomOut'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
+              <i class="fa-solid fa-magnifying-glass-minus" inert></i>
+            </button>
+            <button type="button" data-action="framingZoomIn" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomIn'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
+              <i class="fa-solid fa-magnifying-glass-plus" inert></i>
+            </button>
+            <button type="button" data-action="framingReset" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.reset'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
+              <i class="fa-solid fa-expand" inert></i>
+            </button>
+          </div>
         </div>
       </fieldset>
     </aside>
