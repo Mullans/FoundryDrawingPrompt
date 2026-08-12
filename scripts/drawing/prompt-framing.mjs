@@ -13,8 +13,40 @@ export function defaultPromptFraming(sourceWidth, sourceHeight) {
 }
 
 /**
+ * Full Framing plate in source-pixel space: axis-aligned union of the natural
+ * source rect and Prompt Framing (pad outside the source expands the plate).
+ *
+ * @param {object} options
+ * @param {number} options.sourceWidth Natural source width.
+ * @param {number} options.sourceHeight Natural source height.
+ * @param {{x: number, y: number, width: number, height: number}|null} [options.framing]
+ *   Prompt Framing in source space (defaults to full source).
+ * @returns {{x: number, y: number, width: number, height: number}}
+ *   Integer AABB; source sits at offsets `(-x, -y)` within the plate.
+ */
+export function computeFullFramingRect({ sourceWidth, sourceHeight, framing = null } = {}) {
+  const sw = positiveNumber(sourceWidth, 1);
+  const sh = positiveNumber(sourceHeight, 1);
+  const frame = normalizeFraming(framing, sw, sh);
+  const left = Math.min(0, frame.x);
+  const top = Math.min(0, frame.y);
+  const right = Math.max(sw, frame.x + frame.width);
+  const bottom = Math.max(sh, frame.y + frame.height);
+  const x = Math.floor(left);
+  const y = Math.floor(top);
+  const maxX = Math.ceil(right);
+  const maxY = Math.ceil(bottom);
+  return {
+    x,
+    y,
+    width: Math.max(1, maxX - x),
+    height: Math.max(1, maxY - y)
+  };
+}
+
+/**
  * Pure Prompt Framing + Fit geometry: framed placement on the Prompt canvas,
- * source AABB relative to that canvas, and linear maps either way.
+ * source AABB relative to that canvas, Full Framing union plate, and maps either way.
  *
  * @param {object} options
  * @param {number} options.sourceWidth Natural source width.
@@ -29,6 +61,7 @@ export function defaultPromptFraming(sourceWidth, sourceHeight) {
  *   framing: {x: number, y: number, width: number, height: number},
  *   framedPlacement: {dx: number, dy: number, dw: number, dh: number},
  *   sourceOnCanvas: {x: number, y: number, width: number, height: number},
+ *   fullRect: {x: number, y: number, width: number, height: number},
  *   scaleX: number,
  *   scaleY: number,
  *   sourceWidth: number,
@@ -59,11 +92,13 @@ export function computeFramingGeometry({
     width: sw * scaleX,
     height: sh * scaleY
   };
+  const fullRect = computeFullFramingRect({ sourceWidth: sw, sourceHeight: sh, framing: frame });
 
   return {
     framing: frame,
     framedPlacement,
     sourceOnCanvas,
+    fullRect,
     scaleX,
     scaleY,
     sourceWidth: sw,
@@ -89,6 +124,26 @@ export function mapPromptToSource(geometry, x, y) {
 }
 
 /**
+ * Map a Prompt canvas point into Full Framing plate space.
+ * @param {ReturnType<typeof computeFramingGeometry>} geometry Framing geometry.
+ * @param {number} x Prompt canvas x.
+ * @param {number} y Prompt canvas y.
+ * @returns {{x: number, y: number}}
+ */
+export function mapPromptToFull(geometry, x, y) {
+  const source = mapPromptToSource(geometry, x, y);
+  const fullRect = geometry.fullRect ?? computeFullFramingRect({
+    sourceWidth: geometry.sourceWidth,
+    sourceHeight: geometry.sourceHeight,
+    framing: geometry.framing
+  });
+  return {
+    x: source.x - fullRect.x,
+    y: source.y - fullRect.y
+  };
+}
+
+/**
  * Map a source image point into Prompt canvas space.
  * @param {ReturnType<typeof computeFramingGeometry>} geometry Framing geometry.
  * @param {number} x Source x.
@@ -108,7 +163,7 @@ export function mapSourceToPrompt(geometry, x, y) {
  * @param {string} name Basename with optional extension, or a path (leaf used).
  * @param {string} [extension] Extension when `name` has none (default webp).
  * @returns {{promptCanvas: string, source: string, sourceOverlay: string}}
- *   Prompt-canvas primary, Source Framing `_full`, and source-space overlay leaves.
+ *   Prompt-canvas primary, Full Framing `_full`, and full-plate overlay leaves.
  */
 export function dualSaveFilenames(name, extension) {
   const leaf = String(name ?? "").split(/[\\/]/).pop() || "drawing";
@@ -136,10 +191,11 @@ export function dualSaveFilenames(name, extension) {
 
 /**
  * Dual raster bake from a synthetic Prompt-canvas overlay (RGBA buffer).
- * Prompt-facing output is canvas-sized; `_full` is source natural size with remapped ink.
- * Pad-outside-source ink is omitted from the `_full` raster.
- * When `sourceUnderlay` is provided, `_full` starts as that source image and ink is
- * composited on top with source-over alpha; otherwise `_full` is transparent + ink.
+ * Prompt-facing output is canvas-sized; Full Framing (`source` key) is the composition
+ * plate sized to fullRect (union of natural source and Prompt Framing) with remapped ink.
+ * Pad-outside-source ink is retained on that plate.
+ * When `sourceUnderlay` is provided, the natural source is drawn under remapped ink at
+ * offsets `(-fullRect.x, -fullRect.y)`; otherwise the plate is transparent + ink.
  *
  * @param {object} options
  * @param {ReturnType<typeof computeFramingGeometry>} options.geometry Framing geometry.
@@ -157,46 +213,112 @@ export function bakeDualRasters({ geometry, overlay, sourceUnderlay = null } = {
   const canvasHeight = geometry.canvasHeight;
   const sourceWidth = geometry.sourceWidth;
   const sourceHeight = geometry.sourceHeight;
+  const fullRect = geometry.fullRect ?? computeFullFramingRect({
+    sourceWidth,
+    sourceHeight,
+    framing: geometry.framing
+  });
+  const fullWidth = Math.max(1, Math.round(fullRect.width));
+  const fullHeight = Math.max(1, Math.round(fullRect.height));
   const promptCanvas = copyRgbaBuffer(overlay, canvasWidth, canvasHeight);
-  const source = sourceUnderlay
-    ? copyRgbaBuffer(sourceUnderlay, sourceWidth, sourceHeight)
-    : {
-      width: sourceWidth,
-      height: sourceHeight,
-      data: new Uint8ClampedArray(sourceWidth * sourceHeight * 4)
-    };
+  const source = {
+    width: fullWidth,
+    height: fullHeight,
+    data: new Uint8ClampedArray(fullWidth * fullHeight * 4)
+  };
+
+  if ( sourceUnderlay?.data ) {
+    const underW = Number(sourceUnderlay.width) || sourceWidth;
+    const underH = Number(sourceUnderlay.height) || sourceHeight;
+    const copyW = Math.min(underW, sourceWidth);
+    const copyH = Math.min(underH, sourceHeight);
+    const ox = -fullRect.x;
+    const oy = -fullRect.y;
+    for ( let sy = 0; sy < copyH; sy++ ) {
+      const dy = sy + oy;
+      if ( dy < 0 || dy >= fullHeight ) continue;
+      for ( let sx = 0; sx < copyW; sx++ ) {
+        const dx = sx + ox;
+        if ( dx < 0 || dx >= fullWidth ) continue;
+        const srcOffset = (sy * underW + sx) * 4;
+        const destOffset = (dy * fullWidth + dx) * 4;
+        source.data[destOffset] = sourceUnderlay.data[srcOffset];
+        source.data[destOffset + 1] = sourceUnderlay.data[srcOffset + 1];
+        source.data[destOffset + 2] = sourceUnderlay.data[srcOffset + 2];
+        source.data[destOffset + 3] = sourceUnderlay.data[srcOffset + 3];
+      }
+    }
+  }
 
   const overlayWidth = Number(overlay?.width) || canvasWidth;
   const overlayHeight = Number(overlay?.height) || canvasHeight;
   // Wire-scaled overlays are smaller than the Prompt canvas; map in canvas space
-  // so Source Framing remapping stays correct after compress/downscale for transit.
+  // so Full Framing remapping stays correct after compress/downscale for transit.
   const toCanvasX = canvasWidth / Math.max(1, overlayWidth);
   const toCanvasY = canvasHeight / Math.max(1, overlayHeight);
   const data = overlay?.data;
   if ( !data ) return { promptCanvas, source };
 
+  // Area splat into Full Framing plate: each overlay pixel covers a canvas rect;
+  // map corners into plate (source − fullRect origin) and fill covered pixels.
   for ( let py = 0; py < overlayHeight; py++ ) {
     for ( let px = 0; px < overlayWidth; px++ ) {
       const srcOffset = (py * overlayWidth + px) * 4;
       const alpha = data[srcOffset + 3];
       if ( !alpha ) continue;
 
-      const canvasX = (px + 0.5) * toCanvasX - 0.5;
-      const canvasY = (py + 0.5) * toCanvasY - 0.5;
-      const mapped = mapPromptToSource(geometry, canvasX, canvasY);
-      const sx = Math.round(mapped.x);
-      const sy = Math.round(mapped.y);
-      if ( sx < 0 || sy < 0 || sx >= sourceWidth || sy >= sourceHeight ) continue;
+      const c0x = px * toCanvasX;
+      const c1x = (px + 1) * toCanvasX;
+      const c0y = py * toCanvasY;
+      const c1y = (py + 1) * toCanvasY;
+      const corners = [
+        mapPromptToFull(geometry, c0x, c0y),
+        mapPromptToFull(geometry, c1x, c0y),
+        mapPromptToFull(geometry, c0x, c1y),
+        mapPromptToFull(geometry, c1x, c1y)
+      ];
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for ( const corner of corners ) {
+        if ( corner.x < minX ) minX = corner.x;
+        if ( corner.x > maxX ) maxX = corner.x;
+        if ( corner.y < minY ) minY = corner.y;
+        if ( corner.y > maxY ) maxY = corner.y;
+      }
 
-      const destOffset = (sy * sourceWidth + sx) * 4;
-      compositeSourceOver(
-        source.data,
-        destOffset,
-        data[srcOffset],
-        data[srcOffset + 1],
-        data[srcOffset + 2],
-        alpha
-      );
+      const fx0 = Math.max(0, Math.floor(minX));
+      const fx1 = Math.min(fullWidth - 1, Math.ceil(maxX) - 1);
+      const fy0 = Math.max(0, Math.floor(minY));
+      const fy1 = Math.min(fullHeight - 1, Math.ceil(maxY) - 1);
+
+      let xStart = fx0;
+      let xEnd = fx1;
+      let yStart = fy0;
+      let yEnd = fy1;
+      if ( xStart > xEnd || yStart > yEnd ) {
+        const center = mapPromptToFull(
+          geometry,
+          (px + 0.5) * toCanvasX - 0.5,
+          (py + 0.5) * toCanvasY - 0.5
+        );
+        const fx = Math.round(center.x);
+        const fy = Math.round(center.y);
+        if ( fx < 0 || fy < 0 || fx >= fullWidth || fy >= fullHeight ) continue;
+        xStart = xEnd = fx;
+        yStart = yEnd = fy;
+      }
+
+      const r = data[srcOffset];
+      const g = data[srcOffset + 1];
+      const b = data[srcOffset + 2];
+      for ( let fy = yStart; fy <= yEnd; fy++ ) {
+        for ( let fx = xStart; fx <= xEnd; fx++ ) {
+          const destOffset = (fy * fullWidth + fx) * 4;
+          compositeSourceOver(source.data, destOffset, r, g, b, alpha);
+        }
+      }
     }
   }
 

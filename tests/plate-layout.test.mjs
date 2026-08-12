@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { fitPlateInBox } from "../scripts/drawing/plate-layout.mjs";
+import { fitPlateInBox, layoutPlateInStage } from "../scripts/drawing/plate-layout.mjs";
 
 test("fitPlateInBox letterboxes a landscape plate in a square host", () => {
   assert.deepEqual(
@@ -37,6 +37,30 @@ test("fitPlateInBox preserves exact aspect when host matches content", () => {
     }),
     { width: 512, height: 384 }
   );
+});
+
+test("fitPlateInBox height-constrains a square plate in a wide short host", () => {
+  assert.deepEqual(
+    fitPlateInBox({
+      contentWidth: 512,
+      contentHeight: 512,
+      containerWidth: 400,
+      containerHeight: 200
+    }),
+    { width: 200, height: 200 }
+  );
+});
+
+test("layoutPlateInStage applies contain sizing to the plate element", () => {
+  const stage = {
+    clientWidth: 400,
+    clientHeight: 200
+  };
+  const plate = { style: {} };
+  const size = layoutPlateInStage(plate, stage, { width: 512, height: 512 });
+  assert.deepEqual(size, { width: 200, height: 200 });
+  assert.equal(plate.style.width, "200px");
+  assert.equal(plate.style.height, "200px");
 });
 
 test("fitPlateInBox falls back to 1 for invalid dimensions", () => {

@@ -4,6 +4,36 @@
  */
 
 /**
+ * Read the host pane size used to letterbox an aspect-true plate.
+ * @param {Element|null|undefined} stage Plate stage element.
+ * @returns {{containerWidth: number, containerHeight: number}}
+ */
+export function measurePlateContainer(stage) {
+  const containerWidth = Math.max(1, Math.floor(Number(stage?.clientWidth) || 1));
+  const containerHeight = Math.max(1, Math.floor(Number(stage?.clientHeight) || 1));
+  return { containerWidth, containerHeight };
+}
+
+/**
+ * Size a plate element to fit its stage while preserving content aspect.
+ * @param {HTMLElement|null|undefined} plate Plate element.
+ * @param {Element|null|undefined} stage Host stage element.
+ * @param {{width: number, height: number}} content Logical content size.
+ * @returns {{width: number, height: number}|null}
+ */
+export function layoutPlateInStage(plate, stage, content) {
+  if ( !plate || !stage ) return null;
+  const size = fitPlateInBox({
+    contentWidth: content.width,
+    contentHeight: content.height,
+    ...measurePlateContainer(stage)
+  });
+  plate.style.width = `${size.width}px`;
+  plate.style.height = `${size.height}px`;
+  return size;
+}
+
+/**
  * Fit a content box inside a container while preserving aspect ratio (contain).
  * @param {object} sizes Sizes in CSS pixels (or any consistent unit).
  * @param {number} sizes.contentWidth Logical plate width (e.g. Prompt canvas W).

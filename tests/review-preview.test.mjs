@@ -67,9 +67,9 @@ test("resolveReviewPlateAspect uses prompt canvas for Prompt-canvas view", () =>
   }), { width: 800, height: 600 });
 });
 
-test("resolveReviewPlateAspect uses source natural size for Source Framing", () => {
+test("resolveReviewPlateAspect uses composition size for Full Framing", () => {
   assert.deepEqual(resolveReviewPlateAspect({
-    framingView: FRAMING_VIEW.SOURCE,
+    framingView: FRAMING_VIEW.FULL,
     prompt: {
       canvasWidth: 800,
       canvasHeight: 600,
@@ -79,9 +79,25 @@ test("resolveReviewPlateAspect uses source natural size for Source Framing", () 
   }), { width: 1920, height: 1080 });
 });
 
+test("resolveReviewPlateAspect expands Full Framing plate for pad framing", () => {
+  assert.deepEqual(resolveReviewPlateAspect({
+    framingView: FRAMING_VIEW.FULL,
+    prompt: {
+      canvasWidth: 100,
+      canvasHeight: 100,
+      background: {
+        naturalWidth: 4,
+        naturalHeight: 4,
+        framing: { x: -1, y: -1, width: 6, height: 6 }
+      }
+    },
+    hasSource: true
+  }), { width: 6, height: 6 });
+});
+
 test("resolveReviewPlateAspect falls back to prompt canvas without source dims", () => {
   assert.deepEqual(resolveReviewPlateAspect({
-    framingView: FRAMING_VIEW.SOURCE,
+    framingView: FRAMING_VIEW.FULL,
     prompt: { canvasWidth: 512, canvasHeight: 256, background: {} },
     hasSource: false
   }), { width: 512, height: 256 });

@@ -20,8 +20,10 @@ import { prepareFramedBackgroundForSend, serializeBackgroundForPlayer } from "./
 import {
   clearFramingViewAssets,
   hasSavedFramingViewAssets,
+  hasSourceBackground,
   normalizeFramingView,
-  resolveFramingViewAssetPath
+  resolveFramingViewAssetPath,
+  resolveTileDimensionsForFramingView
 } from "./dual-save.mjs";
 import { DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM, assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
@@ -114,18 +116,45 @@ function validateKnownPlayerAssignment(assignmentId) {
 function payloadFor(prompt, assignment) {
   return {
     assignment: assignment.toObject(),
-    prompt: {
-      id: prompt.id,
-      gmUserId: prompt.gmUserId,
-      promptText: prompt.promptText,
-      drawingName: prompt.drawingName,
-      canvasWidth: prompt.canvasWidth,
-      canvasHeight: prompt.canvasHeight,
-      background: serializeBackgroundForPlayer(prompt),
-      sentAt: prompt.sentAt,
-      timerSeconds: prompt.timerSeconds,
-      ...prompt.timerState
-    }
+    prompt: playerPromptPayload(prompt)
+  };
+}
+
+/**
+ * Build the player-safe prompt slice for wire payloads.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {object}
+ */
+function playerPromptPayload(prompt) {
+  return {
+    id: prompt.id,
+    gmUserId: prompt.gmUserId,
+    promptText: prompt.promptText,
+    drawingName: prompt.drawingName,
+    canvasWidth: prompt.canvasWidth,
+    canvasHeight: prompt.canvasHeight,
+    background: serializeBackgroundForPlayer(prompt),
+    sentAt: prompt.sentAt,
+    timerSeconds: prompt.timerSeconds,
+    ...prompt.timerState
+  };
+}
+
+/**
+ * Build a reopen payload that restores the player's last submission without
+ * echoing the full pending blob on the assignment record.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @param {object|null} restorationSubmission Submission to restore.
+ * @returns {object}
+ */
+function payloadForReopen(prompt, assignment, restorationSubmission) {
+  const assignmentObj = assignment.toObject();
+  delete assignmentObj.pendingSubmission;
+  return {
+    assignment: assignmentObj,
+    prompt: playerPromptPayload(prompt),
+    restorationSubmission: restorationSubmission ?? null
   };
 }
 
@@ -172,9 +201,19 @@ export async function createAndSendPrompt(draft) {
   }, draft.selectedUserIds);
 
   await createPromptEntry(prompt);
-  await prepareFramedBackgroundForSend(prompt);
-  // Prompt creation requires a full save to establish prompt-level and all assignment state.
-  await savePrompt(prompt);
+  try {
+    await prepareFramedBackgroundForSend(prompt);
+    // Prompt creation requires a full save to establish prompt-level and all assignment state.
+    await savePrompt(prompt);
+  } catch (err) {
+    // Compensate: a failed Send must not leave a sticky undelivered prompt (retry would duplicate).
+    try {
+      await deletePromptEntry(prompt.id);
+    } catch (cleanupError) {
+      console.warn("drawing-prompts | could not remove prompt after failed send prep", cleanupError);
+    }
+    throw err;
+  }
   Hooks.callAll("drawing-prompts.promptCreated", prompt);
 
   if ( Object.values(prompt.assignments).some(a => game.users.get(a.userId)?.can(FILES_UPLOAD_PERMISSION)) ) {
@@ -379,6 +418,85 @@ export function getPendingSubmission(assignmentId) {
 }
 
 /**
+ * Resolve a submission payload that can restore the player's last drawing on reopen.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<object|null>}
+ */
+async function resolveRestorationSubmission(assignment, prompt) {
+  const pending = getPendingSubmission(assignment.id);
+  if ( pending ) return pending;
+  return buildRestorationSubmissionFromSavedAssets(assignment, prompt);
+}
+
+/**
+ * Build a wire-safe restoration payload from saved assignment assets (post-Save reopen).
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @param {import("./prompt-models.mjs").DrawingPrompt} prompt Prompt.
+ * @returns {Promise<object|null>}
+ */
+async function buildRestorationSubmissionFromSavedAssets(assignment, prompt) {
+  const overlayPath = assignment.assets?.overlayPath;
+  const oplogPath = assignment.assets?.oplogPath;
+  if ( !overlayPath || !oplogPath ) return null;
+  try {
+    const [opLog, overlayBlob] = await Promise.all([
+      fetchSavedJson(oplogPath),
+      fetchSavedBlob(overlayPath)
+    ]);
+    const format = overlayPath.endsWith(".png") ? "png" : "webp";
+    return {
+      overlay: {
+        dataUrl: await blobToDataUrl(overlayBlob),
+        format
+      },
+      opLog,
+      width: Number(assignment.assets?.tileWidth ?? prompt.canvasWidth),
+      height: Number(assignment.assets?.tileHeight ?? prompt.canvasHeight),
+      receiptTs: assignment.submittedAt ?? Date.now()
+    };
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not build restoration payload from saved assets`, assignment.id, err);
+    return null;
+  }
+}
+
+/**
+ * Fetch a world asset JSON file.
+ * @param {string} path Asset path.
+ * @returns {Promise<object>}
+ */
+async function fetchSavedJson(path) {
+  const response = await fetch(`/${encodeURI(normalizePath(path))}`);
+  if ( !response.ok ) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+/**
+ * Fetch a world asset blob.
+ * @param {string} path Asset path.
+ * @returns {Promise<Blob>}
+ */
+async function fetchSavedBlob(path) {
+  const response = await fetch(`/${encodeURI(normalizePath(path))}`);
+  if ( !response.ok ) throw new Error(`HTTP ${response.status}`);
+  return response.blob();
+}
+
+/**
+ * @param {Blob} blob Blob.
+ * @returns {Promise<string>}
+ */
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
  * Save assignment assets (public GM entry).
  * Dual Framing View write + Save gate live in {@link saveAssignmentAssets}; this
  * wrapper owns auth, pending resolution, journal persist, and hooks only.
@@ -431,8 +549,16 @@ export { stagedFetchUrl };
 export async function placeAssignmentAsTile(assignmentId, { hidden = false, name = "", framingView = FRAMING_VIEW.PROMPT_CANVAS } = {}) {
   const { prompt, assignment, scene, imagePath } = requirePlacementContext(assignmentId, framingView);
   const submission = getPendingSubmission(assignmentId);
-  const tileWidth = assignment.assets.tileWidth ?? submissionTileWidth(submission, prompt);
-  const tileHeight = assignment.assets.tileHeight ?? submissionTileHeight(submission, prompt);
+  const promptCanvasFallback = {
+    width: assignment.assets.tileWidth ?? submissionTileWidth(submission, prompt),
+    height: assignment.assets.tileHeight ?? submissionTileHeight(submission, prompt)
+  };
+  const { width: tileWidth, height: tileHeight } = resolveTileDimensionsForFramingView(
+    prompt,
+    assignment,
+    framingView,
+    promptCanvasFallback
+  );
   if ( submission?.wireScaled && !isStagedSubmission(submission) ) {
     ui.notifications.warn(game.i18n.format("DRAWING-PROMPTS.manager.warnings.wireScaledPlacement", {
       width: tileWidth,
@@ -629,14 +755,22 @@ export async function reopenAssignment(assignmentId, userId = null) {
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
+  const restorationSubmission = await resolveRestorationSubmission(assignment, prompt);
   if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
   assignment.markReopened();
-  assignment.pendingSubmission = null;
-  pendingSubmissions.delete(assignment.id);
-  clearCachedSubmission(assignment.id);
+  if ( restorationSubmission ) {
+    pendingSubmissions.set(assignment.id, restorationSubmission);
+    assignment.pendingSubmission = restorationSubmission;
+    cacheSubmission(assignment.id, restorationSubmission);
+  }
   await savePrompt(prompt, { assignmentOnly: assignment.id });
   await ensureFramedBackgroundDelivered(prompt);
-  if ( game.users.get(assignment.userId)?.active ) await emit.reopenDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
+  if ( game.users.get(assignment.userId)?.active ) {
+    await emit.reopenDrawingPrompt(
+      assignment.userId,
+      payloadForReopen(prompt, assignment, restorationSubmission)
+    );
+  }
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentReopened", prompt, assignment);
   await refreshManager();

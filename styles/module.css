@@ -105,9 +105,10 @@
   flex-direction: column;
   position: sticky;
   top: 0;
-  align-self: start;
+  align-self: stretch;
   min-height: 0;
   max-height: 100%;
+  overflow: hidden;
 }
 
 .drawing-prompts .dp-preview-panel fieldset {
@@ -116,6 +117,14 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+}
+
+.drawing-prompts .dp-preview-panel .dp-framing-view-toggle,
+.drawing-prompts .dp-preview-panel .dp-saved-indicator,
+.drawing-prompts .dp-preview-panel .dp-submission-actions,
+.drawing-prompts .dp-preview-panel .hint {
+  flex: 0 0 auto;
 }
 
 .drawing-prompts .dp-panel {
@@ -488,9 +497,9 @@
   align-items: center;
   justify-content: center;
   min-width: 0;
-  min-height: min(220px, 100%);
-  height: min(42vh, 360px);
-  max-height: min(42vh, 360px);
+  min-height: 120px;
+  height: auto;
+  max-height: 100%;
   overflow: hidden;
   background: transparent;
   border: none;
@@ -500,9 +509,7 @@
 }
 
 .drawing-prompts .is-review .dp-plate-stage {
-  min-height: min(230px, 100%);
-  height: min(48vh, 420px);
-  max-height: min(48vh, 420px);
+  min-height: 120px;
 }
 
 .drawing-prompts .dp-framing-viewport {
@@ -516,6 +523,8 @@
   min-height: 0;
   cursor: grab;
   overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: contain;
   /* House style: no motion when the pane or its contents change size. */
   transition: none !important;
   animation: none !important;

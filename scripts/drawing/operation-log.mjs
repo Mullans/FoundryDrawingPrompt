@@ -70,6 +70,18 @@ export class OperationLog {
   }
 
   /**
+   * Hydrate an operation log from serialized data.
+   * @param {{ops?: object[], pointer?: number}} serialized Serialized log.
+   * @returns {OperationLog}
+   */
+  static fromSerialized({ ops = [], pointer = 0 } = {}) {
+    const log = new OperationLog();
+    log.#ops = ops.map(op => cloneJson(op));
+    log.#pointer = Math.min(Math.max(0, Number(pointer) || 0), log.#ops.length);
+    return log;
+  }
+
+  /**
    * JSON-serializable representation.
    * @returns {{ops: object[], pointer: number}}
    */

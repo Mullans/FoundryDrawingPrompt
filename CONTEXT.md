@@ -16,7 +16,7 @@ The drawing surface players use, at the exact width and height the GM set for th
 _Avoid_: World, drawing world, player viewport (when meaning size)
 
 **Submission**:
-The drawing a player has submitted for an Assignment, stored in Prompt canvas coordinates. A resubmission replaces it and re-arms the Save gate. GM Source Framing review maps this submission into source image space for correct placement.
+The drawing a player has submitted for an Assignment, stored in Prompt canvas coordinates. A resubmission replaces it and re-arms the Save gate. GM Full Framing review maps this submission onto the composition plate (source ∪ Prompt Framing) for correct placement.
 
 **Prompt Framing**:
 The GM-authored axis-aligned region of the source image (crop, pan, zoom; may extend outside the source for zoom-out pad, with exterior empty so Canvas chrome shows through after Fit) that is fed into Fit mode to build the Framed background. Default is the full source image. Locked after the Prompt is first sent to players. Players receive only this framed region after Fit—not the full source—so full source data never reaches player clients.
@@ -26,16 +26,16 @@ _Avoid_: Crop (alone), zoom level (alone), drawing world camera
 The player-side background image: the Prompt Framing region of the source, placed into the Prompt canvas by Fit mode. This, with optional Canvas chrome showing through empty areas, is what the player paints on.
 _Avoid_: Full background, original image (on the player), framed source (prefer this term)
 
-**Source Framing**:
-GM-only review of the full source image with the Submission remapped into source image space. Mapping uses the bounding box of the full source relative to the Prompt canvas implied by Prompt Framing + Fit mode. Hidden/disabled when there is no source image.
-_Avoid_: Original framing, full image view (alone), world view
+**Full Framing**:
+GM-only review and Place of the composition plate: the axis-aligned union of the natural source rect and Prompt Framing in source-pixel space, with the Submission remapped onto that plate (pad-outside-source ink retained). Larger than natural source when framing includes pan/zoom pad; equals natural source when framing lies entirely within the image. Hidden/disabled when there is no source image.
+_Avoid_: Source Framing (legacy name), original framing, full image view (alone), world view
 
 **Framing View**:
-Which review the GM is using for a Submission: Prompt canvas (as the player drew it) or Source Framing. Place and Transform use the matching pre-saved raster for the view currently selected. Live preview follows the same toggle with the drawing correctly placed in both. Toggle is GM-only.
+Which review the GM is using for a Submission: Prompt canvas (as the player drew it) or Full Framing. Place and Transform use the matching pre-saved raster for the view currently selected. Live preview follows the same toggle with the drawing correctly placed in both. Toggle is GM-only.
 _Avoid_: View mode, display mode
 
 **Save**:
-The GM action that writes Submission images for **both** Framing Views together to world storage under a name (one action, one save detection—not separate per-view save states). Prompt-canvas framing uses the chosen basename; Source Framing uses the same basename with a `_full` suffix before the extension, at the source image’s natural resolution. Required before any Place or Transform. Switching Framing View does not undo Save; refreshing assets always rewrites both views together.
+The GM action that writes Submission images for **both** Framing Views together to world storage under a name (one action, one save detection—not separate per-view save states). Prompt-canvas framing uses the chosen basename; Full Framing uses the same basename with a `_full` suffix before the extension, at the composition plate size (source ∪ Prompt Framing). Required before any Place or Transform. Switching Framing View does not undo Save; refreshing assets always rewrites both views together.
 _Avoid_: Save only, save this view
 
 **Save gate**:

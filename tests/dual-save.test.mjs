@@ -18,6 +18,7 @@ import {
   resolveFullFilename,
   resolveSourceOverlayFilename,
   resolveSubmissionOverlaySize,
+  resolveTileDimensionsForFramingView,
   shouldWriteMergedSubmission,
   compositeOverlayOntoUnderlay
 } from "../scripts/prompts/dual-save.mjs";
@@ -157,9 +158,16 @@ test("dual save remaps overlay ink into source natural resolution", () => {
   assert.equal(source.height, 4);
 
   const mapped = mapPromptToSource(geometry, 1, 1);
-  const sx = Math.round(mapped.x);
-  const sy = Math.round(mapped.y);
-  assert.deepEqual(getPixel(source, 4, sx, sy), [255, 0, 0, 255]);
+  assert.deepEqual(mapped, { x: 1.5, y: 1.5 });
+  let redFound = false;
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      if ( getPixel(source, 4, x, y)[0] === 255 && getPixel(source, 4, x, y)[3] === 255 ) {
+        redFound = true;
+      }
+    }
+  }
+  assert.ok(redFound, "marker remaps into source natural resolution");
 });
 
 test("dual save Source Framing bake composites remapped ink over source underlay", () => {
@@ -220,15 +228,27 @@ test("source-space overlay bake is remapped ink only; _full keeps source underla
   const { source: full } = bakeDualRasters({ geometry, overlay, sourceUnderlay });
 
   const mapped = mapPromptToSource(geometry, 1, 1);
-  const sx = Math.round(mapped.x);
-  const sy = Math.round(mapped.y);
+  assert.deepEqual(mapped, { x: 1.5, y: 1.5 });
 
   assert.equal(sourceOverlay.width, 4);
   assert.equal(sourceOverlay.height, 4);
-  assert.deepEqual(getPixel(sourceOverlay, 4, sx, sy), [255, 0, 0, 255]);
+  let overlayInk = 0;
+  let fullInk = 0;
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      const so = getPixel(sourceOverlay, 4, x, y);
+      const fl = getPixel(full, 4, x, y);
+      if ( so[0] === 255 && so[3] === 255 ) overlayInk += 1;
+      if ( fl[0] === 255 && fl[3] === 255 ) fullInk += 1;
+      if ( so[3] === 0 ) {
+        // Transparent _source keeps empty; full retains underlay there.
+        assert.deepEqual(getPixel(full, 4, x, y), [10, 20, 30, 255]);
+      }
+    }
+  }
+  assert.ok(overlayInk >= 1, "source-space overlay has remapped ink");
+  assert.ok(fullInk >= 1, "_full has remapped ink");
   assert.deepEqual(getPixel(sourceOverlay, 4, 0, 0), [0, 0, 0, 0]);
-
-  assert.deepEqual(getPixel(full, 4, sx, sy), [255, 0, 0, 255]);
   assert.deepEqual(getPixel(full, 4, 0, 0), [10, 20, 30, 255]);
 });
 
@@ -274,9 +294,10 @@ test("shouldWriteMergedSubmission is true when framed/prompt background exists e
   }, { background: { sourceType: BG_SOURCE.BLANK, path: null } }), false);
 });
 
-test("normalizeFramingView rejects Source Framing without a source and unknown values", () => {
-  assert.equal(normalizeFramingView(FRAMING_VIEW.SOURCE, { hasSource: true }), FRAMING_VIEW.SOURCE);
-  assert.equal(normalizeFramingView(FRAMING_VIEW.SOURCE, { hasSource: false }), FRAMING_VIEW.PROMPT_CANVAS);
+test("normalizeFramingView rejects Full Framing without a source and unknown values", () => {
+  assert.equal(normalizeFramingView(FRAMING_VIEW.FULL, { hasSource: true }), FRAMING_VIEW.FULL);
+  assert.equal(normalizeFramingView(FRAMING_VIEW.FULL, { hasSource: false }), FRAMING_VIEW.PROMPT_CANVAS);
+  assert.equal(normalizeFramingView("source", { hasSource: true }), FRAMING_VIEW.FULL);
   assert.equal(normalizeFramingView(FRAMING_VIEW.PROMPT_CANVAS, { hasSource: true }), FRAMING_VIEW.PROMPT_CANVAS);
   assert.equal(normalizeFramingView("nope", { hasSource: true }), FRAMING_VIEW.PROMPT_CANVAS);
   assert.equal(normalizeFramingView(null), FRAMING_VIEW.PROMPT_CANVAS);
@@ -295,7 +316,7 @@ test("resolveFramingViewAssetPath picks primary vs fullPath by Framing View", ()
     }
   });
   assert.equal(resolveFramingViewAssetPath(assignment, FRAMING_VIEW.PROMPT_CANVAS), "drawings/hero.webp");
-  assert.equal(resolveFramingViewAssetPath(assignment, FRAMING_VIEW.SOURCE), "drawings/hero_full.webp");
+  assert.equal(resolveFramingViewAssetPath(assignment, FRAMING_VIEW.FULL), "drawings/hero_full.webp");
   assert.equal(resolveFramingViewAssetPath(null, FRAMING_VIEW.PROMPT_CANVAS), null);
 
   const blankOnly = DrawingAssignment.fromObject({
@@ -306,7 +327,7 @@ test("resolveFramingViewAssetPath picks primary vs fullPath by Framing View", ()
     assets: { overlayPath: "drawings/blank.webp", mergedPath: null, fullPath: null }
   });
   assert.equal(resolveFramingViewAssetPath(blankOnly, FRAMING_VIEW.PROMPT_CANVAS), "drawings/blank.webp");
-  assert.equal(resolveFramingViewAssetPath(blankOnly, FRAMING_VIEW.SOURCE), null);
+  assert.equal(resolveFramingViewAssetPath(blankOnly, FRAMING_VIEW.FULL), null);
 });
 
 test("canPlaceFramingView uses the dual Save gate and current view path", () => {
@@ -325,15 +346,58 @@ test("canPlaceFramingView uses the dual Save gate and current view path", () => 
   });
   assert.equal(isSaveGateOpen(assignment), true);
   assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.PROMPT_CANVAS), true);
-  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.SOURCE), true);
+  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.FULL), true);
 
   assignment.assets.fullPath = null;
-  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.SOURCE), false);
+  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.FULL), false);
   assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.PROMPT_CANVAS), true);
 
   // Toggling framing view state is not modeled here — only savedSubmissionTs re-arms.
   assignment.savedSubmissionTs = null;
   assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.PROMPT_CANVAS), false);
+});
+
+test("resolveTileDimensionsForFramingView uses composition size for Full and canvas size for Prompt", () => {
+  const prompt = {
+    canvasWidth: 512,
+    canvasHeight: 384,
+    background: {
+      sourceType: BG_SOURCE.FILE,
+      path: "maps/big.webp",
+      naturalWidth: 2048,
+      naturalHeight: 1536,
+      framing: { x: -10, y: -20, width: 2068, height: 1576 }
+    }
+  };
+  const assignment = DrawingAssignment.fromObject({
+    id: "a1",
+    promptId: "p1",
+    userId: "u1",
+    status: STATUS.SUBMITTED,
+    assets: {
+      tileWidth: 512,
+      tileHeight: 384,
+      fullTileWidth: 2068,
+      fullTileHeight: 1576,
+      fullPath: "drawings/hero_full.webp",
+      mergedPath: "drawings/hero.webp"
+    }
+  });
+  assert.deepEqual(
+    resolveTileDimensionsForFramingView(prompt, assignment, FRAMING_VIEW.PROMPT_CANVAS),
+    { width: 512, height: 384 }
+  );
+  assert.deepEqual(
+    resolveTileDimensionsForFramingView(prompt, assignment, FRAMING_VIEW.FULL),
+    { width: 2068, height: 1576 }
+  );
+  // Without stored fullTile* falls back to composition geometry.
+  assignment.assets.fullTileWidth = null;
+  assignment.assets.fullTileHeight = null;
+  assert.deepEqual(
+    resolveTileDimensionsForFramingView(prompt, assignment, FRAMING_VIEW.FULL),
+    { width: 2068, height: 1576 }
+  );
 });
 
 test("clearFramingViewAssets clears Framing View paths including sourceOverlayPath", () => {

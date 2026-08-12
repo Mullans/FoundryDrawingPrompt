@@ -35,7 +35,9 @@ export class DrawingAssignment {
       thumbPath: data.assets?.thumbPath ?? null,
       folder: data.assets?.folder ?? null,
       tileWidth: data.assets?.tileWidth ?? null,
-      tileHeight: data.assets?.tileHeight ?? null
+      tileHeight: data.assets?.tileHeight ?? null,
+      fullTileWidth: data.assets?.fullTileWidth ?? null,
+      fullTileHeight: data.assets?.fullTileHeight ?? null
     };
     // Legacy saved assignments predate savedSubmissionTs; infer it from their persisted image.
     if ( this.status === STATUS.SUBMITTED && this.primaryImagePath && this.savedSubmissionTs == null ) {
@@ -237,7 +239,7 @@ export class DrawingPrompt {
     this.background = {
       sourceType: data.background?.sourceType ?? BG_SOURCE.BLANK,
       path: data.background?.path ?? null,
-      fitMode: data.background?.fitMode ?? FIT_MODE.FIT_WIDTH,
+      fitMode: data.background?.fitMode ?? FIT_MODE.FIT_CANVAS,
       naturalWidth: data.background?.naturalWidth ?? null,
       naturalHeight: data.background?.naturalHeight ?? null,
       framing: normalizeStoredFraming(data.background?.framing),

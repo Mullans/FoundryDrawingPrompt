@@ -45,7 +45,7 @@ export class DrawingEngine {
     this.width = Math.max(1, Math.floor(Number(width) || 1));
     this.height = Math.max(1, Math.floor(Number(height) || 1));
     this.#background = background;
-    this.#fitMode = fitMode || FIT_MODE.FIT_WIDTH;
+    this.#fitMode = fitMode || FIT_MODE.FIT_CANVAS;
     this.#bgCanvas = createCanvas(this.width, this.height);
     this.#drawCanvas = createCanvas(this.width, this.height);
     this.#bgCtx = this.#bgCanvas.getContext("2d", { willReadFrequently: true });
@@ -267,7 +267,7 @@ export class DrawingEngine {
 
   /**
    * Build a downscaled overlay-only (ink) data URL with transparent background.
-   * Used for Source Framing live remap — same ink layer dual Save bakes, not bg+ink.
+   * Used for Full Framing live remap — same ink layer dual Save bakes, not bg+ink.
    * @param {{maxEdge: number, quality?: number, type?: string}} options Snapshot options.
    * @returns {string}
    */
@@ -330,6 +330,44 @@ export class DrawingEngine {
    */
   getOpLog() {
     return this.#opLog.toJSON();
+  }
+
+  /**
+   * Replace the draw layer from a serialized operation log.
+   * @param {{ops?: object[], pointer?: number}} serialized Serialized log.
+   * @returns {void}
+   */
+  loadOpLog(serialized) {
+    this.#opLog = OperationLog.fromSerialized(serialized);
+    this.#checkpoints = [];
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    this.#restoreToPointer(this.#opLog.pointer);
+    this.#emitChange();
+  }
+
+  /**
+   * Replace the draw layer from raw RGBA pixels (overlay-only restore).
+   * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} rgba Pixel buffer.
+   * @returns {void}
+   */
+  loadOverlayRgba({ width, height, data }) {
+    const w = Math.max(1, Math.floor(Number(width) || 1));
+    const h = Math.max(1, Math.floor(Number(height) || 1));
+    this.#drawCtx.clearRect(0, 0, this.width, this.height);
+    if ( w === this.width && h === this.height ) {
+      this.#drawCtx.putImageData(new ImageData(data, w, h), 0, 0);
+    } else {
+      const canvas = createCanvas(w, h);
+      canvas.getContext("2d").putImageData(new ImageData(data, w, h), 0, 0);
+      this.#drawCtx.drawImage(canvas, 0, 0, this.width, this.height);
+    }
+    this.#opLog = new OperationLog();
+    this.#checkpoints = [];
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    this.#markDirty();
+    this.#emitChange();
   }
 
   /**

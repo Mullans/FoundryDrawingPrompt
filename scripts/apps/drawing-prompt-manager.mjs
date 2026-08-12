@@ -11,7 +11,7 @@ import {
   zoomFraming
 } from "../drawing/draft-framing-editor.mjs";
 import { defaultFramingForBackground } from "../drawing/framed-background.mjs";
-import { fitPlateInBox } from "../drawing/plate-layout.mjs";
+import { fitPlateInBox, layoutPlateInStage } from "../drawing/plate-layout.mjs";
 import { classifyWheelGesture } from "../drawing/player-navigation.mjs";
 import { defaultAssetFolder, normalizePath } from "../prompts/asset-service.mjs";
 import {
@@ -162,13 +162,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     };
     this.activePrompt = null;
     this.latestSnapshots = new Map();
-    /** @type {Map<string, string>} Latest overlay-only (ink) live snapshots for Source Framing remaps. */
+    /** @type {Map<string, string>} Latest overlay-only (ink) live snapshots for Full Framing remaps. */
     this.latestOverlaySnapshots = new Map();
     this.selectedAssignmentId = null;
     this.windowOpenByAssignment = new Map();
     /** @type {string} GM review Framing View for the open manager session. */
     this.framingView = FRAMING_VIEW.PROMPT_CANVAS;
-    /** @type {Map<string, string>} Cached Source Framing live-remap data URLs by assignment. */
+    /** @type {Map<string, string>} Cached Full Framing live-remap data URLs by assignment. */
     this.#sourceFramingPreviewCache = new Map();
     this.#sourceFramingPreviewLoad = null;
     this.#expiryTimerId = null;
@@ -242,7 +242,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const view = normalizeFramingView(this.framingView, {
       hasSource: hasSourceBackground(this.activePrompt)
     });
-    if ( view !== FRAMING_VIEW.SOURCE ) {
+    if ( view !== FRAMING_VIEW.FULL ) {
       if ( composite ) this.#updatePreviewImage(composite);
       return;
     }
@@ -254,7 +254,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       if ( this.selectedAssignmentId !== assignmentId ) return;
       if ( normalizeFramingView(this.framingView, {
         hasSource: hasSourceBackground(this.activePrompt)
-      }) !== FRAMING_VIEW.SOURCE ) return;
+      }) !== FRAMING_VIEW.FULL ) return;
       if ( src ) this.#updatePreviewImage(src);
     });
   }
@@ -446,7 +446,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       this.draft.background = {
         sourceType,
         path: loaded.path,
-        fitMode: this.draft.background.fitMode || setting(SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_WIDTH),
+        fitMode: this.draft.background.fitMode || setting(SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_CANVAS),
         naturalWidth: loaded.naturalWidth,
         naturalHeight: loaded.naturalHeight,
         framing: defaultFramingForBackground({
@@ -578,14 +578,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const stage = this.element?.querySelector("[data-dp-framing-stage]");
     const plate = stage?.querySelector(".dp-framing-viewport");
     if ( !stage || !plate ) return;
-    const size = fitPlateInBox({
-      contentWidth: this.draft.canvasWidth,
-      contentHeight: this.draft.canvasHeight,
-      containerWidth: stage.clientWidth,
-      containerHeight: stage.clientHeight
+    layoutPlateInStage(plate, stage, {
+      width: this.draft.canvasWidth,
+      height: this.draft.canvasHeight
     });
-    plate.style.width = `${size.width}px`;
-    plate.style.height = `${size.height}px`;
   }
 
   /**
@@ -603,14 +599,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       prompt: this.activePrompt,
       hasSource
     });
-    const size = fitPlateInBox({
-      contentWidth: aspect.width,
-      contentHeight: aspect.height,
-      containerWidth: stage.clientWidth,
-      containerHeight: stage.clientHeight
-    });
-    plate.style.width = `${size.width}px`;
-    plate.style.height = `${size.height}px`;
+    layoutPlateInStage(plate, stage, aspect);
   }
 
   /**
@@ -623,11 +612,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       return;
     }
     const stage = this.element?.querySelector("[data-dp-review-stage]");
+    const host = this.element?.querySelector(".dp-preview-panel fieldset");
     if ( !stage ) return;
     this.#reviewPlateResizeObserver?.disconnect();
     if ( typeof ResizeObserver !== "undefined" ) {
       this.#reviewPlateResizeObserver = new ResizeObserver(() => this.#layoutReviewPlate());
       this.#reviewPlateResizeObserver.observe(stage);
+      if ( host ) this.#reviewPlateResizeObserver.observe(host);
     }
   }
 
@@ -1055,7 +1046,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /**
    * Build Framing View toggle context for review mode.
-   * @param {boolean} hasSource Whether Source Framing is available for this Prompt.
+   * @param {boolean} hasSource Whether Full Framing is available for this Prompt.
    * @param {string} framingView Current Framing View.
    * @returns {{visible: boolean, options: object[]}}
    */
@@ -1071,9 +1062,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
           label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.promptCanvas")
         },
         {
-          value: FRAMING_VIEW.SOURCE,
-          selected: framingView === FRAMING_VIEW.SOURCE,
-          label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.sourceFraming")
+          value: FRAMING_VIEW.FULL,
+          selected: framingView === FRAMING_VIEW.FULL,
+          label: game.i18n.localize("DRAWING-PROMPTS.manager.framingView.fullFraming")
         }
       ]
     };
@@ -1240,6 +1231,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /** @this {DrawingPromptManager} */
   static async #onShowPreview() {
     this.#syncDraftFromForm();
+    const { serializeFramedBackgroundForPreview } = await import("../prompts/framed-delivery.mjs");
+    const background = await serializeFramedBackgroundForPreview(this.draft);
     const { PlayerDrawingApp } = await import("./player-drawing-app.mjs");
     await PlayerDrawingApp.open({
       assignment: { id: "preview", userId: game.user.id, status: STATUS.OPENED },
@@ -1250,7 +1243,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         drawingName: this.draft.drawingName,
         canvasWidth: this.draft.canvasWidth,
         canvasHeight: this.draft.canvasHeight,
-        background: { ...this.draft.background },
+        background,
         timerSeconds: this.draft.timerSeconds,
         deadlineAt: null
       }
@@ -1481,7 +1474,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const headingLive = game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview");
     const heading = assignment.status === STATUS.SUBMITTED ? headingSubmitted : headingLive;
 
-    if ( view === FRAMING_VIEW.SOURCE ) {
+    if ( view === FRAMING_VIEW.FULL ) {
       const src = await this.#resolveSourceFramingPreviewSrc(assignment);
       return { src, heading };
     }
@@ -1502,7 +1495,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Resolve Source Framing preview: saved fullPath when gate open for current submission,
+   * Resolve Full Framing preview: saved fullPath when gate open for current submission,
    * otherwise remapped live/pending **overlay only** via dual-Save geometry (never merged/composite),
    * otherwise source image alone when delivery exists.
    * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Assignment.
@@ -1510,7 +1503,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {Promise<string|null>}
    */
   async #resolveSourceFramingPreviewSrc(assignment, overlaySrcHint = null) {
-    const savedFull = resolveFramingViewAssetPath(assignment, FRAMING_VIEW.SOURCE);
+    const savedFull = resolveFramingViewAssetPath(assignment, FRAMING_VIEW.FULL);
     const savedFullPath = savedFull && isSaveGateOpen(assignment) ? savedFull : null;
     if ( savedFullPath ) {
       return resolveSourceFramingReviewSrc({
@@ -1557,7 +1550,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
             if ( dataUrl ) this.#sourceFramingPreviewCache.set(cacheKey, dataUrl);
             return dataUrl;
           } catch (err) {
-            console.warn("drawing-prompts | Source Framing preview remap failed", err);
+            console.warn("drawing-prompts | Full Framing preview remap failed", err);
             return null;
           }
         })();
@@ -1812,6 +1805,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         frame.append(img);
       }
       img.src = src;
+      this.#layoutReviewPlate();
       return;
     }
     frame.replaceChildren();
@@ -2028,7 +2022,7 @@ function pendingSubmissionPromptCanvasPreviewSrc(submission) {
 }
 
 /**
- * Resolve an overlay-only preview source for Source Framing remap (never merged).
+ * Resolve an overlay-only preview source for Full Framing remap (never merged).
  * @param {object|null} submission Submission payload.
  * @returns {string|null} Overlay path or data URL.
  */
@@ -2042,7 +2036,7 @@ function pendingSubmissionOverlayPreviewSrc(submission) {
 }
 
 /**
- * Compact cache key for Source Framing remapped previews (avoid storing full data URLs as keys).
+ * Compact cache key for Full Framing remapped previews (avoid storing full data URLs as keys).
  * @param {string} assignmentId Assignment id.
  * @param {string} promptId Prompt id.
  * @param {string} src Prompt-canvas image source.

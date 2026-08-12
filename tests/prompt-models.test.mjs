@@ -58,7 +58,9 @@ test("DrawingAssignment tolerates missing serialized fields", () => {
     thumbPath: null,
     folder: null,
     tileWidth: null,
-    tileHeight: null
+    tileHeight: null,
+    fullTileWidth: null,
+    fullTileHeight: null
   });
   assert.equal(serialized.pendingSubmission, null);
   assert.deepEqual(serialized.placements, []);

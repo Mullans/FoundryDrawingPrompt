@@ -4,7 +4,9 @@
  */
 
 import { FRAMING_VIEW } from "../constants.mjs";
+import { computeFullFramingRect } from "../drawing/prompt-framing.mjs";
 import { normalizeFramingView } from "./dual-save.mjs";
+import { resolvePromptFraming } from "./framed-delivery.mjs";
 
 /**
  * First non-empty string/path among candidates.
@@ -40,11 +42,11 @@ export function resolvePromptCanvasReviewSrc({
 }
 
 /**
- * Source Framing image ladder (static review).
+ * Full Framing image ladder (static review).
  * Order: saved `_full` → remapped preview → source image alone.
  * @param {object} [options] Ladder inputs.
- * @param {string|null} [options.savedFullPath] Saved Source Framing fullPath.
- * @param {string|null} [options.remappedSrc] Remapped ink-over-source preview URL.
+ * @param {string|null} [options.savedFullPath] Saved Full Framing fullPath.
+ * @param {string|null} [options.remappedSrc] Remapped ink-over-composition preview URL.
  * @param {string|null} [options.sourcePath] Prompt source background path.
  * @returns {string|null}
  */
@@ -58,12 +60,12 @@ export function resolveSourceFramingReviewSrc({
 
 /**
  * Aspect box for a review Canvas plate under the active Framing View.
- * Prompt-canvas → Prompt W×H; Source Framing → source natural size when available.
+ * Prompt-canvas → Prompt W×H; Full Framing → composition plate (source ∪ framing).
  * @param {object} [options] Inputs.
  * @param {string} [options.framingView] Framing View id.
  * @param {{canvasWidth?: number, canvasHeight?: number, background?: object}|null} [options.prompt]
  *   Active prompt.
- * @param {boolean} [options.hasSource] Whether Source Framing is available.
+ * @param {boolean} [options.hasSource] Whether Full Framing is available.
  * @returns {{width: number, height: number}}
  */
 export function resolveReviewPlateAspect({
@@ -72,11 +74,20 @@ export function resolveReviewPlateAspect({
   hasSource = false
 } = {}) {
   const view = normalizeFramingView(framingView, { hasSource });
-  if ( view === FRAMING_VIEW.SOURCE ) {
-    const naturalWidth = Number(prompt?.background?.naturalWidth);
-    const naturalHeight = Number(prompt?.background?.naturalHeight);
+  if ( view === FRAMING_VIEW.FULL && hasSource ) {
+    const background = prompt?.background ?? {};
+    const naturalWidth = Number(background.naturalWidth);
+    const naturalHeight = Number(background.naturalHeight);
     if ( naturalWidth > 0 && naturalHeight > 0 ) {
-      return { width: naturalWidth, height: naturalHeight };
+      const fullRect = computeFullFramingRect({
+        sourceWidth: naturalWidth,
+        sourceHeight: naturalHeight,
+        framing: resolvePromptFraming(prompt)
+      });
+      return {
+        width: Math.max(1, Math.round(fullRect.width)),
+        height: Math.max(1, Math.round(fullRect.height))
+      };
     }
   }
   const width = Number(prompt?.canvasWidth);

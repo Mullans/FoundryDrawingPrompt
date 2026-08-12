@@ -46,6 +46,60 @@ export function assertBackgroundUnlocked(changes, current, promptState = {}) {
 }
 
 /**
+ * Build a player-style Framed background for GM Show Preview (ephemeral, no world upload).
+ * Matches post-Send product identity: framed + Fit baked into canvas-sized raster with STRETCH.
+ * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} draft Draft or prompt-like object.
+ * @returns {Promise<{sourceType: string, path: string|null, fitMode: string, preFramed: true, naturalWidth: number|null, naturalHeight: number|null}>}
+ */
+export async function serializeFramedBackgroundForPreview(draft) {
+  const canvasWidth = Math.max(1, Math.round(Number(draft?.canvasWidth) || 1));
+  const canvasHeight = Math.max(1, Math.round(Number(draft?.canvasHeight) || 1));
+  const background = draft?.background ?? {};
+  const sourcePath = background.path ?? null;
+  const sourceType = background.sourceType ?? BG_SOURCE.BLANK;
+
+  if ( !sourcePath || sourceType === BG_SOURCE.BLANK ) {
+    return {
+      sourceType: BG_SOURCE.BLANK,
+      path: null,
+      fitMode: FIT_MODE.STRETCH,
+      preFramed: true,
+      naturalWidth: null,
+      naturalHeight: null
+    };
+  }
+
+  const loaded = await loadBackgroundImage(sourcePath);
+  const framing = (background.framing && typeof background.framing === "object")
+    ? normalizeFramingRect(background.framing)
+    : defaultFramingForBackground({
+      ...background,
+      naturalWidth: loaded.naturalWidth,
+      naturalHeight: loaded.naturalHeight
+    });
+
+  const canvas = bakeFramedBackgroundCanvas({
+    img: loaded.img,
+    naturalWidth: loaded.naturalWidth,
+    naturalHeight: loaded.naturalHeight,
+    framing,
+    fitMode: background.fitMode,
+    canvasWidth,
+    canvasHeight
+  });
+  // Data URL is GM-only and ephemeral (preview app); not the player Send path.
+  const path = canvas.toDataURL("image/png");
+  return {
+    sourceType: BG_SOURCE.FILE,
+    path,
+    fitMode: FIT_MODE.STRETCH,
+    preFramed: true,
+    naturalWidth: canvasWidth,
+    naturalHeight: canvasHeight
+  };
+}
+
+/**
  * Bake and upload the Framed background for player delivery, mutating the prompt in place.
  * @param {DrawingPrompt} prompt Prompt to prepare.
  * @returns {Promise<void>}

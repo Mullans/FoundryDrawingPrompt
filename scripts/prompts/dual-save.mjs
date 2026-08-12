@@ -5,7 +5,7 @@ import { resolvePromptFraming } from "./framed-delivery.mjs";
 import { isSaveGateOpen } from "./transitions.mjs";
 
 /**
- * Whether the prompt has a source image suitable for Source Framing dual Save.
+ * Whether the prompt has a source image suitable for Full Framing dual Save.
  * @param {{background?: object}} prompt Prompt.
  * @returns {boolean}
  */
@@ -18,27 +18,31 @@ export function hasSourceBackground(prompt) {
 }
 
 /**
- * Normalize a Framing View value. Falls back to Prompt canvas when Source Framing
- * is unavailable or the value is unknown.
+ * Normalize a Framing View value. Falls back to Prompt canvas when Full Framing
+ * is unavailable or the value is unknown. Accepts legacy wire value `"source"`.
  * @param {string|null|undefined} framingView Candidate view.
  * @param {{hasSource?: boolean}} [options] Context.
  * @returns {typeof FRAMING_VIEW[keyof typeof FRAMING_VIEW]}
  */
 export function normalizeFramingView(framingView, { hasSource = false } = {}) {
-  if ( framingView === FRAMING_VIEW.SOURCE && hasSource ) return FRAMING_VIEW.SOURCE;
+  if ( hasSource && (framingView === FRAMING_VIEW.FULL || framingView === "source") ) {
+    return FRAMING_VIEW.FULL;
+  }
   return FRAMING_VIEW.PROMPT_CANVAS;
 }
 
 /**
  * Resolve the pre-saved Place/Transform asset path for a Framing View.
- * Prompt canvas → primaryImagePath (`{basename}`); Source Framing → assets.fullPath (`{basename}_full`).
+ * Prompt canvas → primaryImagePath (`{basename}`); Full Framing → assets.fullPath (`{basename}_full`).
  * @param {import("./prompt-models.mjs").DrawingAssignment|null|undefined} assignment Assignment.
  * @param {string} framingView Framing View.
  * @returns {string|null}
  */
 export function resolveFramingViewAssetPath(assignment, framingView) {
   if ( !assignment ) return null;
-  if ( framingView === FRAMING_VIEW.SOURCE ) return assignment.assets?.fullPath ?? null;
+  if ( framingView === FRAMING_VIEW.FULL || framingView === "source" ) {
+    return assignment.assets?.fullPath ?? null;
+  }
   return assignment.primaryImagePath ?? null;
 }
 
@@ -54,7 +58,49 @@ export function canPlaceFramingView(assignment, framingView) {
 }
 
 /**
- * Framing geometry for dual Save remapping into source space.
+ * Resolve Place tile pixel size for the selected Framing View.
+ * Prompt canvas → saved tileWidth/Height (canvas-sized); Full Framing → composition plate size.
+ * @param {object} prompt Prompt.
+ * @param {import("./prompt-models.mjs").DrawingAssignment} assignment Assignment.
+ * @param {string} framingView Framing View.
+ * @param {{width?: number, height?: number}|null} [promptCanvasFallback] Fallback W×H for Prompt view.
+ * @returns {{width: number, height: number}}
+ */
+export function resolveTileDimensionsForFramingView(
+  prompt,
+  assignment,
+  framingView,
+  promptCanvasFallback = null
+) {
+  const view = normalizeFramingView(framingView, { hasSource: hasSourceBackground(prompt) });
+  if ( view === FRAMING_VIEW.FULL ) {
+    let width = Number(assignment?.assets?.fullTileWidth) || 0;
+    let height = Number(assignment?.assets?.fullTileHeight) || 0;
+    if ( !(width > 0 && height > 0) && hasSourceBackground(prompt) ) {
+      const geometry = computeDualSaveGeometry(prompt);
+      width = geometry.fullRect.width;
+      height = geometry.fullRect.height;
+    }
+    if ( width > 0 && height > 0 ) {
+      return { width: Math.round(width), height: Math.round(height) };
+    }
+  }
+  const width = Number(assignment?.assets?.tileWidth)
+    || Number(promptCanvasFallback?.width)
+    || Number(prompt?.canvasWidth)
+    || 1;
+  const height = Number(assignment?.assets?.tileHeight)
+    || Number(promptCanvasFallback?.height)
+    || Number(prompt?.canvasHeight)
+    || 1;
+  return {
+    width: Math.max(1, Math.round(width)),
+    height: Math.max(1, Math.round(height))
+  };
+}
+
+/**
+ * Framing geometry for dual Save remapping into Full Framing plate space.
  * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} prompt Prompt.
  * @returns {ReturnType<typeof computeFramingGeometry>}
  */
@@ -149,7 +195,7 @@ export function shouldWriteMergedSubmission(submission, prompt) {
 
 /**
  * Resolve the Prompt canvas size a Submission overlay should occupy when baking
- * Source Framing. Prefer original (pre-wire-scale) dimensions so transit
+ * Full Framing. Prefer original (pre-wire-scale) dimensions so transit
  * downscales still map as if drawn on the full Prompt canvas.
  * @param {object|null|undefined} submission Submission payload.
  * @param {{canvasWidth?: number, canvasHeight?: number}|null|undefined} prompt Prompt.
@@ -165,7 +211,7 @@ export function resolveSubmissionOverlaySize(submission, prompt) {
 }
 
 /**
- * Bake and encode the Source Framing raster from a Prompt-canvas overlay buffer.
+ * Bake and encode the Full Framing raster from a Prompt-canvas overlay buffer.
  * Composites remapped ink over the prompt's source image when available (natural W×H).
  * @param {object} options Options.
  * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} options.overlay Overlay RGBA buffer.
@@ -396,7 +442,7 @@ function compositeSourceOverPixel(dest, destOffset, sr, sg, sb, sa) {
 }
 
 /**
- * Build a Source Framing preview data URL from a Prompt-canvas **overlay** source.
+ * Build a Full Framing preview data URL from a Prompt-canvas **overlay** source.
  * Reuses dual-Save geometry/remap — not a second save path. Input must be ink-only
  * (transparent outside strokes), not a merged/composite raster. Output is source
  * image + remapped ink (same bake as `_full`).
@@ -437,7 +483,7 @@ export async function loadSourceUnderlayRgba(prompt) {
   try {
     return await decodeImageToRgba(path, width, height);
   } catch (err) {
-    console.warn("drawing-prompts | Source Framing underlay load failed", err);
+    console.warn("drawing-prompts | Full Framing underlay load failed", err);
     return null;
   }
 }

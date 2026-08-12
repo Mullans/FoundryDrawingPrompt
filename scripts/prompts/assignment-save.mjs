@@ -3,7 +3,7 @@
  *
  * Domain depth lives here so callers and tests share one seam (ADR-0001 / SCR-12).
  * Encode/bake helpers stay in dual-save; this module owns orchestration:
- * naming, uploads, optional Source Framing pair, gate stamp on the Assignment.
+ * naming, uploads, optional Full Framing pair, gate stamp on the Assignment.
  */
 
 import { MODULE_ID, SETTINGS } from "../constants.mjs";
@@ -20,6 +20,7 @@ import {
 import {
   bakeAndEncodePromptCanvasMerged,
   bakeAndEncodeSourceSpaceAssets,
+  computeDualSaveGeometry,
   decodeImageToRgba,
   hasSourceBackground,
   resolveSubmissionOverlaySize,
@@ -133,6 +134,14 @@ export async function saveAssignmentAssets({
   assignment.assets.folder = dir;
   assignment.assets.tileWidth = submissionTileWidth(submission, prompt);
   assignment.assets.tileHeight = submissionTileHeight(submission, prompt);
+  if ( writeSourceFull ) {
+    const geometry = computeDualSaveGeometry(prompt);
+    assignment.assets.fullTileWidth = Math.round(geometry.fullRect.width);
+    assignment.assets.fullTileHeight = Math.round(geometry.fullRect.height);
+  } else {
+    assignment.assets.fullTileWidth = null;
+    assignment.assets.fullTileHeight = null;
+  }
   assignment.pendingSubmission = null;
   // Single Save gate for both Framing Views — not per-file.
   assignment.savedSubmissionTs = assignment.submittedAt ?? Date.now();

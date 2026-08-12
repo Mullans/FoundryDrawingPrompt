@@ -94,7 +94,7 @@ export function registerSettings() {
       [FIT_MODE.FIT_CANVAS]: "DRAWING-PROMPTS.choices.fitMode.fitCanvas",
       [FIT_MODE.STRETCH]: "DRAWING-PROMPTS.choices.fitMode.stretch"
     },
-    default: FIT_MODE.FIT_WIDTH
+    default: FIT_MODE.FIT_CANVAS
   });
 
   game.settings.register(MODULE_ID, SETTINGS.EXPORT_FORMAT, {
@@ -197,4 +197,24 @@ export function registerSettings() {
     type: Boolean,
     default: true
   });
+
+  game.settings.register(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED, {
+    scope: "world",
+    config: false,
+    type: Boolean,
+    default: false
+  });
+}
+
+/**
+ * One-time migration: worlds that inherited the old Fit Width module default.
+ * @returns {Promise<void>}
+ */
+export async function migrateLegacySettings() {
+  if ( !game.user.isGM ) return;
+  if ( game.settings.get(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED) ) return;
+  if ( game.settings.get(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE) === FIT_MODE.FIT_WIDTH ) {
+    await game.settings.set(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_CANVAS);
+  }
+  await game.settings.set(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED, true);
 }

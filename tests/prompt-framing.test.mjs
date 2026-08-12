@@ -5,6 +5,7 @@ import { FIT_MODE } from "../scripts/constants.mjs";
 import {
   bakeDualRasters,
   computeFramingGeometry,
+  computeFullFramingRect,
   defaultPromptFraming,
   dualSaveFilenames,
   mapPromptToSource,
@@ -192,8 +193,25 @@ test("dualSaveFilenames puts _full and _source before the extension", () => {
   });
 });
 
-test("bakeDualRasters: prompt-facing is canvas-sized; _full remaps marker into source space", () => {
+test("computeFullFramingRect is natural source when framing lies inside", () => {
+  assert.deepEqual(computeFullFramingRect({
+    sourceWidth: 100,
+    sourceHeight: 80,
+    framing: { x: 10, y: 10, width: 40, height: 30 }
+  }), { x: 0, y: 0, width: 100, height: 80 });
+});
+
+test("computeFullFramingRect expands for pad outside the source", () => {
+  assert.deepEqual(computeFullFramingRect({
+    sourceWidth: 4,
+    sourceHeight: 4,
+    framing: { x: -1, y: -2, width: 6, height: 7 }
+  }), { x: -1, y: -2, width: 6, height: 7 });
+});
+
+test("bakeDualRasters: prompt-facing is canvas-sized; Full Framing remaps marker", () => {
   // Source 4×4, framing center 2×2 crop, stretch onto 4×4 prompt canvas → scale 2.
+  // Union with source stays 4×4 (crop inside source).
   const geometry = computeFramingGeometry({
     sourceWidth: 4,
     sourceHeight: 4,
@@ -202,9 +220,8 @@ test("bakeDualRasters: prompt-facing is canvas-sized; _full remaps marker into s
     canvasWidth: 4,
     canvasHeight: 4
   });
+  assert.deepEqual(geometry.fullRect, { x: 0, y: 0, width: 4, height: 4 });
 
-  // Overlay: unique marker at prompt (1, 1) → source (1.5, 1.5) after map.
-  // mapPromptToSource(1,1): local = (1-0)*(2/4) = 0.5; source = 1+0.5 = 1.5
   const overlay = blankRgba(4, 4);
   setPixel(overlay, 4, 1, 1, [255, 0, 0, 255]); // marker at prompt (1,1)
 
@@ -216,17 +233,16 @@ test("bakeDualRasters: prompt-facing is canvas-sized; _full remaps marker into s
   assert.equal(source.height, 4);
   assert.deepEqual(getPixel(promptCanvas, 4, 1, 1), [255, 0, 0, 255]);
 
-  // Continuous map (1,1) → (1.5, 1.5). Bake writes to nearest integer pixel.
   const expected = mapPromptToSource(geometry, 1, 1);
   assert.deepEqual(expected, { x: 1.5, y: 1.5 });
-  const sx = Math.round(expected.x);
-  const sy = Math.round(expected.y);
-  assert.deepEqual(getPixel(source, 4, sx, sy), [255, 0, 0, 255]);
-  // Marker must not remain at prompt coords on the source raster.
-  assert.notDeepEqual(getPixel(source, 4, 1, 1), [255, 0, 0, 255]);
+  assert.ok(
+    hasOpaqueColor(source, 4, [255, 0, 0, 255]),
+    "marker must land on at least one Full Framing pixel"
+  );
+  assert.notDeepEqual(getPixel(source, 4, 0, 0), [255, 0, 0, 255]);
 });
 
-test("bakeDualRasters pad-beyond-source: ink outside source AABB is dropped from _full", () => {
+test("bakeDualRasters pad-beyond-source: exterior ink is retained on Full Framing plate", () => {
   // Framing includes 1px pad; stretch onto 6×6 canvas; source 4×4 centered.
   const geometry = computeFramingGeometry({
     sourceWidth: 4,
@@ -237,23 +253,19 @@ test("bakeDualRasters pad-beyond-source: ink outside source AABB is dropped from
     canvasHeight: 6
   });
   assert.deepEqual(geometry.sourceOnCanvas, { x: 1, y: 1, width: 4, height: 4 });
+  assert.deepEqual(geometry.fullRect, { x: -1, y: -1, width: 6, height: 6 });
 
   const overlay = blankRgba(6, 6);
-  // Outside source: prompt (0,0) → source (-1,-1)
+  // Outside source: prompt (0,0) → source (-1,-1) → full (0,0)
   setPixel(overlay, 6, 0, 0, [0, 255, 0, 255]);
-  // Inside source: prompt (1,1) → source (0,0)
+  // Inside source: prompt (1,1) → source (0,0) → full (1,1)
   setPixel(overlay, 6, 1, 1, [0, 0, 255, 255]);
 
   const { source } = bakeDualRasters({ geometry, overlay });
-  assert.equal(source.width, 4);
-  assert.equal(source.height, 4);
-  assert.deepEqual(getPixel(source, 4, 0, 0), [0, 0, 255, 255]);
-  // Green outside-source marker never lands on the natural-size raster.
-  for ( let y = 0; y < 4; y++ ) {
-    for ( let x = 0; x < 4; x++ ) {
-      assert.notDeepEqual(getPixel(source, 4, x, y), [0, 255, 0, 255]);
-    }
-  }
+  assert.equal(source.width, 6);
+  assert.equal(source.height, 6);
+  assert.ok(hasOpaqueColor(source, 6, [0, 0, 255, 255]), "inside-source blue ink lands");
+  assert.ok(hasOpaqueColor(source, 6, [0, 255, 0, 255]), "pad green ink retained on Full Framing");
 });
 
 test("bakeDualRasters with sourceUnderlay: remapped ink sits on source; underlay remains where ink absent", () => {
@@ -280,22 +292,58 @@ test("bakeDualRasters with sourceUnderlay: remapped ink sits on source; underlay
 
   const { source } = bakeDualRasters({ geometry, overlay, sourceUnderlay });
 
-  const mapped = mapPromptToSource(geometry, 1, 1);
-  const sx = Math.round(mapped.x);
-  const sy = Math.round(mapped.y);
-  assert.deepEqual(getPixel(source, 4, sx, sy), [255, 0, 0, 255]);
+  assert.ok(hasOpaqueColor(source, 4, [255, 0, 0, 255]), "remapped ink present");
 
   // Ink-absent pixels keep the source underlay (not transparent).
+  let redCount = 0;
   for ( let y = 0; y < 4; y++ ) {
     for ( let x = 0; x < 4; x++ ) {
-      if ( x === sx && y === sy ) continue;
+      const pixel = getPixel(source, 4, x, y);
+      if ( pixel[0] === 255 && pixel[1] === 0 && pixel[2] === 0 && pixel[3] === 255 ) {
+        redCount += 1;
+        continue;
+      }
       assert.deepEqual(
-        getPixel(source, 4, x, y),
+        pixel,
         [10, x * 40 + y * 10, 20, 255],
         `underlay missing at (${x},${y})`
       );
     }
   }
+  assert.ok(redCount >= 1, "at least one red ink pixel");
+});
+
+test("bakeDualRasters oversampling: small solid overlay fills contiguous source block", () => {
+  // Source 8×8, full framing, stretch onto 2×2 prompt canvas → each overlay px covers 4×4 source.
+  const geometry = computeFramingGeometry({
+    sourceWidth: 8,
+    sourceHeight: 8,
+    framing: { x: 0, y: 0, width: 8, height: 8 },
+    fitMode: FIT_MODE.STRETCH,
+    canvasWidth: 2,
+    canvasHeight: 2
+  });
+
+  const overlay = blankRgba(2, 2);
+  // Solid 2×2 opaque block (full drawn surface).
+  for ( let y = 0; y < 2; y++ ) {
+    for ( let x = 0; x < 2; x++ ) {
+      setPixel(overlay, 2, x, y, [255, 0, 0, 255]);
+    }
+  }
+
+  const { source } = bakeDualRasters({ geometry, overlay });
+  assert.equal(source.width, 8);
+  assert.equal(source.height, 8);
+
+  // Contiguous full coverage — not four isolated dots.
+  let red = 0;
+  for ( let y = 0; y < 8; y++ ) {
+    for ( let x = 0; x < 8; x++ ) {
+      if ( getPixel(source, 8, x, y)[3] === 255 && getPixel(source, 8, x, y)[0] === 255 ) red += 1;
+    }
+  }
+  assert.equal(red, 64, "entire 8×8 source must receive ink for a full solid overlay");
 });
 
 test("bakeDualRasters with sourceUnderlay: semi-transparent ink blends over source", () => {
@@ -365,4 +413,25 @@ function getPixel(image, width, x, y) {
     image.data[offset + 2],
     image.data[offset + 3]
   ];
+}
+
+/**
+ * @param {{width: number, height: number, data: Uint8ClampedArray}} image
+ * @param {number} width
+ * @param {number[]} rgba
+ * @returns {boolean}
+ */
+function hasOpaqueColor(image, width, rgba) {
+  for ( let y = 0; y < image.height; y++ ) {
+    for ( let x = 0; x < width; x++ ) {
+      const pixel = getPixel(image, width, x, y);
+      if (
+        pixel[0] === rgba[0]
+        && pixel[1] === rgba[1]
+        && pixel[2] === rgba[2]
+        && pixel[3] === rgba[3]
+      ) return true;
+    }
+  }
+  return false;
 }

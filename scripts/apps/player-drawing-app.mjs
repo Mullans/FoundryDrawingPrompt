@@ -13,6 +13,7 @@ import {
   zoomView
 } from "../drawing/player-navigation.mjs";
 import { buildFullSubmission, buildSubmission } from "../drawing/export-service.mjs";
+import { restoreEngineFromSubmission } from "../drawing/submission-restore.mjs";
 import { loadBackgroundImage } from "../foundry/background-source-service.mjs";
 import { canStageUploads, stageSubmissionImages } from "../prompts/asset-service.mjs";
 import { updateStatus } from "../prompts/client-store.mjs";
@@ -72,6 +73,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     let app = this.#registry.get(assignmentId);
     if ( app ) {
       app.assignmentPayload = assignmentPayload;
+      app.#restorationKey = null;
       await app.render({ force: true });
       app.bringToFront();
       return app;
@@ -159,6 +161,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #navHandlers = null;
   #navResizeObserver = null;
   #spaceHeld = false;
+  /** @type {string|null} Restoration payload already applied for this open. */
+  #restorationKey = null;
   /** @type {{pointerId: number, lastX: number, lastY: number}|null} */
   #panDrag = null;
 
@@ -317,10 +321,12 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( this.#engineReadyPromise ) {
       await this.#engineReadyPromise;
       this.#engine?.attach(canvas);
+      await this.#applyRestoration(this.#engine);
       return;
     }
     if ( this.#engine ) {
       this.#engine.attach(canvas);
+      await this.#applyRestoration(this.#engine);
       return;
     }
     this.#engineReadyPromise = this.#createEngine(canvas).finally(() => {
@@ -378,6 +384,25 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     ];
     this.#engine = engine;
     engine.attach(canvas);
+    await this.#applyRestoration(engine);
+  }
+
+  /**
+   * Restore a submitted drawing when the GM reopens the assignment.
+   * @param {import("../drawing/drawing-engine.mjs").DrawingEngine} engine Drawing engine.
+   * @returns {Promise<void>}
+   */
+  async #applyRestoration(engine) {
+    const submission = this.assignmentPayload?.restorationSubmission;
+    if ( !submission ) return;
+    const key = restorationKey(submission);
+    if ( this.#restorationKey === key ) return;
+    try {
+      const restored = await restoreEngineFromSubmission(engine, submission, this.assignmentPayload.prompt);
+      if ( restored ) this.#restorationKey = key;
+    } catch (err) {
+      console.warn("drawing-prompts | failed to restore reopened submission", err);
+    }
   }
 
   /**
@@ -685,7 +710,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       maxEdge: INTERNAL.SNAPSHOT_MAX_EDGE,
       quality: INTERNAL.SNAPSHOT_QUALITY
     };
-    // Composite for Prompt-canvas live; overlay-only for Source Framing remap (matches dual Save).
+    // Composite for Prompt-canvas live; overlay-only for Full Framing remap (matches dual Save).
     const snapshot = {
       composite: this.#engine.getCompositeSnapshot(opts),
       overlay: this.#engine.getOverlaySnapshot(opts)
@@ -1005,4 +1030,16 @@ function normalizeHex(value) {
     return `#${text[1]}${text[1]}${text[2]}${text[2]}${text[3]}${text[3]}`.toLowerCase();
   }
   return null;
+}
+
+/**
+ * Dedupe key for a restoration payload.
+ * @param {object} submission Submission payload.
+ * @returns {string}
+ */
+function restorationKey(submission) {
+  if ( submission?.overlay?.dataUrl ) return `overlay:${submission.overlay.dataUrl.length}:${submission.receiptTs ?? 0}`;
+  if ( submission?.staged?.overlayPath ) return `staged:${submission.staged.overlayPath}:${submission.receiptTs ?? 0}`;
+  if ( submission?.opLog?.ops?.length ) return `oplog:${submission.opLog.ops.length}:${submission.opLog.pointer ?? 0}`;
+  return "empty";
 }

@@ -5,7 +5,8 @@ import { BG_SOURCE, FIT_MODE } from "../scripts/constants.mjs";
 import {
   assertBackgroundUnlocked,
   resolvePromptFraming,
-  serializeBackgroundForPlayer
+  serializeBackgroundForPlayer,
+  serializeFramedBackgroundForPreview
 } from "../scripts/prompts/framed-delivery.mjs";
 import { DrawingPrompt } from "../scripts/prompts/prompt-models.mjs";
 
@@ -121,4 +122,20 @@ test("serializeBackgroundForPlayer omits GM source metadata", () => {
   });
   assert.equal(JSON.stringify(serialized).includes("secret-full"), false);
   assert.equal(JSON.stringify(serialized).includes("2048"), false);
+});
+
+test("serializeFramedBackgroundForPreview returns blank preFramed payload without source", async () => {
+  const preview = await serializeFramedBackgroundForPreview({
+    canvasWidth: 640,
+    canvasHeight: 480,
+    background: { sourceType: BG_SOURCE.BLANK, path: null, fitMode: FIT_MODE.FIT_WIDTH }
+  });
+  assert.deepEqual(preview, {
+    sourceType: BG_SOURCE.BLANK,
+    path: null,
+    fitMode: FIT_MODE.STRETCH,
+    preFramed: true,
+    naturalWidth: null,
+    naturalHeight: null
+  });
 });

@@ -30,12 +30,12 @@ export const FIT_MODE = Object.freeze({
 });
 
 /**
- * GM review Framing View: Prompt canvas (player-facing) or Source Framing (full source space).
- * Client-session selection; does not re-arm the Save gate.
+ * GM review Framing View: Prompt canvas (player-facing) or Full Framing
+ * (union of source + Prompt Framing plate). Client-session selection; does not re-arm the Save gate.
  */
 export const FRAMING_VIEW = Object.freeze({
   PROMPT_CANVAS: "prompt-canvas",
-  SOURCE: "source"
+  FULL: "full"
 });
 
 /** Player-local Canvas chrome under the Framed background (editing aid only). */
@@ -57,7 +57,8 @@ export const INTERNAL = Object.freeze({
   MAX_SUBMISSION_BYTES: 4 * 1024 * 1024,
   MAX_OPLOG_BYTES: 512 * 1024,
   WIRE_QUALITY_STEPS: Object.freeze([0.8, 0.6, 0.45]),
-  WIRE_DOWNSCALE_STEP: 0.75
+  WIRE_DOWNSCALE_STEP: 0.75,
+  LEGACY_FIT_MODE_MIGRATED: "legacyFitModeMigrated"
 });
 
 export const SETTINGS = Object.freeze({

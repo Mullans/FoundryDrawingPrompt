@@ -164,8 +164,8 @@ test("saveAssignmentAssets writes _full and _source via the same path when sourc
   assert.ok(ports.uploads.some(u => u.name.includes("_source")));
   // One gate for Place on either Framing View paths
   assert.equal(isSaveGateOpen(assignment), true);
-  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.SOURCE), true);
-  assert.equal(resolveFramingViewAssetPath(assignment, FRAMING_VIEW.SOURCE), result.paths.full);
+  assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.FULL), true);
+  assert.equal(resolveFramingViewAssetPath(assignment, FRAMING_VIEW.FULL), result.paths.full);
 });
 
 test("saveAssignmentAssets rematerializes merged and uploads dual files on one path", async () => {
