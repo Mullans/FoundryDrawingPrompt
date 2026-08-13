@@ -31,7 +31,7 @@ import {
   normalizeFramingView,
   resolveFramingViewAssetPath
 } from "../prompts/dual-save.mjs";
-import { resolveAssignmentReview } from "../prompts/assignment-review.mjs";
+import { resolveAssignmentReview, resolveReviewContextSrc } from "../prompts/assignment-review.mjs";
 import { resolveReviewPlateAspect } from "../prompts/review-preview.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
@@ -220,6 +220,22 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    */
   #previewResolveSeq = 0;
   /**
+   * `#previewResolveSeq` as it stood when the in-flight render prepared its context.
+   * If it has moved by `_onRender`, a live resolve overlapped this render and `_replaceHTML`
+   * may have painted older template pixels over a newer live frame — re-assert the newest.
+   * @type {number|null}
+   */
+  #renderPreviewResolveSeq = null;
+  /**
+   * Src currently on the review plate (template render or live patch), and the assignment it
+   * belongs to. Feeds the `pendingRemap` fallback so a body render keeps the visible frame
+   * instead of collapsing to the "no snapshot" empty state.
+   * @type {string|null}
+   */
+  #lastPaintedPreviewSrc = null;
+  /** @type {string|null} */
+  #lastPaintedPreviewAssignmentId = null;
+  /**
    * Framing View last committed to the review plate (image + aspect together).
    * Toggle may move `this.framingView` earlier; layout must not use that until paint commits,
    * or ResizeObserver/#layoutReviewPlate stretches the prior bitmap (live Full Framing flash).
@@ -337,7 +353,15 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const hasSource = hasSourceBackground(this.activePrompt);
     this.framingView = normalizeFramingView(this.framingView, { hasSource });
     const framingView = this.framingView;
+    // Join the live-resolve protocol: this render resolves a preview too, but its pixels reach
+    // the DOM through Handlebars rather than a seq-checked `.then`. Stash the sequence so
+    // `_onRender` can tell whether a live resolve overlapped (and outdated) this render.
+    this.#renderPreviewResolveSeq = this.#previewResolveSeq;
     const selectedPreview = await this.#selectedPreviewContext(selectedAssignment, framingView);
+    const reviewContext = resolveReviewContextSrc({
+      review: selectedPreview,
+      lastPaintedSrc: this.#lastPaintedSrcForSelection()
+    });
     const hasActivePrompt = Boolean(this.activePrompt);
     const viewAssetPath = resolveFramingViewAssetPath(selectedAssignment, framingView);
     const savedAndGateOpen = isSaveGateOpen(selectedAssignment);
@@ -350,8 +374,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       timerControls: this.#timerControlsContext(),
       maxCanvasDim: INTERNAL.MAX_CANVAS_DIM,
       fitModes: this.#fitModeOptions(),
-      selectedSnapshot: selectedPreview.src,
-      selectedPreviewHeading: selectedPreview.heading,
+      selectedSnapshot: reviewContext.src,
+      selectedPreviewHeading: reviewContext.heading,
       selectedAssignmentId: this.selectedAssignmentId,
       canSend: !this.activePrompt,
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
@@ -393,7 +417,46 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     }
     this.#layoutReviewPlate();
     this.#ensureReviewPlateStage();
+    // `_replaceHTML` has committed, so the template src is what is on screen now.
+    this.#notePaintedPreviewSrc(context?.selectedSnapshot ?? null);
+    this.#reassertPreviewAfterRender();
     this.#refreshExpiryTicker();
+  }
+
+  /**
+   * Record the src currently showing on the review plate, scoped to its assignment so a
+   * selection change can never resurrect the previous assignment's frame.
+   * @param {string|null} src Painted preview src.
+   * @returns {void}
+   */
+  #notePaintedPreviewSrc(src) {
+    this.#lastPaintedPreviewSrc = src ?? null;
+    this.#lastPaintedPreviewAssignmentId = this.selectedAssignmentId;
+  }
+
+  /**
+   * Last painted src, but only when it belongs to the current selection.
+   * @returns {string|null}
+   */
+  #lastPaintedSrcForSelection() {
+    if ( this.#lastPaintedPreviewAssignmentId !== this.selectedAssignmentId ) return null;
+    return this.#lastPaintedPreviewSrc;
+  }
+
+  /**
+   * Re-assert the newest preview when a live resolve overlapped this render.
+   * A slow render's `_replaceHTML` can paint template pixels over a newer live frame; the
+   * template has no seq check of its own, so the overlap is only detectable here.
+   * `#refreshSelectedPreview` is seq- and `pendingRemap`-guarded, so re-entry is safe, and an
+   * unchanged overlay remaps out of cache.
+   * @returns {void}
+   */
+  #reassertPreviewAfterRender() {
+    const renderSeq = this.#renderPreviewResolveSeq;
+    this.#renderPreviewResolveSeq = null;
+    if ( renderSeq === null || renderSeq === this.#previewResolveSeq ) return;
+    if ( !this.activePrompt ) return;
+    void this.#refreshSelectedPreview();
   }
 
   /** @override */
@@ -1779,8 +1842,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {Promise<void>}
    */
   async #setPreviewFrame(src, { epoch = null, framingView = null } = {}) {
-    const frame = this.element?.querySelector(".is-review [data-dp-review-plate]")
-      ?? this.element?.querySelector(".is-review .dp-preview-frame");
+    let frame = this.#reviewPlateElement();
     if ( !frame ) return;
     if ( epoch != null && epoch !== this.#framingPreviewEpoch ) return;
     const commitView = framingView
@@ -1788,7 +1850,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( src ) {
       const ready = await decodePreviewImage(src);
       if ( epoch != null && epoch !== this.#framingPreviewEpoch ) return;
-      if ( !frame.isConnected ) return;
+      if ( !frame.isConnected ) {
+        // A render's `_replaceHTML` detached the plate we captured before the decode await.
+        // This src is still the newest frame — bailing here would silently discard it and
+        // leave the older template pixels up. Re-query, and only give up if the plate is gone.
+        frame = this.#reviewPlateElement();
+        if ( !frame?.isConnected ) return;
+      }
 
       let img = frame.querySelector("img");
       frame.querySelector(".dp-empty")?.remove();
@@ -1803,6 +1871,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       this.#committedReviewFramingView = commitView;
       if ( ready?.src ) img.src = ready.src;
       else img.src = src;
+      this.#notePaintedPreviewSrc(src);
       this.#layoutReviewPlate();
       return;
     }
@@ -1812,7 +1881,18 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     empty.textContent = game.i18n.localize("DRAWING-PROMPTS.manager.empty.noSnapshot");
     frame.append(empty);
     this.#committedReviewFramingView = commitView;
+    this.#notePaintedPreviewSrc(null);
     this.#layoutReviewPlate();
+  }
+
+  /**
+   * Current review plate element, or null when the manager is not in review mode.
+   * @returns {HTMLElement|null}
+   */
+  #reviewPlateElement() {
+    return this.element?.querySelector(".is-review [data-dp-review-plate]")
+      ?? this.element?.querySelector(".is-review .dp-preview-frame")
+      ?? null;
   }
 
   /**
