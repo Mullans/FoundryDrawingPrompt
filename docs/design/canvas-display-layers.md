@@ -53,6 +53,17 @@ Working model for how Prompt canvas geometry shows up in UI. Domain terms: `CONT
 - Source Framing: baked remapped preview / `_full` / source alone as appropriate.
 - Prefer simple responsive images; Plate border without double outlines against existing frame CSS.
 
+#### Paint arbitration (SCR-51)
+
+The review plate has two paint paths — the async one (a resolved preview painted onto the plate element) and the synchronous one (a template render binding `selectedSnapshot` and replacing the plate subtree). **Both are paint paths and both obey the same arbitration.** Treating the template render as exempt is what allowed a render to overwrite newer live pixels, and allowed a render mid-remap to blank the plate.
+
+| Rule | Detail |
+|------|--------|
+| Renders participate in ordering | A render that overlapped an async resolve must re-assert the newest frame afterwards, not assume it won. |
+| Element references expire | A plate element captured before an `await` is stale by construction if a render lands during it. Re-query after awaiting; do not treat a detached reference as "nothing to paint". |
+| Pending remap holds the last frame | While a Framing View is recomputing, keep the last painted image. Never fall back to the empty state when ink exists — see *Pending remap* in `CONTEXT.md`. |
+| Last-painted is per Assignment | The held frame is scoped to the selected Assignment. Showing a different Assignment's image is worse than showing the empty state. |
+
 ## Export / Save
 
 Borders and stage chrome never enter overlay, merged, source-space, or `_full` rasters. Dual Save and Framing Views remain as in ADR-0001.

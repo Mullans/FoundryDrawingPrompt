@@ -81,6 +81,10 @@ A Prompt hidden from the default list to reduce clutter; recoverable by restorin
 **Delete**:
 Permanently remove a Prompt and its associated data after explicit confirmation. Not recoverable.
 
+**Socket initiator**:
+The user a socket call actually came from, read from socketlib's `socketdata.userId` on the receiving client. The authoritative identity for every remote handler. Distinct from any user id carried *inside* a payload, which is untrusted wire data a sender can set freely — routing proves delivery, not origin. See [ADR-0005](docs/adr/0005-socket-trust-boundary.md).
+_Avoid_: Sender (alone), the payload's userId, caller
+
 ## Drawing surface
 
 **Canvas plate**:
@@ -102,6 +106,14 @@ _Avoid_: Picture frame, window border
 **Player navigation**:
 Ephemeral pan and zoom of the Canvas plate within the Display stage (open and navigation-reset fit the plate fully inside the stage; letterbox as needed). Does not change Prompt Framing, Fit mode, or what was delivered as Framed background. Drawing tools map only to plate pixels; stage exterior is navigation-only for pan/zoom gestures.
 _Avoid_: Prompt Framing (for temporary zoom)
+
+**Paint path**:
+Any route by which pixels reach a Canvas plate on screen. There are two: the asynchronous route (a resolved preview painted directly onto the plate element) and the synchronous route (a template render binding an image and replacing the plate subtree). Both are paint paths and both obey the same arbitration — a template render is not exempt from the ordering rules that govern async paints, and treating it as exempt is what let stale frames win.
+_Avoid_: Render (when meaning the async paint), refresh (alone)
+
+**Pending remap**:
+The state where a Framing View's image is being recomputed and no correct image is available *yet* — as opposed to there being no image at all. The plate must hold its last painted frame through a pending remap; falling back to the empty state reads to the GM as "the player erased everything."
+_Avoid_: Loading, no snapshot (when an image exists but is stale)
 
 ## Background
 
