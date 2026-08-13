@@ -8,20 +8,23 @@ import { emit } from "../socket.mjs";
 import { getAssignment as getClientAssignment } from "./client-store.mjs";
 import { prepareFramedBackgroundForSend, serializeBackgroundForPlayer } from "./framed-delivery.mjs";
 import { savePrompt } from "./persistence-service.mjs";
-import { assertGM } from "./socket-auth.mjs";
+import { assertGM, assertSenderOwnsAssignment } from "./socket-auth.mjs";
 import { requirePromptAssignment } from "./prompt-context.mjs";
 
 /**
- * Validate that this GM owns the prompt and the sender user matches the assignment.
+ * Validate that this GM owns the prompt and the socket sender owns the assignment.
+ * `initiatorId` leads the signature because it is the authoritative identity: it
+ * comes from `socketdata`, while `userId` is caller-supplied wire data.
+ * @param {string|null} initiatorId Socket initiator user id (from `socketdata`).
  * @param {string} assignmentId Assignment id.
- * @param {string} userId Player user id.
+ * @param {string} userId Player user id claimed by the payload.
  * @returns {{prompt: import("./prompt-models.mjs").DrawingPrompt, assignment: import("./prompt-models.mjs").DrawingAssignment}}
  */
-export function validateOwningGMSender(assignmentId, userId) {
+export function validateOwningGMSender(initiatorId, assignmentId, userId) {
   assertGM();
   const pair = requirePromptAssignment(assignmentId);
   if ( pair.prompt.gmUserId !== game.user.id ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notPromptOwner"));
-  if ( pair.assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
+  assertSenderOwnsAssignment(initiatorId, userId, pair.assignment.userId);
   return pair;
 }
 

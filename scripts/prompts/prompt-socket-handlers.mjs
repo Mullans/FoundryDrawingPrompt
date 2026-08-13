@@ -23,7 +23,7 @@ import {
   validateOwningGMSender,
   validatePlayerPayload
 } from "./prompt-delivery.mjs";
-import { assertPromptGmMatchesInitiator } from "./socket-auth.mjs";
+import { assertPromptGmMatchesInitiator, getSocketInitiatorId } from "./socket-auth.mjs";
 import { evaluateSubmissionTiming, normalizeTimerState } from "./timer-service.mjs";
 import { evaluateOpened, evaluateRejection, evaluateSnapshot, evaluateSubmission, validateSubmissionPayload } from "./transitions.mjs";
 import { receiveManagerSnapshot, refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
@@ -173,7 +173,14 @@ async function handleRequestSnapshot(assignmentId, options = {}) {
  * @returns {Promise<void>}
  */
 async function handleAssignmentOpened(assignmentId, userId) {
-  const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
+  let pair;
+  try {
+    pair = validateOwningGMSender(getSocketInitiatorId(this), assignmentId, userId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored assignment opened", err);
+    return;
+  }
+  const { prompt, assignment } = pair;
   const decision = evaluateOpened(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("opened", assignment, decision.reason);
   assignment.markOpened(Date.now());
@@ -192,7 +199,13 @@ async function handleAssignmentOpened(assignmentId, userId) {
  * @returns {Promise<void>}
  */
 async function handleDrawingSnapshot(assignmentId, userId, snapshotPayload) {
-  const { assignment } = validateOwningGMSender(assignmentId, userId);
+  let assignment;
+  try {
+    ({ assignment } = validateOwningGMSender(getSocketInitiatorId(this), assignmentId, userId));
+  } catch (err) {
+    console.debug("drawing-prompts | ignored drawing snapshot", err);
+    return;
+  }
   if ( !isValidSnapshotPayload(snapshotPayload) ) {
     console.debug(`${MODULE_ID} | ignored invalid snapshot payload shape for assignment ${assignmentId}`);
     return;
@@ -210,7 +223,14 @@ async function handleDrawingSnapshot(assignmentId, userId, snapshotPayload) {
  * @returns {Promise<void>}
  */
 async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
-  const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
+  let pair;
+  try {
+    pair = validateOwningGMSender(getSocketInitiatorId(this), assignmentId, userId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored drawing submission", err);
+    return;
+  }
+  const { prompt, assignment } = pair;
   const validation = validateSubmissionPayload(submissionPayload, submissionValidationContext(assignmentId));
   if ( !validation.ok ) {
     ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidSubmissionPayload"));
@@ -251,7 +271,14 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
  * @returns {Promise<void>}
  */
 async function handleDrawingRejected(assignmentId, userId, reason) {
-  const { prompt, assignment } = validateOwningGMSender(assignmentId, userId);
+  let pair;
+  try {
+    pair = validateOwningGMSender(getSocketInitiatorId(this), assignmentId, userId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored drawing rejection", err);
+    return;
+  }
+  const { prompt, assignment } = pair;
   const decision = evaluateRejection(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("rejected", assignment, decision.reason);
   assignment.markRejected(Date.now());
@@ -269,7 +296,13 @@ async function handleDrawingRejected(assignmentId, userId, reason) {
  * @returns {Promise<void>}
  */
 async function handlePlayerWindowClosed(assignmentId, userId) {
-  const { assignment } = validateOwningGMSender(assignmentId, userId);
+  let assignment;
+  try {
+    ({ assignment } = validateOwningGMSender(getSocketInitiatorId(this), assignmentId, userId));
+  } catch (err) {
+    console.debug("drawing-prompts | ignored player window close", err);
+    return;
+  }
   await setManagerWindowOpen(assignment.id, false);
   await refreshManager();
 }
