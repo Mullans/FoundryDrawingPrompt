@@ -117,6 +117,12 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
   if ( !layer || typeof layer._createPreview !== "function" ) {
     throw new Error("Canvas placement preview is unavailable.");
   }
+  // Capture the scene up front and commit against it. Callers record `sceneId` from the scene
+  // they resolved before starting, so reading `canvas.scene` at click time could file the
+  // placement against a different scene than the document landed on. The teardown hook below
+  // makes that unreachable today; capturing keeps it correct by construction rather than by
+  // an invariant maintained somewhere else.
+  const scene = canvas?.scene;
   // InteractionLayer#activate calls Hooks.callAll("activateCanvasLayer", this) synchronously,
   // so the abort hook below is registered *after* this line -- registering first would make the
   // placement abort itself the moment it started. The handler also ignores our own layer.
@@ -172,12 +178,15 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
       if ( preview?.destroyed ) return finish(null);
       event.preventDefault?.();
       event.stopPropagation?.();
+      // Belt and braces with the teardown hook: never create against a scene the caller did
+      // not resolve, even if a swap ever lands without firing canvasTearDown.
+      if ( !scene || canvas?.scene !== scene ) return finish(null);
       void (async () => {
         try {
           const documentName = layer.constructor.documentName;
           const data = preview.document.toObject();
           delete data._id;
-          const [created] = await canvas.scene.createEmbeddedDocuments(documentName, [data]);
+          const [created] = await scene.createEmbeddedDocuments(documentName, [data]);
           finish(created ?? null);
         } catch ( err ) {
           console.warn("drawing-prompts | canvas place preview failed", err);

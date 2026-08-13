@@ -348,3 +348,31 @@ test("placeWithLayerPreview settles null when the preview is destroyed under it 
     env.restore();
   }
 });
+
+test("placeWithLayerPreview commits against the scene captured at start (SCR-50)", async () => {
+  const env = installFoundryEnvironment();
+  try {
+    const pending = placeWithLayerPreview({ layerName: "tiles", createData: {} });
+    await flush();
+
+    // Scene swapped without canvasTearDown firing. The teardown hook makes this unreachable
+    // today, so this guards the invariant rather than a live path: callers record sceneId from
+    // the scene they resolved up front, and must never get a document on a different one.
+    const swappedCalls = [];
+    globalThis.canvas.scene = {
+      async createEmbeddedDocuments(documentName, data) {
+        swappedCalls.push({ documentName, data });
+        return [{ id: "wrong-scene-tile" }];
+      }
+    };
+
+    env.stage.emit("pointerdown", leftClick());
+
+    assert.equal(await pending, null, "must not commit against a scene the caller did not resolve");
+    assert.equal(swappedCalls.length, 0, "created against the swapped scene");
+    assert.equal(env.createCalls.length, 0, "created against the captured scene");
+    env.assertFullyUnregistered();
+  } finally {
+    env.restore();
+  }
+});
