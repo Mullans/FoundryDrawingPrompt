@@ -169,6 +169,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #recentColors = [];
   /** @type {string|null} */
   #lastRecordedOpId = null;
+  /** Skip persisting recent colors while replaying a restored op log (still adopt tip op ids). */
+  #suppressRecentColorRecord = false;
   #brushSize = 8;
   #brushOpacity = 1;
   #canvasChrome = CANVAS_CHROME.CHECKERBOARD;
@@ -419,11 +421,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( !submission ) return;
     const key = restorationKey(submission);
     if ( this.#restorationKey === key ) return;
+    this.#suppressRecentColorRecord = true;
     try {
       const restored = await restoreEngineFromSubmission(engine, submission, this.assignmentPayload.prompt);
       if ( restored ) this.#restorationKey = key;
     } catch (err) {
       console.warn("drawing-prompts | failed to restore reopened submission", err);
+    } finally {
+      this.#suppressRecentColorRecord = false;
     }
   }
 
@@ -934,6 +939,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     const op = log.ops.at(-1);
     if ( !op || op.id === this.#lastRecordedOpId ) return;
     this.#lastRecordedOpId = op.id;
+    // Restoration loadOpLog emits onChange; adopt the tip id but do not treat it as a new stroke.
+    if ( this.#suppressRecentColorRecord ) return;
     if ( (op.type === "stroke" || op.type === "fill") && op.color ) {
       this.#recordDrawnColor(op.color);
     }
