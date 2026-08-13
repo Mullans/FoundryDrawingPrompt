@@ -176,6 +176,27 @@ export async function resolveAssignmentReview({
 }
 
 /**
+ * Resolve what a *template* render should bind for the review plate.
+ *
+ * The two DOM-patching paths already honour `pendingRemap` by keeping the prior frame, but a
+ * full body render binds `src` straight into Handlebars — and a `null` src there falls through
+ * to the "no snapshot" empty state, replacing a good plate with a visible blank. Reachable on
+ * every Full Framing toggle (the overlay re-request is async, so a composite-only tick can land
+ * first and evict cached overlay ink) and whenever the wire budget drops the overlay.
+ *
+ * @param {object} [options] Inputs.
+ * @param {AssignmentReviewResult|null} [options.review] Resolved review result.
+ * @param {string|null} [options.lastPaintedSrc] Src currently on the plate, if any.
+ * @returns {{src: string|null, heading: string}}
+ */
+export function resolveReviewContextSrc({ review = null, lastPaintedSrc = null } = {}) {
+  const src = review?.src ?? null;
+  const heading = review?.heading ?? "";
+  if ( review?.pendingRemap ) return { src: lastPaintedSrc ?? src, heading };
+  return { src, heading };
+}
+
+/**
  * Full Framing: saved `_full` when Save gate open; else remapped overlay; else source path.
  * Bare source is deferred when a live Prompt-canvas composite exists but overlay ink has not
  * arrived yet — callers keep the prior frame instead of flashing underlay-only.

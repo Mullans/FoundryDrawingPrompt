@@ -7,6 +7,7 @@ import {
   pendingSubmissionOverlayPreviewSrc,
   pendingSubmissionPromptCanvasPreviewSrc,
   resolveAssignmentReview,
+  resolveReviewContextSrc,
   shouldDeferFullFramingSourceFallback,
   sourceFramingPreviewCacheKey
 } from "../scripts/prompts/assignment-review.mjs";
@@ -167,6 +168,73 @@ test("resolveAssignmentReview defers Full Framing when live composite exists wit
   });
   assert.equal(result.src, null);
   assert.equal(result.pendingRemap, true);
+});
+
+test("resolveReviewContextSrc keeps the painted frame while a remap is pending", () => {
+  assert.deepEqual(
+    resolveReviewContextSrc({
+      review: { src: null, heading: "Preview", pendingRemap: true },
+      lastPaintedSrc: "data:prior-frame"
+    }),
+    { src: "data:prior-frame", heading: "Preview" }
+  );
+});
+
+test("resolveReviewContextSrc falls back to the review src when nothing was painted yet", () => {
+  assert.deepEqual(
+    resolveReviewContextSrc({
+      review: { src: null, heading: "Preview", pendingRemap: true },
+      lastPaintedSrc: null
+    }),
+    { src: null, heading: "Preview" }
+  );
+});
+
+test("resolveReviewContextSrc never overrides a settled review src", () => {
+  // A settled null is a genuine empty state (no snapshot yet) and must stay empty --
+  // only pendingRemap earns the prior frame.
+  assert.deepEqual(
+    resolveReviewContextSrc({
+      review: { src: null, heading: "Preview", pendingRemap: false },
+      lastPaintedSrc: "data:prior-frame"
+    }),
+    { src: null, heading: "Preview" }
+  );
+  assert.deepEqual(
+    resolveReviewContextSrc({
+      review: { src: "data:fresh", heading: "Preview", pendingRemap: false },
+      lastPaintedSrc: "data:prior-frame"
+    }),
+    { src: "data:fresh", heading: "Preview" }
+  );
+});
+
+test("resolveReviewContextSrc tolerates a missing review", () => {
+  assert.deepEqual(resolveReviewContextSrc(), { src: null, heading: "" });
+  assert.deepEqual(resolveReviewContextSrc({ lastPaintedSrc: "data:prior" }), { src: null, heading: "" });
+});
+
+test("a Full Framing composite-only tick renders the prior frame, not the empty state", async () => {
+  // Regression: a body render during pendingRemap used to bind src=null, and the template's
+  // {{else}} replaced the review plate with "no snapshot" until overlay ink arrived.
+  const review = await resolveAssignmentReview({
+    assignment: { id: "a1", status: STATUS.OPENED, assets: {} },
+    prompt: {
+      id: "p1",
+      canvasWidth: 400,
+      canvasHeight: 300,
+      background: { path: "source.jpg", naturalWidth: 800, naturalHeight: 600 }
+    },
+    framingView: FRAMING_VIEW.FULL,
+    liveSnapshot: "data:live-composite",
+    liveOverlaySnapshot: null,
+    localize: key => key
+  });
+  assert.equal(review.src, null);
+  assert.equal(review.pendingRemap, true);
+
+  const context = resolveReviewContextSrc({ review, lastPaintedSrc: "data:remapped-full" });
+  assert.equal(context.src, "data:remapped-full");
 });
 
 test("shouldDeferFullFramingSourceFallback is true only with live composite and no overlay", () => {
