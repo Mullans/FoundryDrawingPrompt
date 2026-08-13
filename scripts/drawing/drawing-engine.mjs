@@ -281,6 +281,7 @@ export class DrawingEngine {
    * @returns {boolean}
    */
   undo() {
+    this.#discardLineDraft();
     if ( !this.canUndo ) return false;
     const pointer = this.#opLog.undo();
     if ( pointer === null ) return false;
@@ -294,6 +295,7 @@ export class DrawingEngine {
    * @returns {boolean}
    */
   redo() {
+    this.#discardLineDraft();
     const pointer = this.#opLog.redo();
     if ( pointer === null ) return false;
     this.#restoreToPointer(pointer);
@@ -306,6 +308,7 @@ export class DrawingEngine {
    * @returns {void}
    */
   clearLayer() {
+    this.#discardLineDraft();
     this.#drawCtx.clearRect(0, 0, this.width, this.height);
     this.#commitOperation({ id: operationId(), type: "clear", ts: Date.now() });
     this.#markDirty();
@@ -703,6 +706,19 @@ export class DrawingEngine {
       fill: pt => this.fill(pt),
       sampleColor: pt => this.sampleColor(pt)
     };
+  }
+
+  /**
+   * Cancel an in-progress line polyline (and its stroke preview) before history mutations.
+   * Prevents rubber-band pixels / stale strokeBase from surviving undo, redo, or clear.
+   * @returns {void}
+   */
+  #discardLineDraft() {
+    if ( this.#toolName === "line" && this.#tools.line.isDrafting() ) {
+      this.#tools.line.cancel(this.#toolContext());
+      return;
+    }
+    if ( this.#currentStroke ) this.cancelStrokePreview();
   }
 
   /**

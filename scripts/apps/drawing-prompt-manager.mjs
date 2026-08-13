@@ -215,6 +215,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /** Bumps on Framing View change so stale async remaps cannot paint intermediate frames. */
   #framingPreviewEpoch = 0;
   /**
+   * Bumps when starting an async selected-preview resolve (live Full Framing remap or refresh).
+   * Completions with an older sequence must not paint over a newer resolve.
+   */
+  #previewResolveSeq = 0;
+  /**
    * Framing View last committed to the review plate (image + aspect together).
    * Toggle may move `this.framingView` earlier; layout must not use that until paint commits,
    * or ResizeObserver/#layoutReviewPlate stretches the prior bitmap (live Full Framing flash).
@@ -280,14 +285,18 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
     const assignment = this.activePrompt?.getAssignment(assignmentId);
     if ( !assignment || !this.activePrompt ) return;
+    const resolveSeq = ++this.#previewResolveSeq;
+    const epoch = this.#framingPreviewEpoch;
     void this.#selectedPreviewContext(assignment, FRAMING_VIEW.FULL).then(preview => {
+      if ( resolveSeq !== this.#previewResolveSeq ) return;
       if ( this.selectedAssignmentId !== assignmentId ) return;
+      if ( epoch !== this.#framingPreviewEpoch ) return;
       if ( normalizeFramingView(this.framingView, {
         hasSource: hasSourceBackground(this.activePrompt)
       }) !== FRAMING_VIEW.FULL ) return;
       if ( preview.src ) {
         void this.#setPreviewFrame(preview.src, {
-          epoch: this.#framingPreviewEpoch,
+          epoch,
           framingView: FRAMING_VIEW.FULL
         });
       }
@@ -1706,8 +1715,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const assignment = this.#selectedAssignment();
     const assignmentId = this.selectedAssignmentId;
     const framingView = this.framingView;
+    const resolveSeq = ++this.#previewResolveSeq;
     const epoch = this.#framingPreviewEpoch;
     const preview = await this.#selectedPreviewContext(assignment, framingView);
+    if ( resolveSeq !== this.#previewResolveSeq ) return;
     if ( this.selectedAssignmentId !== assignmentId || this.framingView !== framingView ) return;
     if ( epoch !== this.#framingPreviewEpoch ) return;
     // Live Full Framing often resolves before overlay ink arrives. Keep the Prompt-canvas
