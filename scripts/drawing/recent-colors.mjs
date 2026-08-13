@@ -79,3 +79,32 @@ export function recentColorSlots(history, max = 3) {
 export function serializeRecentColors(history) {
   return JSON.stringify(parseRecentColors(history, 3));
 }
+
+/**
+ * Decide whether a newly-observed tip operation should enter recent-color history.
+ *
+ * The caller owns tip selection: pass the op at the tip of the op log, or `null`
+ * when there is no tip to consider (empty log, or the pointer sits behind the end
+ * because the user undid). This keeps the op-log's pointer contract out of the
+ * palette module.
+ *
+ * The load-bearing rule is that a *suppressed* tip still advances
+ * `nextLastRecordedOpId`. Restoration replays the stored op log and the engine
+ * emits onChange for it; if suppression skipped the id as well, the very next
+ * genuine stroke would look like a fresh tip against a stale id and the replayed
+ * color would be recorded after all -- the exact defect this guards (SCR-55).
+ *
+ * @param {object} params Parameters.
+ * @param {{id?: unknown, type?: string, color?: unknown}|null} [params.op] Tip operation, or null.
+ * @param {unknown} [params.lastRecordedOpId=null] Id of the last tip already observed.
+ * @param {boolean} [params.suppressed=false] True while replaying a restoration.
+ * @returns {{record: boolean, nextLastRecordedOpId: unknown}} Decision plus the id to retain.
+ */
+export function shouldRecordDrawnColor({ op = null, lastRecordedOpId = null, suppressed = false } = {}) {
+  if ( !op || op.id === lastRecordedOpId ) return { record: false, nextLastRecordedOpId: lastRecordedOpId };
+  const isDrawnOp = (op.type === "stroke") || (op.type === "fill");
+  return {
+    record: !suppressed && isDrawnOp && Boolean(op.color),
+    nextLastRecordedOpId: op.id
+  };
+}

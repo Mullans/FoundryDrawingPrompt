@@ -5,7 +5,8 @@ import {
   parseRecentColors,
   pushRecentColor,
   recentColorSlots,
-  serializeRecentColors
+  serializeRecentColors,
+  shouldRecordDrawnColor
 } from "../drawing/recent-colors.mjs";
 import {
   ZOOM_STEP,
@@ -923,7 +924,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #recordDrawnColor(hex) {
     const next = normalizeHex(hex);
     if ( !next ) return;
-    this.#recentColors = pushRecentColor(this.#recentColors, next, 3);
+    // Re-read before writing. #recentColors is a constructor-time snapshot, and a
+    // player can hold two assignment windows at once (#registry is keyed per
+    // assignment, and nothing closes the sibling). Pushing onto the stale snapshot
+    // made the shared client setting last-writer-wins, so each window persisted a
+    // divergent history and dropped the other's colors. The client-scope write is
+    // synchronous, so this re-read always observes the sibling's last write.
+    const stored = parseRecentColors(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS), 3);
+    this.#recentColors = pushRecentColor(stored, next, 3);
     void game.settings.set(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS, serializeRecentColors(this.#recentColors));
     if ( this.element ) this.#syncRecentColorSwatches(this.element);
   }
@@ -933,17 +941,23 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @returns {void}
    */
   #maybeRecordDrawnColor() {
+    // The manager's preview window shares this application class. It draws nothing
+    // a player owns, but it writes *this* client's LAST_BRUSH_COLORS -- so a GM
+    // previewing a submission pollutes the GM's own palette (not a player's).
+    if ( this.mode === "preview" ) return;
     const log = this.#engine?.getOpLog?.();
     if ( !log ) return;
-    if ( log.pointer !== log.ops.length ) return;
-    const op = log.ops.at(-1);
-    if ( !op || op.id === this.#lastRecordedOpId ) return;
-    this.#lastRecordedOpId = op.id;
-    // Restoration loadOpLog emits onChange; adopt the tip id but do not treat it as a new stroke.
-    if ( this.#suppressRecentColorRecord ) return;
-    if ( (op.type === "stroke" || op.type === "fill") && op.color ) {
-      this.#recordDrawnColor(op.color);
-    }
+    // Tip selection stays here: "is the pointer at the end" is undo/redo state
+    // owned by the op log, not a palette concern. A pointer behind the end means
+    // there is no tip to consider, which the helper reads as a null op.
+    const op = log.pointer === log.ops.length ? log.ops.at(-1) : null;
+    const { record, nextLastRecordedOpId } = shouldRecordDrawnColor({
+      op,
+      lastRecordedOpId: this.#lastRecordedOpId,
+      suppressed: this.#suppressRecentColorRecord
+    });
+    this.#lastRecordedOpId = nextLastRecordedOpId;
+    if ( record ) this.#recordDrawnColor(op.color);
   }
 
   /**
