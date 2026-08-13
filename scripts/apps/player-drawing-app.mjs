@@ -148,7 +148,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.mode = mode;
     this.#background = assignmentPayload.prompt.background ?? {};
     this.#color = initialBrushColor();
-    this.#recentColors = initialRecentColors(this.#color);
+    this.#recentColors = initialRecentColors();
     this.#canvasChrome = initialCanvasChrome();
   }
 
@@ -1185,16 +1185,11 @@ function initialBrushColor() {
 }
 
 /**
- * Resolve recent brush colors for this client.
- * @param {string} current Current brush color.
+ * Resolve recent brush colors for this client (drawn colors only; do not seed from current brush).
  * @returns {string[]}
  */
-function initialRecentColors(current) {
-  return pushRecentColor(
-    parseRecentColors(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS), 3),
-    current,
-    3
-  );
+function initialRecentColors() {
+  return parseRecentColors(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS), 3);
 }
 
 /**
