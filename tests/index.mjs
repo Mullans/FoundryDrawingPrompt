@@ -1,53 +1,41 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-const TEST_FILES = [
-  "tests/application-lifecycle.test.mjs",
-  "tests/assignment-review.test.mjs",
-  "tests/assignment-save.test.mjs",
-  "tests/background-layout.test.mjs",
-  "tests/background-source-service.test.mjs",
-  "tests/canvas-chrome.test.mjs",
-  "tests/canvas-place-preview.test.mjs",
-  "tests/client-store.test.mjs",
-  "tests/drawing-engine.test.mjs",
-  "tests/fill-tool.test.mjs",
-  "tests/operation-log.test.mjs",
-  "tests/path-provider.test.mjs",
-  "tests/pending-submission.test.mjs",
-  "tests/phase-b-assets.test.mjs",
-  "tests/phase-d-helpers.test.mjs",
-  "tests/persistence-service.test.mjs",
-  "tests/plate-layout.test.mjs",
-  "tests/player-navigation.test.mjs",
-  "tests/framed-background.test.mjs",
-  "tests/framed-delivery.test.mjs",
-  "tests/draft-framing-editor.test.mjs",
-  "tests/dual-save.test.mjs",
-  "tests/e2e-layout.test.mjs",
-  "tests/line-tool.test.mjs",
-  "tests/manager-canvas-yield.test.mjs",
-  "tests/prompt-framing.test.mjs",
-  "tests/prompt-service.test.mjs",
-  "tests/prompt-models.test.mjs",
-  "tests/recent-colors.test.mjs",
-  "tests/review-preview.test.mjs",
-  "tests/transitions.test.mjs",
-  "tests/wire-size.test.mjs",
-  "tests/wire-validation.test.mjs",
-  "tests/socket-auth.test.mjs",
-  "tests/timer-service.test.mjs",
-  "tests/timer-update-queue.test.mjs",
-  "tests/timer-chip.test.mjs",
-  "tests/token-placement.test.mjs",
-  "tests/token-transform.test.mjs"
-];
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Discover every test file in this directory.
+ * Derived rather than hand-listed: a hardcoded list silently skips any file
+ * someone forgets to register, and the suite stays green while it does (SCR-39).
+ * @returns {string[]} Absolute paths, sorted for stable ordering.
+ */
+function discoverTestFiles() {
+  return readdirSync(TEST_DIR)
+    .filter(name => name.endsWith(".test.mjs"))
+    .sort()
+    .map(name => join(TEST_DIR, name));
+}
 
 test("repository test suite", () => {
-  const result = spawnSync(process.execPath, ["--test", ...TEST_FILES], {
+  const testFiles = discoverTestFiles();
+  assert.ok(testFiles.length > 0, `no *.test.mjs files discovered in ${TEST_DIR}`);
+
+  // Strip NODE_TEST_CONTEXT before spawning. When this file is itself run by
+  // `node --test`, the child inherits that variable, and the nested runner then
+  // reports success no matter what the inner tests do -- the suite silently
+  // gates nothing. Verified: with it inherited, a deliberately failing test file
+  // still exits 0.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+
+  const result = spawnSync(process.execPath, ["--test", ...testFiles], {
     cwd: process.cwd(),
-    encoding: "utf8"
+    encoding: "utf8",
+    env
   });
 
   assert.equal(result.status, 0, result.stdout + result.stderr);
