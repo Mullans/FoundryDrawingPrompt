@@ -67,6 +67,7 @@ async function main() {
     }, "assignment submitted", smokeData());
 
     await saveSubmittedDrawing(gm);
+    await assertAbandonedPlacementIsSafe(gm);
     await placeSavedTile(gm);
     await assertState(gm, () => {
       const assignment = playerAssignment();
@@ -223,6 +224,79 @@ async function saveSubmittedDrawing(page) {
   await dialog.locator("input[name='name']").fill(DRAWING_NAME);
   await dialog.locator("button[type='submit'], [data-action='ok']").first().click();
   await manager.locator(".dp-saved-indicator").waitFor({ state: "visible", timeout: 15000 });
+}
+
+/**
+ * SCR-50: an abandoned placement must settle, restore the manager, and never commit.
+ * Runs before the real placement so the happy path still exercises a clean start.
+ */
+async function assertAbandonedPlacementIsSafe(page) {
+  // Start from the tiles layer: a previous failure can leave another layer active, and that
+  // changes whether the placement registers at all.
+  await page.evaluate(() => { canvas.tiles.activate(); });
+  const tilesBefore = await page.evaluate(() => canvas.scene.tiles.size);
+  const idleListeners = await page.evaluate(() => canvas.stage?.listenerCount?.("pointerdown") ?? null);
+
+  await page.locator(".drawing-prompts-manager button[data-action='openPlaceDialog']").click();
+  const placeDialog = page.locator("#drawing-prompts-place-dialog, .drawing-prompts-place-dialog").last();
+  await placeDialog.waitFor({ state: "visible", timeout: 10000 });
+  await placeDialog.locator("input[name='mode'][value='tile']").check();
+  await placeDialog.locator("button[data-action='place']").click();
+  await placeDialog.waitFor({ state: "hidden", timeout: 15000 });
+
+  const managerHidden = () => page.evaluate(() => {
+    const el = document.querySelector(".drawing-prompts-manager");
+    return Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
+  });
+  await page.waitForFunction(() => {
+    const el = document.querySelector(".drawing-prompts-manager");
+    return Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
+  }, null, { timeout: 10000 });
+
+  // Abandon by switching canvas layer -- PlaceablesLayer#_deactivate destroys the preview.
+  // NOTE: never return the layer from evaluate(); serializing that circular PIXI object
+  // degrades the call and makes a genuine failure look like a pass.
+  const listeners = await page.evaluate(() => {
+    const count = () => canvas.stage?.listenerCount?.("pointerdown") ?? null;
+    const armed = count();
+    canvas.tokens.activate();
+    return { armed, after: count(), previewChildren: canvas.tiles?.preview?.children?.length ?? null };
+  });
+
+  // Assert the precondition separately, or "the placement never started" masquerades as
+  // "the listener leaked" -- they fail identically on counts alone.
+  assert.ok(
+    listeners.armed > idleListeners,
+    `placement never registered its listener (idle ${idleListeners}, armed ${listeners.armed}); the abandon check proves nothing`
+  );
+
+  // The preview is destroyed either way; what the fix changes is whether our listener goes
+  // with it. A surviving listener is the mechanism behind the stray-document commit.
+  assert.equal(listeners.previewChildren, 0, "layer switch did not clear the tile preview");
+  assert.ok(
+    listeners.after < listeners.armed,
+    `placement listener survived the layer switch (pointerdown ${listeners.armed} -> ${listeners.after})`
+  );
+
+  // The manager must come back. Pre-fix it stayed display:none until a page reload.
+  await page.waitForFunction(() => {
+    const el = document.querySelector(".drawing-prompts-manager");
+    return Boolean(el) && !el.classList.contains("dp-canvas-yield-hidden") && el.style.display !== "none";
+  }, null, { timeout: 10000 });
+  assert.equal(await managerHidden(), false, "manager still hidden after an abandoned placement");
+
+  // The zombie commit: pre-fix, this click still created a Tile the GM never asked for.
+  const board = page.locator("canvas#board").first();
+  const box = await board.boundingBox();
+  assert.ok(box, "Foundry #board has a bounding box");
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 40 });
+  await page.waitForTimeout(1000);
+
+  const tilesAfter = await page.evaluate(() => canvas.scene.tiles.size);
+  assert.equal(tilesAfter, tilesBefore, "a click after an abandoned placement created a document");
+
+  // Leave the tiles layer active so the real placement starts from the same state as before.
+  await page.evaluate(() => canvas.tiles.activate());
 }
 
 async function placeSavedTile(page) {
