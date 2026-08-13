@@ -104,16 +104,22 @@ export function restoreApplicationAfterCanvasYield(app, state = {}) {
 /**
  * Place a Tile or Token via Foundry's layer preview under the cursor.
  * Left-click commits; Escape cancels and resolves null (caller restores UI).
+ * The returned promise must always settle: the caller restores its hidden window in a
+ * `finally` gated on it, and stale listeners would otherwise commit a placement the GM
+ * never asked for. Scene teardown and switching to another canvas layer both abort.
  * @param {object} options Options.
  * @param {"tiles"|"tokens"} options.layerName Canvas layer key.
  * @param {object} options.createData Embedded document create data.
- * @returns {Promise<object|null>} Created document, or null if canceled.
+ * @returns {Promise<object|null>} Created document, or null if canceled or aborted.
  */
 export async function placeWithLayerPreview({ layerName, createData } = {}) {
   const layer = canvas?.[layerName];
   if ( !layer || typeof layer._createPreview !== "function" ) {
     throw new Error("Canvas placement preview is unavailable.");
   }
+  // InteractionLayer#activate calls Hooks.callAll("activateCanvasLayer", this) synchronously,
+  // so the abort hook below is registered *after* this line -- registering first would make the
+  // placement abort itself the moment it started. The handler also ignores our own layer.
   layer.activate();
   const preview = await layer._createPreview(foundry.utils.deepClone(createData), { renderSheet: false });
   if ( !preview?.document ) return null;
@@ -127,6 +133,8 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
       canvas.stage?.off("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("keydown", onKeyDown, true);
+      Hooks.off("canvasTearDown", onCanvasTearDown);
+      Hooks.off("activateCanvasLayer", onActivateCanvasLayer);
       try {
         layer.clearPreviewContainer?.();
       } catch ( _err ) {
@@ -136,6 +144,9 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
     };
 
     const syncPreviewToCursor = () => {
+      // PlaceablesLayer#_deactivate destroys the preview out from under us; refreshing a
+      // destroyed PIXI object throws, and leaving the promise pending strands the caller.
+      if ( preview?.destroyed ) return finish(null);
       const pos = canvas.mousePosition;
       if ( !pos ) return;
       const size = previewPixelSize(preview, createData);
@@ -157,6 +168,8 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
     };
     const onPointerDown = event => {
       if ( event.button !== 0 ) return;
+      // Never commit against a preview the canvas already tore down.
+      if ( preview?.destroyed ) return finish(null);
       event.preventDefault?.();
       event.stopPropagation?.();
       void (async () => {
@@ -173,11 +186,23 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
       })();
     };
 
+    // Scene change / navigating away: the preview and its layer go with the canvas, and the
+    // captured scene is no longer the one a click would create against.
+    const onCanvasTearDown = () => finish(null);
+    // GM picked another scene control: PlaceablesLayer#_deactivate has cleared the preview
+    // container. Ignore the hook for our own layer (re-activation is not an abort).
+    const onActivateCanvasLayer = activated => {
+      if ( activated === layer ) return;
+      finish(null);
+    };
+
     canvas.stage.on("pointermove", onMove);
     canvas.stage.on("pointerdown", onPointerDown);
     // Capture on both window and document so Foundry's dismiss handler cannot eat Escape first.
     window.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("keydown", onKeyDown, true);
+    Hooks.once("canvasTearDown", onCanvasTearDown);
+    Hooks.on("activateCanvasLayer", onActivateCanvasLayer);
     syncPreviewToCursor();
   });
 }
