@@ -36,6 +36,22 @@ async function main() {
   const gm = await browser.newPage();
   const player = await browser.newPage();
 
+  // AGENTS.md requires the GM and player consoles to be clean; capture them rather than
+  // leaving that step to a human who is not watching a headless run.
+  // Foundry warns below 1366x768; the headless viewport is 1280x720. Environment artifact,
+  // not a module error. Keep this list minimal -- anything else is a real failure.
+  const IGNORED_CONSOLE = [/requires a screen resolution of/i];
+  const consoleErrors = [];
+  for ( const [label, page] of [["gm", gm], ["player", player]] ) {
+    page.on("console", message => {
+      if ( message.type() !== "error" ) return;
+      const text = message.text();
+      if ( IGNORED_CONSOLE.some(pattern => pattern.test(text)) ) return;
+      consoleErrors.push(`[${label}] ${text}`);
+    });
+    page.on("pageerror", error => consoleErrors.push(`[${label}] uncaught: ${error.message}`));
+  }
+
   try {
     // Clean BEFORE the player connects: connecting triggers redelivery of any
     // stale active prompt, which would open a second player window and break
@@ -83,6 +99,11 @@ async function main() {
       assert.equal(manager?.activePrompt, null);
       assert.equal(manager?.draft?.promptText, data.promptText);
     }, "manager returned to setup with retained draft", smokeData());
+
+    if ( consoleErrors.length ) {
+      const shown = consoleErrors.slice(0, 20).join("\n  ");
+      throw new Error(`${consoleErrors.length} browser console error(s):\n  ${shown}`);
+    }
   } finally {
     await browser.close();
   }
