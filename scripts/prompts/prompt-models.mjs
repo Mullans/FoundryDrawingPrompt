@@ -1,4 +1,6 @@
 import { BG_SOURCE, FIT_MODE, STATUS } from "../constants.mjs";
+import { normalizeStoredFraming } from "../drawing/prompt-framing.mjs";
+import { assertBackgroundUnlocked } from "./framing-delivery.mjs";
 import { normalizeTimerState } from "./timer-service.mjs";
 
 const TERMINAL_STATUSES = new Set([STATUS.SUBMITTED, STATUS.REJECTED, STATUS.CANCELLED]);
@@ -28,11 +30,15 @@ export class DrawingAssignment {
       name: data.assets?.name ?? null,
       overlayPath: data.assets?.overlayPath ?? null,
       mergedPath: data.assets?.mergedPath ?? null,
+      fullPath: data.assets?.fullPath ?? null,
+      sourceOverlayPath: data.assets?.sourceOverlayPath ?? null,
       oplogPath: data.assets?.oplogPath ?? null,
       thumbPath: data.assets?.thumbPath ?? null,
       folder: data.assets?.folder ?? null,
       tileWidth: data.assets?.tileWidth ?? null,
-      tileHeight: data.assets?.tileHeight ?? null
+      tileHeight: data.assets?.tileHeight ?? null,
+      fullTileWidth: data.assets?.fullTileWidth ?? null,
+      fullTileHeight: data.assets?.fullTileHeight ?? null
     };
     // Legacy saved assignments predate savedSubmissionTs; infer it from their persisted image.
     if ( this.status === STATUS.SUBMITTED && this.primaryImagePath && this.savedSubmissionTs == null ) {
@@ -229,14 +235,17 @@ export class DrawingPrompt {
     this.promptText = data.promptText ?? "";
     this.drawingName = data.drawingName ?? "";
     this.assetFolderName = data.assetFolderName ?? null;
-    this.canvasWidth = Number(data.canvasWidth ?? 1024);
-    this.canvasHeight = Number(data.canvasHeight ?? 768);
+    this.canvasWidth = Number(data.canvasWidth ?? 512);
+    this.canvasHeight = Number(data.canvasHeight ?? 512);
+    this.canvasHeight = Number(data.canvasHeight ?? 512);
     this.background = {
       sourceType: data.background?.sourceType ?? BG_SOURCE.BLANK,
       path: data.background?.path ?? null,
-      fitMode: data.background?.fitMode ?? FIT_MODE.FIT_WIDTH,
+      fitMode: data.background?.fitMode ?? FIT_MODE.FIT_CANVAS,
       naturalWidth: data.background?.naturalWidth ?? null,
-      naturalHeight: data.background?.naturalHeight ?? null
+      naturalHeight: data.background?.naturalHeight ?? null,
+      framing: normalizeStoredFraming(data.background?.framing),
+      framedPath: data.background?.framedPath ?? null
     };
     this.timerSeconds = data.timerSeconds ?? null;
     this.createdAt = data.createdAt ?? Date.now();
@@ -332,6 +341,24 @@ export class DrawingPrompt {
     this.timerStatus = timer.timerStatus;
     this.deadlineAt = timer.deadlineAt;
     this.remainingMs = timer.remainingMs;
+  }
+
+  /**
+   * Whether Prompt Framing and Fit mode are locked after first send.
+   * @returns {boolean}
+   */
+  get isBackgroundLocked() {
+    return this.sentAt != null;
+  }
+
+  /**
+   * Apply background changes, rejecting locked Prompt Framing and Fit mode edits.
+   * @param {object} changes Partial background update.
+   * @returns {void}
+   */
+  applyBackgroundUpdate(changes = {}) {
+    assertBackgroundUnlocked(changes, this.background, this);
+    Object.assign(this.background, changes);
   }
 
   /**

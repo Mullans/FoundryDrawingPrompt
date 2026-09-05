@@ -34,3 +34,15 @@ If the concept you need isn't in the glossary yet, that's a signal — either yo
 If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
 
 > _Contradicts ADR-0007 (event-sourced orders) — but worth reopening because…_
+
+## Grilled decisions become written spec
+
+When a grill (or any explicit design conversation) **settles** a product/UI/architecture choice, record it in the same session—do not leave it only in chat or Linear comments:
+
+| Kind of decision | Where it goes |
+|------------------|---------------|
+| Domain term / ubiquitous language | `CONTEXT.md` (glossary only) |
+| Hard-to-reverse trade-off, surprising shape, or rejected alternative | New or updated `docs/adr/NNNN-*.md` |
+| Layout / interaction product rules that implementers must follow | `docs/design/*.md` plus an ADR when the three ADR tests apply |
+
+Later grills that intentionally replace a decision must update or supersede the written record. Tickets may point at these docs; they are not a substitute for them.

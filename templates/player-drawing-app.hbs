@@ -29,6 +29,24 @@
     <label class="dp-color-control">
       <span>{{localize "DRAWING-PROMPTS.player.fields.color"}}</span>
       <input type="color" class="dp-color-input" value="{{color}}">
+      <div class="dp-recent-colors" role="group" aria-label="{{localize "DRAWING-PROMPTS.player.fields.recentColors"}}">
+        {{#each recentColors}}
+        {{#if this}}
+        <button type="button" data-action="setRecentColor" data-color="{{this}}" class="dp-recent-color-swatch" style="--dp-recent-color: {{this}};" data-tooltip aria-label="{{this}}">
+          <span class="dp-recent-color-swatch-face" inert></span>
+        </button>
+        {{else}}
+        <button type="button" class="dp-recent-color-swatch is-empty" disabled aria-disabled="true" aria-label="{{localize "DRAWING-PROMPTS.player.fields.recentColorEmpty"}}">
+          <span class="dp-recent-color-swatch-face" inert></span>
+        </button>
+        {{/if}}
+        {{/each}}
+        {{#if playerColor}}
+        <button type="button" data-action="setRecentColor" data-color="{{playerColor}}" class="dp-recent-color-swatch is-player-color" style="--dp-recent-color: {{playerColor}};" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.fields.playerColor"}}">
+          <span class="dp-recent-color-swatch-face" inert></span>
+        </button>
+        {{/if}}
+      </div>
     </label>
 
     <label class="dp-size-control">
@@ -42,6 +60,18 @@
       <input type="range" class="dp-opacity-input" min="0.05" max="1" step="0.05" value="{{brushOpacity}}">
       <output class="dp-opacity-value">{{brushOpacityPercent}}</output>
     </label>
+
+    <div class="dp-background-control" role="group" aria-label="{{localize "DRAWING-PROMPTS.player.fields.canvasChrome"}}">
+      <span>{{localize "DRAWING-PROMPTS.player.fields.canvasChrome"}}</span>
+      <div class="dp-background-swatches">
+        {{#each canvasChromeOptions}}
+        <button type="button" data-action="setCanvasChrome" data-chrome="{{value}}" class="dp-background-swatch {{#if selected}}is-active{{/if}}" aria-pressed="{{selected}}" data-tooltip aria-label="{{localize label}}">
+          <span class="dp-background-swatch-face dp-background-swatch-{{value}}" aria-hidden="true"></span>
+          <span class="sr-only">{{localize label}}</span>
+        </button>
+        {{/each}}
+      </div>
+    </div>
 
     <div class="dp-tool-group">
       <button type="button" data-action="clearLayer" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.actions.clear"}}">
@@ -57,17 +87,34 @@
         <span>{{localize "DRAWING-PROMPTS.player.actions.redo"}}</span>
       </button>
     </div>
+
+    <div class="dp-tool-group" role="group" aria-label="{{localize "DRAWING-PROMPTS.player.nav.label"}}">
+      <button type="button" data-action="zoomOut" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.nav.zoomOut"}}">
+        <i class="fa-solid fa-magnifying-glass-minus" inert></i>
+        <span class="sr-only">{{localize "DRAWING-PROMPTS.player.nav.zoomOut"}}</span>
+      </button>
+      <button type="button" data-action="zoomIn" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.nav.zoomIn"}}">
+        <i class="fa-solid fa-magnifying-glass-plus" inert></i>
+        <span class="sr-only">{{localize "DRAWING-PROMPTS.player.nav.zoomIn"}}</span>
+      </button>
+      <button type="button" data-action="resetView" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.nav.reset"}}">
+        <i class="fa-solid fa-expand" inert></i>
+        <span class="sr-only">{{localize "DRAWING-PROMPTS.player.nav.reset"}}</span>
+      </button>
+    </div>
   </div>
 
   <section class="dp-canvas-wrap">
-    <div class="dp-canvas-box">
+    <div class="dp-canvas-box {{canvasChromeClass}}">
       {{#if backgroundError}}
       <p class="dp-canvas-error">{{backgroundError}}</p>
       {{else}}
-      {{#if backgroundLoading}}
-      <p class="dp-canvas-note">{{localize "DRAWING-PROMPTS.player.canvas.loading"}}</p>
-      {{/if}}
-      <canvas class="dp-display-canvas tool-{{activeTool}}" width="{{prompt.canvasWidth}}" height="{{prompt.canvasHeight}}" style="{{{canvasStyle}}}"></canvas>
+      <div class="dp-display-stage">
+        {{#if backgroundLoading}}
+        <p class="dp-canvas-note">{{localize "DRAWING-PROMPTS.player.canvas.loading"}}</p>
+        {{/if}}
+        <canvas class="dp-display-canvas dp-canvas-plate tool-{{activeTool}}" width="{{prompt.canvasWidth}}" height="{{prompt.canvasHeight}}"></canvas>
+      </div>
       {{/if}}
     </div>
   </section>

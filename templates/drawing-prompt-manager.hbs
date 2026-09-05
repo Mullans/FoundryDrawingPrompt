@@ -12,66 +12,81 @@
     </label>
     {{/if}}
     <div class="dp-summary-bar" aria-label="{{localize 'DRAWING-PROMPTS.manager.summary.label'}}">
-      {{#if summary.promptTruncated}}
-      <details class="dp-summary-prompt">
-        <summary data-tooltip="{{summary.promptText}}">
-          <span class="dp-summary-prompt-text">"{{summary.promptPreview}}"</span>
-          <span class="dp-summary-toggle" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.expandTooltip'}}">
-            <i class="fa-solid fa-chevron-down" inert></i>
-          </span>
-        </summary>
-        <p>"{{summary.promptText}}"</p>
-      </details>
-      {{else}}
-      <span class="dp-summary-prompt-text" data-tooltip="{{summary.promptText}}">"{{summary.promptPreview}}"</span>
-      {{/if}}
-
-      <span class="dp-summary-separator" aria-hidden="true"></span>
-      <span class="dp-summary-name" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.drawingName'}}">{{summary.drawingName}}</span>
-      <span class="dp-summary-separator" aria-hidden="true"></span>
-      <span class="dp-summary-dimensions" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.dimensions'}}">{{summary.canvasWidth}}&times;{{summary.canvasHeight}}</span>
-
-      {{#if summary.hasTimer}}
-      <span class="dp-summary-separator" aria-hidden="true"></span>
-      <span class="dp-summary-timer {{#if summary.timerOvertime}}is-overtime{{/if}} {{#if summary.timerPaused}}is-paused{{/if}}" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.timer'}}">
-        <i class="fa-regular fa-clock" inert></i>
-        <span>{{summary.timerDuration}}</span>
-        {{#if summary.timerCountdownText}}
-        <span class="dp-summary-countdown {{#if summary.timerOvertime}}is-overtime{{/if}}" data-dp-timer-countdown>{{summary.timerCountdownText}}</span>
+      <div class="dp-summary-identity">
+        {{#if summary.promptTruncated}}
+        <details class="dp-summary-prompt">
+          <summary data-tooltip="{{summary.promptText}}">
+            <span class="dp-summary-prompt-text">"{{summary.promptPreview}}"</span>
+            <span class="dp-summary-toggle" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.expandTooltip'}}">
+              <i class="fa-solid fa-chevron-down" inert></i>
+            </span>
+          </summary>
+          <p>"{{summary.promptText}}"</p>
+        </details>
+        {{else}}
+        <span class="dp-summary-prompt-text" data-tooltip="{{summary.promptText}}">"{{summary.promptPreview}}"</span>
         {{/if}}
-      </span>
-      {{/if}}
 
-      {{#if summary.hasBackground}}
-      <details class="dp-summary-background">
-        <summary class="dp-summary-thumb" data-tooltip="{{summary.backgroundLabel}}">
-          <img src="{{summary.backgroundPath}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.backgroundPreview'}}">
-        </summary>
-        <div class="dp-summary-background-expanded">
-          <img src="{{summary.backgroundPath}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.backgroundPreview'}}">
+        <span class="dp-summary-separator" aria-hidden="true"></span>
+        <span class="dp-summary-name" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.drawingName'}}">{{summary.drawingName}}</span>
+      </div>
+
+      <div class="dp-timer-block" aria-label="{{localize 'DRAWING-PROMPTS.manager.timer.controls'}}">
+        {{#if summary.hasTimer}}
+        <div class="dp-timer-adjustments is-minus">
+          {{#each timerControls.adjustments}}
+          {{#if this.isMinus}}
+          <button type="button" data-action="adjustTimer" data-delta-ms="{{this.deltaMs}}" data-tooltip="{{this.tooltip}}" {{#if ../timerControls.disabled}}disabled{{/if}}>{{this.label}}</button>
+          {{/if}}
+          {{/each}}
         </div>
-      </details>
-      {{/if}}
-    </div>
-
-    <div class="dp-timer-controls" aria-label="{{localize 'DRAWING-PROMPTS.manager.timer.controls'}}">
-      <button type="button" data-action="toggleTimer" {{#if timerControls.disabled}}disabled{{/if}}>
-        <i class="fa-solid {{#if timerControls.paused}}fa-play{{else}}fa-pause{{/if}}" inert></i>
-        <span>{{timerControls.toggleLabel}}</span>
-      </button>
-      <button type="button" data-action="resetTimer" {{#if timerControls.disabled}}disabled{{/if}}>
-        <i class="fa-solid fa-rotate" inert></i>
-        <span>{{localize "DRAWING-PROMPTS.manager.actions.resetTimer"}}</span>
-      </button>
-      <button type="button" data-action="stopTimer" {{#if timerControls.disabled}}disabled{{/if}}>
-        <i class="fa-solid fa-stop" inert></i>
-        <span>{{localize "DRAWING-PROMPTS.manager.actions.stopTimer"}}</span>
-      </button>
-      <span class="dp-timer-adjustments">
-        {{#each timerControls.adjustments}}
-        <button type="button" data-action="adjustTimer" data-delta-ms="{{this.deltaMs}}" data-tooltip="{{this.tooltip}}" {{#if ../timerControls.disabled}}disabled{{/if}}>{{this.label}}</button>
-        {{/each}}
-      </span>
+        <div class="dp-timer-block-center">
+          <span class="dp-summary-timer {{#if summary.timerOvertime}}is-overtime{{/if}} {{#if summary.timerPaused}}is-paused{{/if}}" data-tooltip="{{localize 'DRAWING-PROMPTS.manager.summary.timer'}}">
+            <i class="fa-regular fa-clock" inert></i>
+            <span>{{summary.timerDuration}}</span>
+            {{#if summary.timerCountdownText}}
+            <span class="dp-summary-countdown {{#if summary.timerOvertime}}is-overtime{{/if}}" data-dp-timer-countdown>{{summary.timerCountdownText}}</span>
+            {{/if}}
+          </span>
+          <div class="dp-timer-controls">
+            <button type="button" data-action="toggleTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+              <i class="fa-solid {{#if timerControls.paused}}fa-play{{else}}fa-pause{{/if}}" inert></i>
+              <span>{{timerControls.toggleLabel}}</span>
+            </button>
+            <button type="button" data-action="resetTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+              <i class="fa-solid fa-rotate" inert></i>
+              <span>{{localize "DRAWING-PROMPTS.manager.actions.resetTimer"}}</span>
+            </button>
+            <button type="button" data-action="stopTimer" {{#if timerControls.disabled}}disabled{{/if}}>
+              <i class="fa-solid fa-stop" inert></i>
+              <span>{{localize "DRAWING-PROMPTS.manager.actions.stopTimer"}}</span>
+            </button>
+          </div>
+        </div>
+        <div class="dp-timer-adjustments is-plus">
+          {{#each timerControls.adjustments}}
+          {{#unless this.isMinus}}
+          <button type="button" data-action="adjustTimer" data-delta-ms="{{this.deltaMs}}" data-tooltip="{{this.tooltip}}" {{#if ../timerControls.disabled}}disabled{{/if}}>{{this.label}}</button>
+          {{/unless}}
+          {{/each}}
+        </div>
+        {{else}}
+        <div class="dp-timer-controls">
+          <button type="button" data-action="toggleTimer" disabled>
+            <i class="fa-solid fa-pause" inert></i>
+            <span>{{timerControls.toggleLabel}}</span>
+          </button>
+          <button type="button" data-action="resetTimer" disabled>
+            <i class="fa-solid fa-rotate" inert></i>
+            <span>{{localize "DRAWING-PROMPTS.manager.actions.resetTimer"}}</span>
+          </button>
+          <button type="button" data-action="stopTimer" disabled>
+            <i class="fa-solid fa-stop" inert></i>
+            <span>{{localize "DRAWING-PROMPTS.manager.actions.stopTimer"}}</span>
+          </button>
+        </div>
+        {{/if}}
+      </div>
     </div>
 
     <div class="dp-players-preview-grid">
@@ -133,12 +148,31 @@
         <fieldset>
           <legend>{{selectedPreviewHeading}}</legend>
 
-          <div class="dp-preview-frame">
-            {{#if selectedSnapshot}}
-            <img src="{{selectedSnapshot}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.assignmentPreview'}}">
-            {{else}}
-            <p class="dp-empty">{{localize "DRAWING-PROMPTS.manager.empty.noSnapshot"}}</p>
-            {{/if}}
+          {{#if framingViewToggle.visible}}
+          <div class="dp-framing-view-toggle" role="group" aria-label="{{framingViewToggle.label}}">
+            <span class="dp-framing-view-label">{{framingViewToggle.label}}</span>
+            <div class="dp-button-strip">
+              {{#each framingViewToggle.options}}
+              <button type="button"
+                      data-action="setFramingView"
+                      data-framing-view="{{this.value}}"
+                      class="{{#if this.selected}}is-selected{{/if}}"
+                      aria-pressed="{{this.selected}}">
+                <span>{{this.label}}</span>
+              </button>
+              {{/each}}
+            </div>
+          </div>
+          {{/if}}
+
+          <div class="dp-plate-stage" data-dp-review-stage>
+            <div class="dp-preview-frame dp-canvas-plate" data-dp-review-plate>
+              {{#if selectedSnapshot}}
+              <img src="{{selectedSnapshot}}" alt="{{localize 'DRAWING-PROMPTS.manager.alt.assignmentPreview'}}">
+              {{else}}
+              <p class="dp-empty">{{localize "DRAWING-PROMPTS.manager.empty.noSnapshot"}}</p>
+              {{/if}}
+            </div>
           </div>
 
           {{#if selectedIsSaved}}
@@ -300,12 +334,26 @@
 
     <aside class="dp-preview-panel">
       <fieldset>
-        <legend>{{localize "DRAWING-PROMPTS.manager.sections.preview"}}</legend>
-
-        <div class="dp-preview-frame">
-          <canvas class="dp-background-preview" data-dp-background-preview
-                  width="{{draft.canvasWidth}}" height="{{draft.canvasHeight}}"
-                  aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.backgroundPreview'}}"></canvas>
+        <legend>{{localize "DRAWING-PROMPTS.manager.sections.framing"}}</legend>
+        <p class="hint">{{localize "DRAWING-PROMPTS.manager.framing.hint"}}</p>
+        <div class="dp-framing-editor" data-dp-framing-editor>
+          <div class="dp-plate-stage" data-dp-framing-stage>
+            <div class="dp-preview-frame dp-framing-plate dp-canvas-plate">
+              <p class="dp-empty" data-dp-framing-empty {{#if draft.hasBackground}}hidden{{/if}}>{{localize "DRAWING-PROMPTS.manager.empty.noBackground"}}</p>
+              <canvas data-dp-framing-plate aria-label="{{localize 'DRAWING-PROMPTS.manager.alt.framingEditor'}}" {{#unless draft.hasBackground}}hidden{{/unless}}></canvas>
+            </div>
+          </div>
+          <div class="dp-framing-controls">
+            <button type="button" data-action="framingZoomOut" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomOut'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
+              <i class="fa-solid fa-magnifying-glass-minus" inert></i>
+            </button>
+            <button type="button" data-action="framingZoomIn" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.zoomIn'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
+              <i class="fa-solid fa-magnifying-glass-plus" inert></i>
+            </button>
+            <button type="button" data-action="framingReset" data-tooltip aria-label="{{localize 'DRAWING-PROMPTS.manager.framing.reset'}}" {{#unless draft.hasBackground}}disabled{{/unless}}>
+              <i class="fa-solid fa-expand" inert></i>
+            </button>
+          </div>
         </div>
       </fieldset>
     </aside>

@@ -112,8 +112,8 @@ export function resolveCanvasSize(requestedW, requestedH, bgNaturalW, bgNaturalH
   if ( bgWidth > 0 && bgHeight > 0 ) return clampAspect(bgWidth, bgHeight);
 
   return {
-    width: settingDefault(SETTINGS.DEFAULT_CANVAS_WIDTH, 1024),
-    height: settingDefault(SETTINGS.DEFAULT_CANVAS_HEIGHT, 768)
+    width: settingDefault(SETTINGS.DEFAULT_CANVAS_WIDTH, 512),
+    height: settingDefault(SETTINGS.DEFAULT_CANVAS_HEIGHT, 512)
   };
 }
 
@@ -125,9 +125,11 @@ export function blankBackground() {
   return {
     sourceType: BG_SOURCE.BLANK,
     path: null,
-    fitMode: settingDefault(SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_WIDTH),
+    fitMode: settingDefault(SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_CANVAS),
     naturalWidth: null,
-    naturalHeight: null
+    naturalHeight: null,
+    framing: null,
+    framedPath: null
   };
 }
 

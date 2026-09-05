@@ -1,9 +1,30 @@
-import { INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { CANVAS_CHROME, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { CANVAS_CHROME_CSS_CLASSES, canvasChromeCssClass, normalizeCanvasChrome } from "../drawing/canvas-chrome.mjs";
 import { DrawingEngine } from "../drawing/drawing-engine.mjs";
+import {
+  parseRecentColors,
+  pushRecentColor,
+  recentColorSlots,
+  serializeRecentColors,
+  shouldRecordDrawnColor
+} from "../drawing/recent-colors.mjs";
+import {
+  ZOOM_STEP,
+  classifyWheelGesture,
+  clampView,
+  createFitView,
+  cssTransform,
+  isPanModifierActive,
+  panView,
+  shouldDrawingToolTakePointer,
+  zoomView
+} from "../drawing/player-navigation.mjs";
 import { buildFullSubmission, buildSubmission } from "../drawing/export-service.mjs";
+import { restoreEngineFromSubmission } from "../drawing/submission-restore.mjs";
 import { loadBackgroundImage } from "../foundry/background-source-service.mjs";
 import { canStageUploads, stageSubmissionImages } from "../prompts/asset-service.mjs";
 import { updateStatus } from "../prompts/client-store.mjs";
+import { isValidSnapshotPayload } from "../prompts/wire-validation.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { createLeadingTrailingThrottle } from "../utils/throttle.mjs";
 import { formatClock, formatTimerState } from "../utils/timer-chip.mjs";
@@ -29,9 +50,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     position: { width: 820, height: 720 },
     actions: {
       setTool: PlayerDrawingApp.#onSetTool,
+      setRecentColor: PlayerDrawingApp.#onSetRecentColor,
+      setCanvasChrome: PlayerDrawingApp.#onSetCanvasChrome,
       clearLayer: PlayerDrawingApp.#onClearLayer,
       undo: PlayerDrawingApp.#onUndo,
       redo: PlayerDrawingApp.#onRedo,
+      zoomIn: PlayerDrawingApp.#onZoomIn,
+      zoomOut: PlayerDrawingApp.#onZoomOut,
+      resetView: PlayerDrawingApp.#onResetView,
       submit: PlayerDrawingApp.#onSubmit,
       reject: PlayerDrawingApp.#onReject,
       closeWindow: PlayerDrawingApp.#onCloseWindow
@@ -56,6 +82,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     let app = this.#registry.get(assignmentId);
     if ( app ) {
       app.assignmentPayload = assignmentPayload;
+      app.#restorationKey = null;
       await app.render({ force: true });
       app.bringToFront();
       return app;
@@ -100,11 +127,15 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   /**
    * Send an immediate snapshot for an open assignment window.
    * @param {string} assignmentId Assignment id.
+   * @param {object} [options] Options.
+   * @param {boolean} [options.includeOverlay=false] Whether the GM needs overlay (ink-only) bytes.
    * @returns {Promise<void>}
    */
-  static async sendSnapshotForAssignment(assignmentId) {
+  static async sendSnapshotForAssignment(assignmentId, { includeOverlay = false } = {}) {
     const app = this.#registry.get(assignmentId);
-    if ( app ) await app.#sendSnapshot();
+    if ( !app ) return;
+    app.#overlayRequested = includeOverlay;
+    await app.#sendSnapshot();
   }
 
   /**
@@ -118,6 +149,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.mode = mode;
     this.#background = assignmentPayload.prompt.background ?? {};
     this.#color = initialBrushColor();
+    this.#recentColors = initialRecentColors();
+    this.#canvasChrome = initialCanvasChrome();
   }
 
   #background;
@@ -129,19 +162,36 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #engine = null;
   #engineReadyPromise = null;
   #snapshotThrottle = null;
+  /** Whether the GM's Framing View needs overlay (ink-only) bytes for its live remap. */
+  #overlayRequested = false;
   #activeTool = "brush";
   #color = "#000000";
+  /** @type {string[]} */
+  #recentColors = [];
+  /** @type {string|null} */
+  #lastRecordedOpId = null;
+  /** Skip persisting recent colors while replaying a restored op log (still adopt tip op ids). */
+  #suppressRecentColorRecord = false;
   #brushSize = 8;
   #brushOpacity = 1;
+  #canvasChrome = CANVAS_CHROME.CHECKERBOARD;
   #unsubscribers = [];
   #wireScaledWarned = false;
+  /** @type {{scale: number, panX: number, panY: number}|null} Ephemeral view; reset on open. */
+  #navView = null;
+  #navViewport = null;
+  #navHandlers = null;
+  #navResizeObserver = null;
+  #spaceHeld = false;
+  /** @type {string|null} Restoration payload already applied for this open. */
+  #restorationKey = null;
+  /** @type {{pointerId: number, lastX: number, lastY: number}|null} */
+  #panDrag = null;
 
   /** @override */
   async _prepareContext(options) {
     const assignment = this.assignmentPayload.assignment;
     const prompt = this.assignmentPayload.prompt;
-    const width = Math.max(1, Number(prompt.canvasWidth) || 1);
-    const height = Math.max(1, Number(prompt.canvasHeight) || 1);
     return {
       assignment,
       prompt,
@@ -149,14 +199,18 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       isPreview: this.mode === "preview",
       hasTimer: this.mode === "preview" ? Number(prompt.timerSeconds) > 0 : prompt.timerStatus !== "none",
       timerText: this.#timerText(),
-      canvasStyle: `aspect-ratio: ${width} / ${height};`,
       backgroundError: this.#backgroundError,
       backgroundLoading: this.#backgroundState === "loading",
       activeTool: this.#activeTool,
       color: this.#color,
+      recentColors: recentColorSlots(this.#recentColors, 3),
+      playerColor: resolvePlayerColor(),
       brushSize: this.#brushSize,
       brushOpacity: this.#brushOpacity,
       brushOpacityPercent: formatPercent(this.#brushOpacity),
+      canvasChrome: this.#canvasChrome,
+      canvasChromeClass: canvasChromeCssClass(this.#canvasChrome),
+      canvasChromeOptions: this.#canvasChromeOptions(),
       canUndo: this.#engine?.canUndo ?? false,
       canRedo: this.#engine?.canRedo ?? false,
       toolButtons: this.#toolButtons()
@@ -176,6 +230,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     await super._onRender(context, options);
     this.#startTimer();
     await this.#ensureEngine();
+    this.#ensureNavigation();
     this.#wireToolbarInputs();
     this.#refreshToolbarState();
   }
@@ -185,6 +240,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     super._onClose(options);
     if ( this.#timerId ) window.clearInterval(this.#timerId);
     this.#timerId = null;
+    this.#destroyNavigation();
     this.#destroyEngine();
     this.constructor.#registry.delete(this.assignmentPayload.assignment.id);
 
@@ -289,10 +345,12 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( this.#engineReadyPromise ) {
       await this.#engineReadyPromise;
       this.#engine?.attach(canvas);
+      await this.#applyRestoration(this.#engine);
       return;
     }
     if ( this.#engine ) {
       this.#engine.attach(canvas);
+      await this.#applyRestoration(this.#engine);
       return;
     }
     this.#engineReadyPromise = this.#createEngine(canvas).finally(() => {
@@ -342,14 +400,37 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     engine.setBrushOpacity(this.#brushOpacity);
     this.#unsubscribers = [
       engine.onChange(() => {
+        this.#maybeRecordDrawnColor();
         this.#refreshToolbarState();
         this.#queueSnapshot();
       }),
-      engine.onColorSampled(hex => this.#applySampledColor(hex)),
+      engine.onColorSampled(hex => this.#applyColor(hex)),
       engine.onWarning(key => ui.notifications.warn(game.i18n.localize(key)))
     ];
     this.#engine = engine;
     engine.attach(canvas);
+    await this.#applyRestoration(engine);
+  }
+
+  /**
+   * Restore a submitted drawing when the GM reopens the assignment.
+   * @param {import("../drawing/drawing-engine.mjs").DrawingEngine} engine Drawing engine.
+   * @returns {Promise<void>}
+   */
+  async #applyRestoration(engine) {
+    const submission = this.assignmentPayload?.restorationSubmission;
+    if ( !submission ) return;
+    const key = restorationKey(submission);
+    if ( this.#restorationKey === key ) return;
+    this.#suppressRecentColorRecord = true;
+    try {
+      const restored = await restoreEngineFromSubmission(engine, submission, this.assignmentPayload.prompt);
+      if ( restored ) this.#restorationKey = key;
+    } catch (err) {
+      console.warn("drawing-prompts | failed to restore reopened submission", err);
+    } finally {
+      this.#suppressRecentColorRecord = false;
+    }
   }
 
   /**
@@ -363,6 +444,302 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.#unsubscribers = [];
     this.#engine?.destroy();
     this.#engine = null;
+  }
+
+  /**
+   * Attach ephemeral pan/zoom navigation to the player Display stage (resets per open).
+   * @returns {void}
+   */
+  #ensureNavigation() {
+    const viewport = this.element?.querySelector(".dp-display-stage");
+    const canvas = this.element?.querySelector(".dp-display-canvas");
+    if ( !viewport || !canvas || this.#backgroundError ) {
+      this.#destroyNavigation();
+      return;
+    }
+
+    if ( this.#navViewport !== viewport ) {
+      this.#destroyNavigation({ keepView: true });
+      this.#navViewport = viewport;
+      this.#wireNavigation(viewport);
+    }
+
+    this.#sizeNavCanvas(canvas);
+    if ( !this.#navView ) this.#resetNavigation();
+    else this.#applyNavigation();
+  }
+
+  /**
+   * Wire pointer/wheel/keyboard handlers for player navigation.
+   * @param {HTMLElement} viewport Viewport element.
+   * @returns {void}
+   */
+  #wireNavigation(viewport) {
+    const onWheel = event => this.#onNavWheel(event);
+    const onPointerDown = event => this.#onNavPointerDown(event);
+    const onPointerMove = event => this.#onNavPointerMove(event);
+    const onPointerUp = event => this.#onNavPointerUp(event);
+    const onDblClick = event => {
+      event.preventDefault();
+      this.#resetNavigation();
+    };
+    const onKeyDown = event => {
+      if ( !this.rendered ) return;
+      const target = event.target;
+      if ( target?.closest?.("input, textarea, select, [contenteditable='true']") ) return;
+
+      if ( event.code === "Space" && !event.repeat ) {
+        this.#spaceHeld = true;
+        if ( this.element?.contains(target) || target === document.body ) event.preventDefault();
+        return;
+      }
+
+      if ( event.key === "Enter" && this.#engine?.commitLineDraft() ) {
+        event.preventDefault();
+        return;
+      }
+      if ( event.key === "Escape" && this.#engine?.cancelLineDraft() ) {
+        event.preventDefault();
+        return;
+      }
+
+      const toolByKey = {
+        b: "brush",
+        e: "eraser",
+        l: "line",
+        f: "fill",
+        i: "eyedropper"
+      };
+      const tool = toolByKey[String(event.key || "").toLowerCase()];
+      if ( tool && !event.ctrlKey && !event.metaKey && !event.altKey ) {
+        this.#selectTool(tool);
+        event.preventDefault();
+      }
+    };
+    const onKeyUp = event => {
+      if ( event.code === "Space" ) this.#spaceHeld = false;
+    };
+    const onBlur = () => {
+      this.#spaceHeld = false;
+      this.#endPanDrag();
+    };
+    const onContextMenu = event => {
+      event.preventDefault();
+    };
+
+    this.#navHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur, onContextMenu };
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    viewport.addEventListener("pointerdown", onPointerDown, true);
+    viewport.addEventListener("pointermove", onPointerMove);
+    viewport.addEventListener("pointerup", onPointerUp);
+    viewport.addEventListener("pointercancel", onPointerUp);
+    viewport.addEventListener("dblclick", onDblClick);
+    viewport.addEventListener("contextmenu", onContextMenu);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+
+    if ( typeof ResizeObserver !== "undefined" ) {
+      this.#navResizeObserver = new ResizeObserver(() => this.#onNavViewportResize());
+      this.#navResizeObserver.observe(viewport);
+    }
+  }
+
+  /**
+   * Tear down navigation listeners. Optionally keep the ephemeral view across rewires.
+   * @param {{keepView?: boolean}} [options] Options.
+   * @returns {void}
+   */
+  #destroyNavigation({ keepView = false } = {}) {
+    this.#endPanDrag();
+    const viewport = this.#navViewport;
+    const handlers = this.#navHandlers;
+    if ( viewport && handlers ) {
+      viewport.removeEventListener("wheel", handlers.onWheel);
+      viewport.removeEventListener("pointerdown", handlers.onPointerDown, true);
+      viewport.removeEventListener("pointermove", handlers.onPointerMove);
+      viewport.removeEventListener("pointerup", handlers.onPointerUp);
+      viewport.removeEventListener("pointercancel", handlers.onPointerUp);
+      viewport.removeEventListener("dblclick", handlers.onDblClick);
+      viewport.removeEventListener("contextmenu", handlers.onContextMenu);
+    }
+    if ( handlers ) {
+      window.removeEventListener("keydown", handlers.onKeyDown);
+      window.removeEventListener("keyup", handlers.onKeyUp);
+      window.removeEventListener("blur", handlers.onBlur);
+    }
+    this.#navResizeObserver?.disconnect();
+    this.#navResizeObserver = null;
+    this.#navHandlers = null;
+    this.#navViewport = null;
+    this.#spaceHeld = false;
+    if ( !keepView ) this.#navView = null;
+  }
+
+  /**
+   * Content and viewport sizes for the active navigation session.
+   * @returns {{contentWidth: number, contentHeight: number, viewportWidth: number, viewportHeight: number}|null}
+   */
+  #navSizes() {
+    const viewport = this.#navViewport ?? this.element?.querySelector(".dp-display-stage");
+    if ( !viewport ) return null;
+    const prompt = this.assignmentPayload.prompt;
+    return {
+      contentWidth: Math.max(1, Number(prompt.canvasWidth) || 1),
+      contentHeight: Math.max(1, Number(prompt.canvasHeight) || 1),
+      viewportWidth: Math.max(1, viewport.clientWidth || 1),
+      viewportHeight: Math.max(1, viewport.clientHeight || 1)
+    };
+  }
+
+  /**
+   * Size the display canvas to Prompt canvas pixels (transform provides fit).
+   * @param {HTMLCanvasElement} canvas Canvas element.
+   * @returns {void}
+   */
+  #sizeNavCanvas(canvas) {
+    const sizes = this.#navSizes();
+    if ( !sizes ) return;
+    canvas.style.width = `${sizes.contentWidth}px`;
+    canvas.style.height = `${sizes.contentHeight}px`;
+    canvas.style.transformOrigin = "0 0";
+  }
+
+  /**
+   * Reset navigation so the Canvas plate fits fully in the Display stage.
+   * @returns {void}
+   */
+  #resetNavigation() {
+    const sizes = this.#navSizes();
+    if ( !sizes ) return;
+    this.#navView = createFitView(sizes);
+    this.#applyNavigation();
+  }
+
+  /**
+   * Re-clamp and paint the current view after a viewport resize.
+   * @returns {void}
+   */
+  #onNavViewportResize() {
+    const sizes = this.#navSizes();
+    if ( !sizes ) return;
+    if ( !this.#navView ) this.#navView = createFitView(sizes);
+    else this.#navView = clampView(this.#navView, sizes);
+    this.#applyNavigation();
+  }
+
+  /**
+   * Apply CSS transform for the ephemeral navigation state.
+   * @returns {void}
+   */
+  #applyNavigation() {
+    const canvas = this.element?.querySelector(".dp-display-canvas");
+    const sizes = this.#navSizes();
+    if ( !canvas || !sizes || !this.#navView ) return;
+    this.#sizeNavCanvas(canvas);
+    this.#navView = clampView(this.#navView, sizes);
+    canvas.style.transform = cssTransform(this.#navView);
+  }
+
+  /**
+   * Zoom by a multiplicative factor about the viewport center (or given point).
+   * @param {number} factor Zoom factor.
+   * @param {{focusX?: number, focusY?: number}} [focus] Optional focus in viewport coords.
+   * @returns {void}
+   */
+  #zoomNavigation(factor, focus = {}) {
+    const sizes = this.#navSizes();
+    if ( !sizes || !this.#navView ) return;
+    this.#navView = zoomView(this.#navView, sizes, {
+      factor,
+      focusX: focus.focusX,
+      focusY: focus.focusY
+    });
+    this.#applyNavigation();
+  }
+
+  /**
+   * Handle wheel / trackpad navigation gestures.
+   * @param {WheelEvent} event Event.
+   * @returns {void}
+   */
+  #onNavWheel(event) {
+    const sizes = this.#navSizes();
+    if ( !sizes || !this.#navView ) return;
+    event.preventDefault();
+    const gesture = classifyWheelGesture(event);
+    const rect = this.#navViewport.getBoundingClientRect();
+    if ( gesture.type === "zoom" ) {
+      this.#navView = zoomView(this.#navView, sizes, {
+        factor: gesture.factor,
+        focusX: event.clientX - rect.left,
+        focusY: event.clientY - rect.top
+      });
+    } else {
+      this.#navView = panView(this.#navView, sizes, { dx: gesture.dx, dy: gesture.dy });
+    }
+    this.#applyNavigation();
+  }
+
+  /**
+   * Start pan only when navigation modifiers win over drawing tools.
+   * @param {PointerEvent} event Event.
+   * @returns {void}
+   */
+  #onNavPointerDown(event) {
+    if ( shouldDrawingToolTakePointer({ button: event.button, spaceHeld: this.#spaceHeld }) ) return;
+    if ( !isPanModifierActive({ button: event.button, spaceHeld: this.#spaceHeld }) ) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.#panDrag = { pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY };
+    this.#navViewport?.setPointerCapture?.(event.pointerId);
+    this.#navViewport?.classList.add("is-panning");
+  }
+
+  /**
+   * Continue an active pan drag.
+   * @param {PointerEvent} event Event.
+   * @returns {void}
+   */
+  #onNavPointerMove(event) {
+    if ( !this.#panDrag || event.pointerId !== this.#panDrag.pointerId ) return;
+    event.preventDefault();
+    const sizes = this.#navSizes();
+    if ( !sizes || !this.#navView ) return;
+    const dx = event.clientX - this.#panDrag.lastX;
+    const dy = event.clientY - this.#panDrag.lastY;
+    this.#panDrag.lastX = event.clientX;
+    this.#panDrag.lastY = event.clientY;
+    this.#navView = panView(this.#navView, sizes, { dx, dy });
+    this.#applyNavigation();
+  }
+
+  /**
+   * End pan drag.
+   * @param {PointerEvent} [event] Event.
+   * @returns {void}
+   */
+  #onNavPointerUp(event) {
+    if ( !this.#panDrag ) return;
+    if ( event && event.pointerId !== this.#panDrag.pointerId ) return;
+    this.#endPanDrag(event?.pointerId);
+  }
+
+  /**
+   * Clear pan drag state.
+   * @param {number} [pointerId] Pointer id to release.
+   * @returns {void}
+   */
+  #endPanDrag(pointerId) {
+    if ( !this.#panDrag ) return;
+    const id = pointerId ?? this.#panDrag.pointerId;
+    try {
+      this.#navViewport?.releasePointerCapture?.(id);
+    } catch ( _err ) {
+      // Pointer may already be released.
+    }
+    this.#panDrag = null;
+    this.#navViewport?.classList.remove("is-panning");
   }
 
   /**
@@ -383,16 +760,31 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   async #sendSnapshot() {
     if ( !this.#canSendSnapshots() || !this.#engine ) return;
-    const snapshot = this.#engine.getCompositeSnapshot({
-      maxEdge: INTERNAL.SNAPSHOT_MAX_EDGE,
-      quality: INTERNAL.SNAPSHOT_QUALITY
-    });
     await emit.drawingSnapshot(
       this.assignmentPayload.prompt.gmUserId,
       this.assignmentPayload.assignment.id,
       game.user.id,
-      snapshot
+      this.#buildSnapshotPayload()
     );
+  }
+
+  /**
+   * Build the live snapshot payload. Composite feeds the Prompt-canvas GM view; overlay-only
+   * ink rides along only while the GM's Framing View remaps it (matches dual Save).
+   * @returns {{composite: string, overlay?: string}}
+   */
+  #buildSnapshotPayload() {
+    const opts = {
+      maxEdge: INTERNAL.SNAPSHOT_MAX_EDGE,
+      quality: INTERNAL.SNAPSHOT_QUALITY
+    };
+    const composite = this.#engine.getCompositeSnapshot(opts);
+    if ( !this.#overlayRequested ) return { composite };
+    const payload = { composite, overlay: this.#engine.getOverlaySnapshot(opts) };
+    // Combined wire budget: drop overlay and keep composite rather than failing the tick.
+    if ( isValidSnapshotPayload(payload) ) return payload;
+    console.debug("drawing-prompts | dropped overlay snapshot over the combined snapshot wire budget");
+    return { composite };
   }
 
   /**
@@ -413,9 +805,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #wireToolbarInputs() {
     const colorInput = this.element?.querySelector(".dp-color-input");
     colorInput?.addEventListener("input", event => {
-      this.#color = event.currentTarget.value;
-      this.#engine?.setColor(this.#color);
-      void game.settings.set(MODULE_ID, SETTINGS.LAST_BRUSH_COLOR, this.#color);
+      this.#applyColor(event.currentTarget.value);
     });
     const sizeInput = this.element?.querySelector(".dp-size-input");
     sizeInput?.addEventListener("input", event => {
@@ -432,12 +822,39 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   }
 
   /**
+   * Apply a Canvas chrome preference (client setting + surface class).
+   * @param {string} value Chrome choice.
+   * @returns {void}
+   */
+  #setCanvasChrome(value) {
+    this.#canvasChrome = normalizeCanvasChrome(value);
+    void game.settings.set(MODULE_ID, SETTINGS.CANVAS_CHROME, this.#canvasChrome);
+    this.#refreshToolbarState();
+  }
+
+  /**
+   * Build Background swatch options (Canvas chrome preference).
+   * @returns {{value: string, label: string, selected: boolean}[]}
+   */
+  #canvasChromeOptions() {
+    return [
+      { value: CANVAS_CHROME.BLACK, label: "DRAWING-PROMPTS.choices.canvasChrome.black", selected: this.#canvasChrome === CANVAS_CHROME.BLACK },
+      { value: CANVAS_CHROME.WHITE, label: "DRAWING-PROMPTS.choices.canvasChrome.white", selected: this.#canvasChrome === CANVAS_CHROME.WHITE },
+      {
+        value: CANVAS_CHROME.CHECKERBOARD,
+        label: "DRAWING-PROMPTS.choices.canvasChrome.checkerboard",
+        selected: this.#canvasChrome === CANVAS_CHROME.CHECKERBOARD
+      }
+    ];
+  }
+
+  /**
    * Select a tool.
    * @param {string} tool Tool name.
    * @returns {void}
    */
   #selectTool(tool) {
-    if ( !["brush", "eraser", "fill", "eyedropper"].includes(tool) ) return;
+    if ( !["brush", "eraser", "fill", "eyedropper", "line"].includes(tool) ) return;
     this.#activeTool = tool;
     this.#engine?.setTool(tool);
     this.#refreshToolbarState();
@@ -465,25 +882,148 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( opacityValue ) opacityValue.textContent = formatPercent(this.#brushOpacity);
     const colorInput = root.querySelector(".dp-color-input");
     if ( colorInput && colorInput.value !== this.#color ) colorInput.value = this.#color;
+    this.#syncRecentColorSwatches(root);
     const opacityInput = root.querySelector(".dp-opacity-input");
     if ( opacityInput && Number(opacityInput.value) !== this.#brushOpacity ) opacityInput.value = String(this.#brushOpacity);
     const canvas = root.querySelector(".dp-display-canvas");
     if ( canvas ) {
-      canvas.classList.remove("tool-brush", "tool-eraser", "tool-fill", "tool-eyedropper");
+      canvas.classList.remove("tool-brush", "tool-eraser", "tool-fill", "tool-eyedropper", "tool-line");
       canvas.classList.add(`tool-${this.#activeTool}`);
+    }
+    for ( const button of root.querySelectorAll("[data-action='setCanvasChrome']") ) {
+      const selected = button.dataset.chrome === this.#canvasChrome;
+      button.classList.toggle("is-active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    }
+    const canvasBox = root.querySelector(".dp-canvas-box");
+    if ( canvasBox ) {
+      canvasBox.classList.remove(...CANVAS_CHROME_CSS_CLASSES);
+      canvasBox.classList.add(canvasChromeCssClass(this.#canvasChrome));
     }
   }
 
   /**
-   * Apply an eyedropper color sample to app state and controls.
-   * @param {string} hex Sampled color.
+   * Apply a brush color without recording recent history (palette drag / swatch pick).
+   * @param {string} hex Color.
    * @returns {void}
    */
-  #applySampledColor(hex) {
-    this.#color = hex;
-    this.#engine?.setColor(hex);
+  #applyColor(hex) {
+    const next = normalizeHex(hex);
+    if ( !next ) return;
+    this.#color = next;
+    this.#engine?.setColor(next);
     void game.settings.set(MODULE_ID, SETTINGS.LAST_BRUSH_COLOR, this.#color);
     this.#refreshToolbarState();
+  }
+
+  /**
+   * Record a color that was actually committed to the drawing (stroke/fill).
+   * @param {string} hex Color.
+   * @returns {void}
+   */
+  #recordDrawnColor(hex) {
+    const next = normalizeHex(hex);
+    if ( !next ) return;
+    // Re-read before writing. #recentColors is a constructor-time snapshot, and a
+    // player can hold two assignment windows at once (#registry is keyed per
+    // assignment, and nothing closes the sibling). Pushing onto the stale snapshot
+    // made the shared client setting last-writer-wins, so each window persisted a
+    // divergent history and dropped the other's colors. The client-scope write is
+    // synchronous, so this re-read always observes the sibling's last write.
+    const stored = parseRecentColors(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS), 3);
+    this.#recentColors = pushRecentColor(stored, next, 3);
+    void game.settings.set(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS, serializeRecentColors(this.#recentColors));
+    if ( this.element ) this.#syncRecentColorSwatches(this.element);
+  }
+
+  /**
+   * When a stroke/fill op lands at the tip of the log, remember its color.
+   * @returns {void}
+   */
+  #maybeRecordDrawnColor() {
+    // The manager's preview window shares this application class. It draws nothing
+    // a player owns, but it writes *this* client's LAST_BRUSH_COLORS -- so a GM
+    // previewing a submission pollutes the GM's own palette (not a player's).
+    if ( this.mode === "preview" ) return;
+    const log = this.#engine?.getOpLog?.();
+    if ( !log ) return;
+    // Tip selection stays here: "is the pointer at the end" is undo/redo state
+    // owned by the op log, not a palette concern. A pointer behind the end means
+    // there is no tip to consider, which the helper reads as a null op.
+    const op = log.pointer === log.ops.length ? log.ops.at(-1) : null;
+    const { record, nextLastRecordedOpId } = shouldRecordDrawnColor({
+      op,
+      lastRecordedOpId: this.#lastRecordedOpId,
+      suppressed: this.#suppressRecentColorRecord
+    });
+    this.#lastRecordedOpId = nextLastRecordedOpId;
+    if ( record ) this.#recordDrawnColor(op.color);
+  }
+
+  /**
+   * Keep recent-color swatches in sync without a full AppV2 rerender.
+   * @param {HTMLElement} root Root element.
+   * @returns {void}
+   */
+  #syncRecentColorSwatches(root) {
+    const group = root.querySelector(".dp-recent-colors");
+    if ( !group ) return;
+    const slots = recentColorSlots(this.#recentColors, 3);
+    const historyButtons = [...group.querySelectorAll(".dp-recent-color-swatch:not(.is-player-color)")];
+    const playerColor = resolvePlayerColor();
+    for ( let i = 0; i < slots.length; i++ ) {
+      const color = slots[i];
+      let button = historyButtons[i];
+      if ( !button ) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "dp-recent-color-swatch";
+        button.innerHTML = '<span class="dp-recent-color-swatch-face" inert></span>';
+        const playerBtn = group.querySelector(".dp-recent-color-swatch.is-player-color");
+        if ( playerBtn ) group.insertBefore(button, playerBtn);
+        else group.append(button);
+      }
+      if ( color ) {
+        button.dataset.action = "setRecentColor";
+        button.dataset.color = color;
+        button.disabled = false;
+        button.classList.remove("is-empty");
+        button.style.setProperty("--dp-recent-color", color);
+        button.setAttribute("aria-label", color);
+        button.dataset.tooltip = "";
+        button.removeAttribute("aria-disabled");
+      } else {
+        delete button.dataset.action;
+        delete button.dataset.color;
+        button.disabled = true;
+        button.classList.add("is-empty");
+        button.style.removeProperty("--dp-recent-color");
+        button.setAttribute("aria-label", game.i18n.localize("DRAWING-PROMPTS.player.fields.recentColorEmpty"));
+        button.setAttribute("aria-disabled", "true");
+        button.dataset.tooltip = "";
+      }
+    }
+    for ( let i = slots.length; i < historyButtons.length; i++ ) historyButtons[i].remove();
+
+    let playerButton = group.querySelector(".dp-recent-color-swatch.is-player-color");
+    if ( playerColor ) {
+      if ( !playerButton ) {
+        playerButton = document.createElement("button");
+        playerButton.type = "button";
+        playerButton.className = "dp-recent-color-swatch is-player-color";
+        playerButton.innerHTML = '<span class="dp-recent-color-swatch-face" inert></span>';
+        group.append(playerButton);
+      }
+      playerButton.dataset.action = "setRecentColor";
+      playerButton.dataset.color = playerColor;
+      playerButton.disabled = false;
+      playerButton.style.setProperty("--dp-recent-color", playerColor);
+      playerButton.setAttribute("aria-label", game.i18n.localize("DRAWING-PROMPTS.player.fields.playerColor"));
+      playerButton.dataset.tooltip = "";
+      playerButton.removeAttribute("aria-disabled");
+    } else {
+      playerButton?.remove();
+    }
   }
 
   /**
@@ -494,6 +1034,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     return [
       { name: "brush", icon: "fa-solid fa-paintbrush", label: "DRAWING-PROMPTS.player.tools.brush", active: this.#activeTool === "brush" },
       { name: "eraser", icon: "fa-solid fa-eraser", label: "DRAWING-PROMPTS.player.tools.eraser", active: this.#activeTool === "eraser" },
+      { name: "line", icon: "fa-solid fa-slash", label: "DRAWING-PROMPTS.player.tools.line", active: this.#activeTool === "line" },
       { name: "fill", icon: "fa-solid fa-fill-drip", label: "DRAWING-PROMPTS.player.tools.fill", active: this.#activeTool === "fill" },
       { name: "eyedropper", icon: "fa-solid fa-eye-dropper", label: "DRAWING-PROMPTS.player.tools.eyedropper", active: this.#activeTool === "eyedropper" }
     ];
@@ -538,6 +1079,27 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
 
   /**
    * @this {PlayerDrawingApp}
+   * @param {Event} _event Event.
+   * @param {HTMLElement} target Action target.
+   * @returns {Promise<void>}
+   */
+  static async #onSetRecentColor(_event, target) {
+    if ( !target.dataset.color ) return;
+    this.#applyColor(target.dataset.color);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @param {Event} _event Event.
+   * @param {HTMLElement} target Action target.
+   * @returns {Promise<void>}
+   */
+  static async #onSetCanvasChrome(_event, target) {
+    this.#setCanvasChrome(target.dataset.chrome);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
    * @returns {Promise<void>}
    */
   static async #onClearLayer() {
@@ -565,6 +1127,30 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   static async #onRedo() {
     this.#engine?.redo();
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @returns {Promise<void>}
+   */
+  static async #onZoomIn() {
+    this.#zoomNavigation(ZOOM_STEP);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @returns {Promise<void>}
+   */
+  static async #onZoomOut() {
+    this.#zoomNavigation(1 / ZOOM_STEP);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @returns {Promise<void>}
+   */
+  static async #onResetView() {
+    this.#resetNavigation();
   }
 
   /**
@@ -602,13 +1188,37 @@ function formatPercent(value) {
 }
 
 /**
+ * Resolve the Foundry user identity color for the always-on fourth swatch.
+ * @returns {string|null}
+ */
+function resolvePlayerColor() {
+  return normalizeHex(game.user?.color) ?? null;
+}
+
+/**
  * Resolve the initial brush color for this client.
  * @returns {string}
  */
 function initialBrushColor() {
   return normalizeHex(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLOR))
-    ?? normalizeHex(game.user?.color)
+    ?? resolvePlayerColor()
     ?? "#000000";
+}
+
+/**
+ * Resolve recent brush colors for this client (drawn colors only; do not seed from current brush).
+ * @returns {string[]}
+ */
+function initialRecentColors() {
+  return parseRecentColors(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS), 3);
+}
+
+/**
+ * Resolve the initial Canvas chrome for this client.
+ * @returns {string}
+ */
+function initialCanvasChrome() {
+  return normalizeCanvasChrome(game.settings.get(MODULE_ID, SETTINGS.CANVAS_CHROME));
 }
 
 /**
@@ -623,4 +1233,16 @@ function normalizeHex(value) {
     return `#${text[1]}${text[1]}${text[2]}${text[2]}${text[3]}${text[3]}`.toLowerCase();
   }
   return null;
+}
+
+/**
+ * Dedupe key for a restoration payload.
+ * @param {object} submission Submission payload.
+ * @returns {string}
+ */
+function restorationKey(submission) {
+  if ( submission?.overlay?.dataUrl ) return `overlay:${submission.overlay.dataUrl.length}:${submission.receiptTs ?? 0}`;
+  if ( submission?.staged?.overlayPath ) return `staged:${submission.staged.overlayPath}:${submission.receiptTs ?? 0}`;
+  if ( submission?.opLog?.ops?.length ) return `oplog:${submission.opLog.ops.length}:${submission.opLog.pointer ?? 0}`;
+  return "empty";
 }

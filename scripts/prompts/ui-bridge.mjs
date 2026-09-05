@@ -23,12 +23,12 @@ export async function setManagerWindowOpen(assignmentId, open) {
 /**
  * Deliver a snapshot to the open manager, if any.
  * @param {string} assignmentId Assignment id.
- * @param {string} dataUrl Snapshot data URL.
+ * @param {string|{composite?: string, overlay?: string}} snapshotPayload Snapshot payload.
  * @returns {void}
  */
-export function receiveManagerSnapshot(assignmentId, dataUrl) {
+export function receiveManagerSnapshot(assignmentId, snapshotPayload) {
   if ( !game.user.isGM ) return;
   void import("../apps/drawing-prompt-manager.mjs").then(({ DrawingPromptManager }) => {
-    DrawingPromptManager.receiveSnapshotOpen(assignmentId, dataUrl);
+    DrawingPromptManager.receiveSnapshotOpen(assignmentId, snapshotPayload);
   });
 }

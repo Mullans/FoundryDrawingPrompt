@@ -1,6 +1,6 @@
 import { MODULE_ID } from "./constants.mjs";
 import { registerAPI } from "./api.mjs";
-import { registerSettings } from "./settings.mjs";
+import { registerSettings, migrateLegacySettings } from "./settings.mjs";
 import { initSocket } from "./socket.mjs";
 import { getSocketHandlers, openPlayerPromptList, openPromptManager } from "./prompts/prompt-service.mjs";
 import { loadAllPrompts } from "./prompts/persistence-service.mjs";
@@ -14,8 +14,9 @@ Hooks.once("socketlib.ready", () => {
   initSocket(getSocketHandlers());
 });
 
-Hooks.once("ready", () => {
+Hooks.once("ready", async () => {
   registerAPI();
+  await migrateLegacySettings();
   if ( !globalThis.socketlib ) ui.notifications.error(game.i18n.localize("DRAWING-PROMPTS.errors.socketlibMissing"));
   if ( game.user.isGM ) {
     const activeCount = loadAllPrompts().filter(prompt => prompt.needsAttention).length;

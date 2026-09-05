@@ -33,6 +33,8 @@ export async function canvasToEncodedImage(canvas, { format, quality } = {}) {
  * @returns {Promise<{overlay: {dataUrl: string, format: string}, merged?: {dataUrl: string, format: string}, opLog: object, width: number, height: number}>}
  */
 export async function buildFullSubmission(engine, { format, quality } = {}) {
+  // Commit any rubber-band line draft so exported pixels and the op log stay aligned.
+  engine.commitLineDraft?.();
   const hasBackground = engine.hasBackground;
   const [overlay, merged] = await Promise.all([
     engine.exportOverlay({ format, quality }),

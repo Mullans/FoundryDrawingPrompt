@@ -6,6 +6,7 @@ import { BrushTool } from "./tools/brush-tool.mjs";
 import { EraserTool } from "./tools/eraser-tool.mjs";
 import { EyedropperTool } from "./tools/eyedropper-tool.mjs";
 import { FillTool, floodFillRegion } from "./tools/fill-tool.mjs";
+import { LineTool } from "./tools/line-tool.mjs";
 
 const FILL_TOLERANCE = 32;
 
@@ -45,7 +46,7 @@ export class DrawingEngine {
     this.width = Math.max(1, Math.floor(Number(width) || 1));
     this.height = Math.max(1, Math.floor(Number(height) || 1));
     this.#background = background;
-    this.#fitMode = fitMode || FIT_MODE.FIT_WIDTH;
+    this.#fitMode = fitMode || FIT_MODE.FIT_CANVAS;
     this.#bgCanvas = createCanvas(this.width, this.height);
     this.#drawCanvas = createCanvas(this.width, this.height);
     this.#bgCtx = this.#bgCanvas.getContext("2d", { willReadFrequently: true });
@@ -54,13 +55,15 @@ export class DrawingEngine {
       brush: new BrushTool(),
       eraser: new EraserTool(),
       fill: new FillTool(),
-      eyedropper: new EyedropperTool()
+      eyedropper: new EyedropperTool(),
+      line: new LineTool()
     };
     this.#renderBackground();
   }
 
   /**
-   * Attach to a display canvas and install pointer events.
+   * Attach to the player display canvas (Canvas plate) and install pointer events.
+   * Drawing tools only hit this element; Display stage pan/zoom is wired separately.
    * @param {HTMLCanvasElement} displayCanvasEl Display canvas.
    * @returns {void}
    */
@@ -75,12 +78,14 @@ export class DrawingEngine {
       pointermove: event => this.#onPointerMove(event),
       pointerup: event => this.#onPointerUp(event),
       pointercancel: event => this.#onPointerUp(event),
+      dblclick: event => this.#onDoubleClick(event),
       resize: () => this.#resizeDisplayBacking()
     };
     displayCanvasEl.addEventListener("pointerdown", this.#handlers.pointerdown);
     displayCanvasEl.addEventListener("pointermove", this.#handlers.pointermove);
     displayCanvasEl.addEventListener("pointerup", this.#handlers.pointerup);
     displayCanvasEl.addEventListener("pointercancel", this.#handlers.pointercancel);
+    displayCanvasEl.addEventListener("dblclick", this.#handlers.dblclick);
     globalThis.window?.addEventListener?.("resize", this.#handlers.resize);
     this.#markDirty();
   }
@@ -95,6 +100,7 @@ export class DrawingEngine {
       this.#displayCanvas.removeEventListener("pointermove", this.#handlers.pointermove);
       this.#displayCanvas.removeEventListener("pointerup", this.#handlers.pointerup);
       this.#displayCanvas.removeEventListener("pointercancel", this.#handlers.pointercancel);
+      this.#displayCanvas.removeEventListener("dblclick", this.#handlers.dblclick);
       globalThis.window?.removeEventListener?.("resize", this.#handlers.resize);
     }
     this.#displayCanvas = null;
@@ -119,11 +125,111 @@ export class DrawingEngine {
 
   /**
    * Set the active tool.
-   * @param {"brush"|"eraser"|"fill"|"eyedropper"} name Tool name.
+   * @param {"brush"|"eraser"|"fill"|"eyedropper"|"line"} name Tool name.
    * @returns {void}
    */
   setTool(name) {
-    if ( this.#tools[name] ) this.#toolName = name;
+    if ( !this.#tools[name] ) return;
+    if ( this.#toolName === "line" && name !== "line" ) {
+      this.#tools.line.cancel(this.#toolContext());
+    }
+    this.#toolName = name;
+  }
+
+  /**
+   * Commit an in-progress line polyline (Enter).
+   * @returns {boolean}
+   */
+  commitLineDraft() {
+    if ( this.#toolName !== "line" ) return false;
+    return this.#tools.line.commit(this.#toolContext());
+  }
+
+  /**
+   * Cancel an in-progress line polyline (Escape).
+   * @returns {boolean}
+   */
+  cancelLineDraft() {
+    if ( this.#toolName !== "line" || !this.#tools.line.isDrafting() ) return false;
+    this.#tools.line.cancel(this.#toolContext());
+    return true;
+  }
+
+  /**
+   * Preview a polyline as the current stroke (rubber-band / line draft).
+   * @param {{x: number, y: number}[]} points Points.
+   * @returns {void}
+   */
+  previewPolyline(points) {
+    const list = Array.isArray(points) ? points : [];
+    if ( !list.length ) {
+      this.cancelStrokePreview();
+      return;
+    }
+    if ( !this.#currentStroke ) {
+      this.#strokeBaseCanvas = createCanvas(this.width, this.height);
+      this.#strokeBaseCanvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0);
+      this.#currentStroke = {
+        type: "stroke",
+        color: this.#color,
+        size: this.#brushSize,
+        opacity: this.#brushOpacity,
+        straight: true,
+        points: list.map(pt => ({ x: pt.x, y: pt.y }))
+      };
+    } else {
+      this.#currentStroke.points = list.map(pt => ({ x: pt.x, y: pt.y }));
+      this.#currentStroke.color = this.#color;
+      this.#currentStroke.size = this.#brushSize;
+      this.#currentStroke.opacity = this.#brushOpacity;
+      this.#currentStroke.straight = true;
+    }
+    this.#renderCurrentStroke();
+    this.#emitChange();
+  }
+
+  /**
+   * Discard the in-progress stroke preview without committing.
+   * @returns {void}
+   */
+  cancelStrokePreview() {
+    if ( !this.#currentStroke ) return;
+    if ( this.#strokeBaseCanvas ) {
+      this.#drawCtx.clearRect(0, 0, this.width, this.height);
+      this.#drawCtx.drawImage(this.#strokeBaseCanvas, 0, 0);
+    }
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    this.#markDirty();
+    this.#emitChange();
+  }
+
+  /**
+   * Commit the current stroke preview as a stroke operation.
+   * @returns {boolean}
+   */
+  commitStrokePreview() {
+    if ( !this.#currentStroke || this.#currentStroke.points.length < 2 ) {
+      this.cancelStrokePreview();
+      return false;
+    }
+    const op = {
+      id: operationId(),
+      type: this.#currentStroke.type,
+      ts: Date.now(),
+      size: this.#currentStroke.size,
+      points: this.#currentStroke.points.map(point => ({ x: point.x, y: point.y }))
+    };
+    if ( op.type === "stroke" ) {
+      op.color = this.#currentStroke.color;
+      op.opacity = this.#currentStroke.opacity;
+      if ( this.#currentStroke.straight ) op.straight = true;
+    }
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    this.#commitOperation(op);
+    this.#markDirty();
+    return true;
   }
 
   /**
@@ -175,6 +281,7 @@ export class DrawingEngine {
    * @returns {boolean}
    */
   undo() {
+    this.#discardLineDraft();
     if ( !this.canUndo ) return false;
     const pointer = this.#opLog.undo();
     if ( pointer === null ) return false;
@@ -188,6 +295,7 @@ export class DrawingEngine {
    * @returns {boolean}
    */
   redo() {
+    this.#discardLineDraft();
     const pointer = this.#opLog.redo();
     if ( pointer === null ) return false;
     this.#restoreToPointer(pointer);
@@ -200,6 +308,7 @@ export class DrawingEngine {
    * @returns {void}
    */
   clearLayer() {
+    this.#discardLineDraft();
     this.#drawCtx.clearRect(0, 0, this.width, this.height);
     this.#commitOperation({ id: operationId(), type: "clear", ts: Date.now() });
     this.#markDirty();
@@ -257,12 +366,33 @@ export class DrawingEngine {
    * @returns {string}
    */
   getCompositeSnapshot({ maxEdge, quality, type = "image/webp" } = {}) {
-    const scale = Math.min(1, Number(maxEdge || Math.max(this.width, this.height)) / Math.max(this.width, this.height));
-    const canvas = createCanvas(Math.max(1, Math.round(this.width * scale)), Math.max(1, Math.round(this.height * scale)));
+    const canvas = this.#snapshotCanvas(maxEdge);
     const context = canvas.getContext("2d");
     context.drawImage(this.#bgCanvas, 0, 0, canvas.width, canvas.height);
     context.drawImage(this.#drawCanvas, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL(type, quality);
+  }
+
+  /**
+   * Build a downscaled overlay-only (ink) data URL with transparent background.
+   * Used for Full Framing live remap — same ink layer dual Save bakes, not bg+ink.
+   * @param {{maxEdge: number, quality?: number, type?: string}} options Snapshot options.
+   * @returns {string}
+   */
+  getOverlaySnapshot({ maxEdge, quality, type = "image/webp" } = {}) {
+    const canvas = this.#snapshotCanvas(maxEdge);
+    canvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL(type, quality);
+  }
+
+  /**
+   * Create a downscaled snapshot canvas sized by max edge.
+   * @param {number} maxEdge Max edge length in pixels.
+   * @returns {HTMLCanvasElement|OffscreenCanvas}
+   */
+  #snapshotCanvas(maxEdge) {
+    const scale = Math.min(1, Number(maxEdge || Math.max(this.width, this.height)) / Math.max(this.width, this.height));
+    return createCanvas(Math.max(1, Math.round(this.width * scale)), Math.max(1, Math.round(this.height * scale)));
   }
 
   /**
@@ -308,6 +438,44 @@ export class DrawingEngine {
    */
   getOpLog() {
     return this.#opLog.toJSON();
+  }
+
+  /**
+   * Replace the draw layer from a serialized operation log.
+   * @param {{ops?: object[], pointer?: number}} serialized Serialized log.
+   * @returns {void}
+   */
+  loadOpLog(serialized) {
+    this.#opLog = OperationLog.fromSerialized(serialized);
+    this.#checkpoints = [];
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    this.#restoreToPointer(this.#opLog.pointer);
+    this.#emitChange();
+  }
+
+  /**
+   * Replace the draw layer from raw RGBA pixels (overlay-only restore).
+   * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} rgba Pixel buffer.
+   * @returns {void}
+   */
+  loadOverlayRgba({ width, height, data }) {
+    const w = Math.max(1, Math.floor(Number(width) || 1));
+    const h = Math.max(1, Math.floor(Number(height) || 1));
+    this.#drawCtx.clearRect(0, 0, this.width, this.height);
+    if ( w === this.width && h === this.height ) {
+      this.#drawCtx.putImageData(new ImageData(data, w, h), 0, 0);
+    } else {
+      const canvas = createCanvas(w, h);
+      canvas.getContext("2d").putImageData(new ImageData(data, w, h), 0, 0);
+      this.#drawCtx.drawImage(canvas, 0, 0, this.width, this.height);
+    }
+    this.#opLog = new OperationLog();
+    this.#checkpoints = [];
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    this.#markDirty();
+    this.#emitChange();
   }
 
   /**
@@ -469,9 +637,16 @@ export class DrawingEngine {
    * @returns {void}
    */
   #onPointerMove(event) {
-    if ( event.pointerId !== this.#pointerId ) return;
-    event.preventDefault();
-    this.#tools[this.#toolName].onPointerMove(this.#eventPoint(event), this.#toolContext());
+    if ( this.#pointerId !== null ) {
+      if ( event.pointerId !== this.#pointerId ) return;
+      event.preventDefault();
+      this.#tools[this.#toolName].onPointerMove(this.#eventPoint(event), this.#toolContext());
+      return;
+    }
+    // Line rubber-band continues after click (hover) while a draft is active.
+    if ( this.#toolName === "line" && this.#tools.line.isDrafting() ) {
+      this.#tools.line.onPointerMove(this.#eventPoint(event), this.#toolContext());
+    }
   }
 
   /**
@@ -485,6 +660,20 @@ export class DrawingEngine {
     this.#tools[this.#toolName].onPointerUp(this.#eventPoint(event), this.#toolContext());
     this.#displayCanvas.releasePointerCapture?.(event.pointerId);
     this.#pointerId = null;
+  }
+
+  /**
+   * Double-click handler (line tool commit).
+   * @param {MouseEvent} event Event.
+   * @returns {void}
+   */
+  #onDoubleClick(event) {
+    const tool = this.#tools[this.#toolName];
+    if ( !tool?.onDoubleClick ) return;
+    if ( tool.onDoubleClick(this.#eventPoint(event), this.#toolContext()) ) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
   }
 
   /**
@@ -511,9 +700,25 @@ export class DrawingEngine {
       beginStroke: (type, pt) => this.beginStroke(type, pt),
       extendStroke: pt => this.extendStroke(pt),
       commitStroke: pt => this.commitStroke(pt),
+      previewPolyline: points => this.previewPolyline(points),
+      cancelStrokePreview: () => this.cancelStrokePreview(),
+      commitStrokePreview: () => this.commitStrokePreview(),
       fill: pt => this.fill(pt),
       sampleColor: pt => this.sampleColor(pt)
     };
+  }
+
+  /**
+   * Cancel an in-progress line polyline (and its stroke preview) before history mutations.
+   * Prevents rubber-band pixels / stale strokeBase from surviving undo, redo, or clear.
+   * @returns {void}
+   */
+  #discardLineDraft() {
+    if ( this.#toolName === "line" && this.#tools.line.isDrafting() ) {
+      this.#tools.line.cancel(this.#toolContext());
+      return;
+    }
+    if ( this.#currentStroke ) this.cancelStrokePreview();
   }
 
   /**
@@ -741,15 +946,21 @@ function renderStroke(context, op) {
 
   context.beginPath();
   context.moveTo(points[0].x, points[0].y);
-  for ( let i = 1; i < points.length - 1; i++ ) {
-    const midpoint = {
-      x: (points[i].x + points[i + 1].x) / 2,
-      y: (points[i].y + points[i + 1].y) / 2
-    };
-    context.quadraticCurveTo(points[i].x, points[i].y, midpoint.x, midpoint.y);
+  if ( op.straight ) {
+    for ( let i = 1; i < points.length; i++ ) {
+      context.lineTo(points[i].x, points[i].y);
+    }
+  } else {
+    for ( let i = 1; i < points.length - 1; i++ ) {
+      const midpoint = {
+        x: (points[i].x + points[i + 1].x) / 2,
+        y: (points[i].y + points[i + 1].y) / 2
+      };
+      context.quadraticCurveTo(points[i].x, points[i].y, midpoint.x, midpoint.y);
+    }
+    const last = points.at(-1);
+    context.lineTo(last.x, last.y);
   }
-  const last = points.at(-1);
-  context.lineTo(last.x, last.y);
   context.stroke();
   context.restore();
 }

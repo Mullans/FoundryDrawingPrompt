@@ -1,4 +1,4 @@
-import { MODULE_ID, SETTINGS } from "../constants.mjs";
+import { FRAMING_VIEW, MODULE_ID, SETTINGS } from "../constants.mjs";
 import { attachActorFilter, worldActorOptions } from "../foundry/actor-picker.mjs";
 import { PLACE_MODES, validatePlaceSelection } from "../foundry/token-placement-service.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
@@ -42,16 +42,18 @@ export class PlaceDialog extends HandlebarsApplicationMixin(ApplicationV2) {
   /**
    * Open a placement window for an assignment.
    * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Assignment to place.
+   * @param {{framingView?: string, imagePath?: string|null}} [options] Framing View / resolved asset path.
    * @returns {Promise<PlaceDialog>}
    */
-  static async open(assignment) {
+  static async open(assignment, { framingView = FRAMING_VIEW.PROMPT_CANVAS, imagePath = null } = {}) {
     if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
-    if ( !assignment?.primaryImagePath || !isSaveGateOpen(assignment) ) {
+    const src = imagePath || assignment?.primaryImagePath;
+    if ( !src || !isSaveGateOpen(assignment) ) {
       throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.saveBeforePlace"));
     }
     const transaction = PlaceDialog.#openQueue.then(async () => {
       if ( PlaceDialog.#instance ) await PlaceDialog.#instance.close();
-      const app = new this(assignment);
+      const app = new this(assignment, { framingView, imagePath: src });
       PlaceDialog.#instance = app;
       try {
         await app.render({ force: true });
@@ -74,10 +76,15 @@ export class PlaceDialog extends HandlebarsApplicationMixin(ApplicationV2) {
   /**
    * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Assignment to place.
    * @param {object} [options] Application options.
+   * @param {string} [options.framingView] Framing View for the placed raster.
+   * @param {string|null} [options.imagePath] Resolved saved asset path for that view.
    */
   constructor(assignment, options = {}) {
-    super(options);
+    const { framingView, imagePath, ...appOptions } = options;
+    super(appOptions);
     this.assignment = assignment;
+    this.framingView = framingView || FRAMING_VIEW.PROMPT_CANVAS;
+    this.imagePath = imagePath || assignment?.primaryImagePath || null;
   }
 
   /** @type {boolean} Whether a placement commit is in flight. */
@@ -175,12 +182,32 @@ export class PlaceDialog extends HandlebarsApplicationMixin(ApplicationV2) {
     this.#setPlacementActionsDisabled(true);
     try {
       const service = await import("../prompts/prompt-service.mjs");
-      if ( mode === PLACE_MODES.TILE ) {
-        await service.placeAssignmentAsTile(this.assignment.id, { hidden, name });
-      } else {
-        await service.placeAssignmentAsToken(this.assignment.id, { mode, name, actorUuid, hidden });
-      }
+      const { DrawingPromptManager } = await import("./drawing-prompt-manager.mjs");
+      const framingView = this.framingView;
+      const modeSnapshot = mode;
+      const nameSnapshot = name;
+      const actorUuidSnapshot = actorUuid;
+      const hiddenSnapshot = hidden;
       await this.close();
+      await DrawingPromptManager.withCanvasYield(async () => {
+        if ( modeSnapshot === PLACE_MODES.TILE ) {
+          await service.placeAssignmentAsTile(this.assignment.id, {
+            hidden: hiddenSnapshot,
+            name: nameSnapshot,
+            framingView,
+            interactive: true
+          });
+        } else {
+          await service.placeAssignmentAsToken(this.assignment.id, {
+            mode: modeSnapshot,
+            name: nameSnapshot,
+            actorUuid: actorUuidSnapshot,
+            hidden: hiddenSnapshot,
+            framingView,
+            interactive: true
+          });
+        }
+      });
     } catch (err) {
       ui.notifications.warn(err.message);
       this.#placing = false;

@@ -139,14 +139,59 @@ test("isValidSubmissionPayload accepts socket-lane submissions", () => {
 });
 
 test("isValidSubmissionPayload accepts staged submissions", () => {
+  const assignmentId = "a1";
+  const stagingRoot = buildStagingDir("worlds/test/drawing-prompts");
+  const pendingRoot = buildPendingDir("worlds/test/drawing-prompts", assignmentId);
   assert.equal(isValidSubmissionPayload({
     mode: "staged",
-    staged: { overlayPath: "worlds/test/drawing-prompts/staging/a1-overlay.webp", mergedPath: null },
+    staged: { overlayPath: `${stagingRoot}/${assignmentId}-overlay.webp`, mergedPath: null },
     opLog: { operations: [] },
     width: 1024,
     height: 768,
     formats: { overlay: "webp", merged: null }
-  }), true);
+  }, { assignmentId, stagingRoot, pendingRoot, forge: false }), true);
+});
+
+test("validateSubmissionPayload fails closed when staged path allowlist context is missing", () => {
+  // Staged paths are player-supplied and this is the only gate that checks them, so an
+  // unresolvable allowlist must reject rather than accept the payload unvalidated (SCR-52).
+  const payload = {
+    mode: "staged",
+    staged: { overlayPath: "https://evil.example/payload.webp", mergedPath: null },
+    opLog: { operations: [] },
+    width: 1024,
+    height: 768,
+    formats: { overlay: "webp", merged: null }
+  };
+  assert.equal(isValidSubmissionPayload(payload), false, "no options at all -> rejected");
+
+  const noContext = validateSubmissionPayload(payload);
+  assert.equal(noContext.ok, false);
+  assert.equal(noContext.reason, "path-context");
+  assert.match(noContext.detail, /assignmentId/);
+  assert.match(noContext.detail, /stagingRoot or pendingRoot/);
+
+  const noRoots = validateSubmissionPayload(payload, { assignmentId: "a1" });
+  assert.equal(noRoots.ok, false);
+  assert.equal(noRoots.reason, "path-context");
+  assert.match(noRoots.detail, /stagingRoot or pendingRoot/);
+  assert.doesNotMatch(noRoots.detail, /assignmentId/);
+
+  const noAssignmentId = validateSubmissionPayload(payload, {
+    stagingRoot: "worlds/test/drawing-prompts/staging",
+    pendingRoot: "worlds/test/drawing-prompts/pending/a1"
+  });
+  assert.equal(noAssignmentId.ok, false);
+  assert.equal(noAssignmentId.reason, "path-context");
+  assert.match(noAssignmentId.detail, /assignmentId/);
+
+  // A single root is still enough context to evaluate the allowlist.
+  const stagingOnly = validateSubmissionPayload(payload, {
+    assignmentId: "a1",
+    stagingRoot: "worlds/test/drawing-prompts/staging"
+  });
+  assert.equal(stagingOnly.ok, false);
+  assert.equal(stagingOnly.reason, "path-allowlist", "resolvable context still reports a real allowlist miss");
 });
 
 test("isValidSubmissionPayload rejects malformed staged submissions", () => {
