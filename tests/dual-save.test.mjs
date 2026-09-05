@@ -8,6 +8,7 @@ import {
   canPlaceFramingView,
   clearFramingViewAssets,
   computeDualSaveGeometry,
+  framingViewNeedsLiveOverlay,
   hasPromptCanvasBackground,
   hasSavedFramingViewAssets,
   hasSourceBackground,
@@ -310,6 +311,83 @@ test("compositeOverlayOntoUnderlay paints ink over a prompt-canvas underlay", ()
   assert.deepEqual(getPixel(merged, 4, 0, 0), [100, 100, 100, 255]);
 });
 
+test("compositeOverlayOntoUnderlay upscales a wire-scaled overlay without leaving holes", () => {
+  const underlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(underlay, 4, x, y, [100, 100, 100, 255]);
+    }
+  }
+  // Half-size overlay: one ink pixel must cover the 2×2 underlay block it maps onto.
+  const overlay = blankRgba(2, 2);
+  setPixel(overlay, 2, 0, 0, [0, 255, 0, 255]);
+
+  const merged = compositeOverlayOntoUnderlay(underlay, overlay);
+  assert.equal(merged.width, 4);
+  assert.equal(merged.height, 4);
+  for ( let y = 0; y < 2; y++ ) {
+    for ( let x = 0; x < 2; x++ ) {
+      assert.deepEqual(getPixel(merged, 4, x, y), [0, 255, 0, 255], `hole at (${x},${y})`);
+    }
+  }
+  assert.deepEqual(getPixel(merged, 4, 2, 0), [100, 100, 100, 255]);
+  assert.deepEqual(getPixel(merged, 4, 3, 3), [100, 100, 100, 255]);
+});
+
+test("compositeOverlayOntoUnderlay downscales an oversized overlay without stacking alpha", () => {
+  const underlay = blankRgba(2, 2);
+  for ( let y = 0; y < 2; y++ ) {
+    for ( let x = 0; x < 2; x++ ) {
+      setPixel(underlay, 2, x, y, [0, 0, 255, 255]);
+    }
+  }
+  const overlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(overlay, 4, x, y, [255, 0, 0, 128]);
+    }
+  }
+
+  const merged = compositeOverlayOntoUnderlay(underlay, overlay);
+  assert.equal(merged.width, 2);
+  assert.equal(merged.height, 2);
+  for ( let y = 0; y < 2; y++ ) {
+    for ( let x = 0; x < 2; x++ ) {
+      const pixel = getPixel(merged, 2, x, y);
+      assert.equal(pixel[3], 255);
+      assert.ok(Math.abs(pixel[0] - 128) <= 1, `red channel ${pixel[0]} at (${x},${y})`);
+      assert.ok(Math.abs(pixel[2] - 128) <= 1, `blue channel ${pixel[2]} at (${x},${y})`);
+    }
+  }
+});
+
+test("compositeOverlayOntoUnderlay tolerates missing and short buffers", () => {
+  const overlay = blankRgba(2, 2);
+  setPixel(overlay, 2, 1, 1, [0, 255, 0, 255]);
+
+  // Underlay data shorter than its declared size: missing bytes stay transparent.
+  const short = { width: 2, height: 2, data: new Uint8ClampedArray([10, 20, 30, 255]) };
+  const fromShort = compositeOverlayOntoUnderlay(short, overlay);
+  assert.equal(fromShort.data.length, 2 * 2 * 4);
+  assert.deepEqual(getPixel(fromShort, 2, 0, 0), [10, 20, 30, 255]);
+  assert.deepEqual(getPixel(fromShort, 2, 1, 0), [0, 0, 0, 0]);
+  assert.deepEqual(getPixel(fromShort, 2, 1, 1), [0, 255, 0, 255]);
+
+  // Missing overlay leaves the underlay copy untouched.
+  const underlay = blankRgba(2, 2);
+  setPixel(underlay, 2, 0, 0, [1, 2, 3, 255]);
+  const noOverlay = compositeOverlayOntoUnderlay(underlay, null);
+  assert.deepEqual(getPixel(noOverlay, 2, 0, 0), [1, 2, 3, 255]);
+  assert.notEqual(noOverlay.data, underlay.data);
+
+  // Missing underlay falls back to overlay dimensions instead of throwing.
+  const noUnderlay = compositeOverlayOntoUnderlay(null, overlay);
+  assert.equal(noUnderlay.width, 2);
+  assert.equal(noUnderlay.height, 2);
+  assert.deepEqual(getPixel(noUnderlay, 2, 1, 1), [0, 255, 0, 255]);
+  assert.deepEqual(getPixel(noUnderlay, 2, 0, 0), [0, 0, 0, 0]);
+});
+
 test("shouldWriteMergedSubmission is true when framed/prompt background exists even without staged merged", () => {
   const promptWithFramed = {
     background: {
@@ -345,6 +423,14 @@ test("normalizeFramingView rejects Full Framing without a source and unknown val
   assert.equal(normalizeFramingView(FRAMING_VIEW.PROMPT_CANVAS, { hasSource: true }), FRAMING_VIEW.PROMPT_CANVAS);
   assert.equal(normalizeFramingView("nope", { hasSource: true }), FRAMING_VIEW.PROMPT_CANVAS);
   assert.equal(normalizeFramingView(null), FRAMING_VIEW.PROMPT_CANVAS);
+});
+
+test("framingViewNeedsLiveOverlay is true only when Full Framing can remap ink", () => {
+  assert.equal(framingViewNeedsLiveOverlay(FRAMING_VIEW.FULL, { hasSource: true }), true);
+  assert.equal(framingViewNeedsLiveOverlay("source", { hasSource: true }), true);
+  assert.equal(framingViewNeedsLiveOverlay(FRAMING_VIEW.FULL, { hasSource: false }), false);
+  assert.equal(framingViewNeedsLiveOverlay(FRAMING_VIEW.PROMPT_CANVAS, { hasSource: true }), false);
+  assert.equal(framingViewNeedsLiveOverlay(null), false);
 });
 
 test("resolveFramingViewAssetPath picks primary vs fullPath by Framing View", () => {

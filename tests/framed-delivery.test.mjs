@@ -139,3 +139,127 @@ test("serializeFramedBackgroundForPreview returns blank preFramed payload withou
     naturalHeight: null
   });
 });
+
+test("serializeFramedBackgroundForPreview encodes the framed preview as WebP", async () => {
+  const restore = installFakePreviewDom({ webpSupported: true });
+  try {
+    const preview = await serializeFramedBackgroundForPreview({
+      canvasWidth: 640,
+      canvasHeight: 480,
+      background: {
+        sourceType: BG_SOURCE.FILE,
+        path: "maps/dungeon.webp",
+        fitMode: FIT_MODE.FIT_CANVAS
+      }
+    });
+
+    assert.ok(preview.path.startsWith("data:image/webp;"), preview.path);
+    assert.equal(preview.sourceType, BG_SOURCE.FILE);
+    assert.equal(preview.fitMode, FIT_MODE.STRETCH);
+    assert.equal(preview.preFramed, true);
+    assert.equal(preview.naturalWidth, 640);
+    assert.equal(preview.naturalHeight, 480);
+  } finally {
+    restore();
+  }
+});
+
+test("serializeFramedBackgroundForPreview falls back to PNG when WebP encoding is unavailable", async () => {
+  const restore = installFakePreviewDom({ webpSupported: false });
+  try {
+    const preview = await serializeFramedBackgroundForPreview({
+      canvasWidth: 320,
+      canvasHeight: 240,
+      background: {
+        sourceType: BG_SOURCE.FILE,
+        path: "maps/dungeon.webp",
+        fitMode: FIT_MODE.STRETCH
+      }
+    });
+
+    assert.ok(preview.path.startsWith("data:image/png;"), preview.path);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * Install the minimal browser surface `serializeFramedBackgroundForPreview` needs.
+ * @param {{webpSupported?: boolean}} [options] Fake encoder capability.
+ * @returns {() => void} Restore function.
+ */
+function installFakePreviewDom({ webpSupported = true } = {}) {
+  const originals = {
+    Image: globalThis.Image,
+    document: globalThis.document,
+    FileReader: globalThis.FileReader
+  };
+
+  globalThis.Image = FakeImage;
+  globalThis.FileReader = FakeFileReader;
+  globalThis.document = {
+    createElement: tag => {
+      assert.equal(tag, "canvas");
+      return new FakeCanvas(webpSupported);
+    }
+  };
+
+  return () => {
+    for ( const [key, value] of Object.entries(originals) ) {
+      if ( value === undefined ) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  };
+}
+
+class FakeImage {
+  naturalWidth = 200;
+
+  naturalHeight = 100;
+
+  #handlers = {};
+
+  addEventListener(type, handler) {
+    this.#handlers[type] = handler;
+  }
+
+  set src(_value) {
+    queueMicrotask(() => this.#handlers.load?.());
+  }
+}
+
+class FakeCanvas {
+  #webpSupported;
+
+  constructor(webpSupported) {
+    this.#webpSupported = webpSupported;
+    this.width = 0;
+    this.height = 0;
+  }
+
+  getContext() {
+    return {
+      clearRect: () => {},
+      drawImage: () => {},
+      getImageData: (_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })
+    };
+  }
+
+  toBlob(callback, mime) {
+    const type = (mime === "image/webp" && !this.#webpSupported) ? "image/png" : mime;
+    callback(new Blob([type], { type }));
+  }
+}
+
+class FakeFileReader {
+  #handlers = {};
+
+  addEventListener(type, handler) {
+    this.#handlers[type] = handler;
+  }
+
+  readAsDataURL(blob) {
+    this.result = `data:${blob.type};base64,ZmFrZQ==`;
+    queueMicrotask(() => this.#handlers.load?.());
+  }
+}

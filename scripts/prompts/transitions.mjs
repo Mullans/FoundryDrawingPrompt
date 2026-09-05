@@ -74,7 +74,7 @@ export function isValidSubmissionPayload(payload, options = {}) {
  * Validate a drawing submission payload and explain the failed validation layer.
  * @param {object} payload Submission payload.
  * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string, forge?: boolean}} [options] Context for path allowlists.
- * @returns {{ok: true}|{ok: false, reason: "shape"|"path-allowlist", detail: string}}
+ * @returns {{ok: true}|{ok: false, reason: "shape"|"path-allowlist"|"path-context", detail: string}}
  */
 export function validateSubmissionPayload(payload, options = {}) {
   if ( !isPlainObject(payload) ) return invalidShape("submission must be an object");
@@ -133,13 +133,21 @@ function isValidStagedSubmissionShape(payload) {
 
 /**
  * Validate staged asset paths against assignment-scoped allowlists.
+ *
+ * Fails closed when the allowlist context is missing: staged paths are player-supplied, this is
+ * the only gate that checks them (Save-time persistence trusts `submission.staged.*`), so an
+ * unresolvable allowlist must reject rather than wave the paths through (SCR-52).
  * @param {object} payload Submission payload.
  * @param {{assignmentId?: string, stagingRoot?: string, pendingRoot?: string}} options Path allowlist context.
- * @returns {{ok: false, reason: "path-allowlist", detail: string}|null} Path failure, or null when paths are allowed.
+ * @returns {{ok: false, reason: "path-allowlist"|"path-context", detail: string}|null} Path failure, or null when paths are allowed.
  */
 function stagedPathFailure(payload, options) {
   const { assignmentId, stagingRoot, pendingRoot } = options;
-  if ( !assignmentId || (!stagingRoot && !pendingRoot) ) return null;
+  if ( !assignmentId || (!stagingRoot && !pendingRoot) ) {
+    const missing = [!assignmentId && "assignmentId", (!stagingRoot && !pendingRoot) && "stagingRoot or pendingRoot"]
+      .filter(Boolean).join(" and ");
+    return { ok: false, reason: "path-context", detail: `staged path allowlist context is unavailable; missing ${missing}` };
+  }
   const fields = [
     ["overlayPath", "overlay", payload.staged.overlayPath],
     ["mergedPath", "merged", payload.staged.mergedPath]

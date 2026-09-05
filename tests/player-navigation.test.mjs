@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { containFitScale } from "../scripts/drawing/plate-layout.mjs";
 import {
   clampView,
   classifyWheelGesture,
@@ -20,7 +21,7 @@ const sizes = {
   viewportHeight: 300
 };
 
-test("createFitView fits content inside the viewport and centers it", () => {
+test("createFitView fits content inside the Display stage and centers it", () => {
   const view = createFitView(sizes);
   assert.equal(view.scale, 0.5);
   assert.equal(view.panX, 0);
@@ -38,6 +39,39 @@ test("createFitView letterboxes and centers when aspect ratios differ", () => {
   assert.equal(view.scale, 0.5);
   assert.equal(view.panX, 0);
   assert.equal(view.panY, 100);
+});
+
+test("createFitView min scale matches plate-layout containFitScale", () => {
+  const letterbox = {
+    contentWidth: 800,
+    contentHeight: 400,
+    viewportWidth: 400,
+    viewportHeight: 400
+  };
+  const pillarbox = {
+    contentWidth: 400,
+    contentHeight: 800,
+    viewportWidth: 400,
+    viewportHeight: 400
+  };
+  assert.equal(
+    createFitView(letterbox).scale,
+    containFitScale({
+      contentWidth: letterbox.contentWidth,
+      contentHeight: letterbox.contentHeight,
+      containerWidth: letterbox.viewportWidth,
+      containerHeight: letterbox.viewportHeight
+    })
+  );
+  assert.equal(
+    createFitView(pillarbox).scale,
+    containFitScale({
+      contentWidth: pillarbox.contentWidth,
+      contentHeight: pillarbox.contentHeight,
+      containerWidth: pillarbox.viewportWidth,
+      containerHeight: pillarbox.viewportHeight
+    })
+  );
 });
 
 test("clampView prevents panning outside the Prompt canvas extent when zoomed in", () => {

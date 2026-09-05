@@ -25,24 +25,22 @@ import {
 } from "../foundry/background-source-service.mjs";
 import { defaultAssignmentAssetName } from "../prompts/naming-service.mjs";
 import {
-  buildSourceFramingPreviewDataUrl,
   canPlaceFramingView,
+  framingViewNeedsLiveOverlay,
   hasSourceBackground,
   normalizeFramingView,
-  pickSubmissionOverlaySrc,
-  pickSubmissionPromptCanvasSrc,
   resolveFramingViewAssetPath
 } from "../prompts/dual-save.mjs";
-import {
-  resolvePromptCanvasReviewSrc,
-  resolveReviewPlateAspect,
-  resolveSourceFramingReviewSrc
-} from "../prompts/review-preview.mjs";
+import { resolveAssignmentReview, resolveReviewContextSrc } from "../prompts/assignment-review.mjs";
+import { resolveReviewPlateAspect } from "../prompts/review-preview.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { formatClock, formatTimerAdjustment, formatTimerState } from "../utils/timer-chip.mjs";
 import { normalizeSnapshotPayload } from "../prompts/wire-validation.mjs";
+import {
+  waitForApplicationClose
+} from "./manager-canvas-yield.mjs";
 
 const { ApplicationV2, DialogV2, HandlebarsApplicationMixin } = foundry.applications.api;
 const SNAPSHOT_KEY_PREFIX = "drawing-prompts.snap.";
@@ -63,6 +61,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       title: "DRAWING-PROMPTS.manager.title",
       icon: "fa-solid fa-palette",
       resizable: true,
+      minimizable: true,
       positioned: true
     },
     position: { width: 980, height: 720 },
@@ -136,6 +135,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   static setWindowOpen(assignmentId, open) {
     if ( !this.#instance ) return;
     this.#instance.windowOpenByAssignment.set(assignmentId, open);
+    // A newly opened player window withholds overlay bytes until it is told this view needs them.
+    if ( open ) void this.#instance.#requestLiveSnapshots({ assignmentId });
     this.#instance.render({ parts: ["body"] });
   }
 
@@ -147,6 +148,26 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    */
   static receiveSnapshotOpen(assignmentId, snapshotPayload) {
     this.#instance?.receiveSnapshot(assignmentId, snapshotPayload);
+  }
+
+  /**
+   * Temporarily hide the open manager for Place/Transform canvas work, then restore.
+   * Uses full visibility hide (not window minimize) so the canvas is unobstructed.
+   * @template T
+   * @param {() => Promise<T>|T} work Async canvas-facing work.
+   * @returns {Promise<T>}
+   */
+  static async withCanvasYield(work) {
+    const { hideApplicationForCanvasYield, restoreApplicationAfterCanvasYield } = await import(
+      "../foundry/canvas-place-preview.mjs"
+    );
+    const app = this.#instance;
+    const hideState = hideApplicationForCanvasYield(app);
+    try {
+      return await work();
+    } finally {
+      restoreApplicationAfterCanvasYield(app, hideState);
+    }
   }
 
   constructor() {
@@ -170,7 +191,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.framingView = FRAMING_VIEW.PROMPT_CANVAS;
     /** @type {Map<string, string>} Cached Full Framing live-remap data URLs by assignment. */
     this.#sourceFramingPreviewCache = new Map();
-    this.#sourceFramingPreviewLoad = null;
     this.#expiryTimerId = null;
     this.#expiryStateSignature = "";
   }
@@ -179,7 +199,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #expiryStateSignature;
   #formListenersAttached = false;
   #sourceFramingPreviewCache;
-  #sourceFramingPreviewLoad;
   /**
    * Loaded (and taint-checked) `<img>` for the current draft background, cached
    * alongside its path so {@link #updateFramingEditor} can redraw the framing
@@ -193,6 +212,36 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #framingResizeObserver = null;
   #framingViewportEl = null;
   #reviewPlateResizeObserver = null;
+  /** Bumps on Framing View change so stale async remaps cannot paint intermediate frames. */
+  #framingPreviewEpoch = 0;
+  /**
+   * Bumps when starting an async selected-preview resolve (live Full Framing remap or refresh).
+   * Completions with an older sequence must not paint over a newer resolve.
+   */
+  #previewResolveSeq = 0;
+  /**
+   * `#previewResolveSeq` as it stood when the in-flight render prepared its context.
+   * If it has moved by `_onRender`, a live resolve overlapped this render and `_replaceHTML`
+   * may have painted older template pixels over a newer live frame — re-assert the newest.
+   * @type {number|null}
+   */
+  #renderPreviewResolveSeq = null;
+  /**
+   * Src currently on the review plate (template render or live patch), and the assignment it
+   * belongs to. Feeds the `pendingRemap` fallback so a body render keeps the visible frame
+   * instead of collapsing to the "no snapshot" empty state.
+   * @type {string|null}
+   */
+  #lastPaintedPreviewSrc = null;
+  /** @type {string|null} */
+  #lastPaintedPreviewAssignmentId = null;
+  /**
+   * Framing View last committed to the review plate (image + aspect together).
+   * Toggle may move `this.framingView` earlier; layout must not use that until paint commits,
+   * or ResizeObserver/#layoutReviewPlate stretches the prior bitmap (live Full Framing flash).
+   * @type {string|null}
+   */
+  #committedReviewFramingView = null;
   #framingPanPointerId = null;
   #framingPanLast = null;
   #onFormInput = event => {
@@ -234,7 +283,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       this.latestSnapshots.set(assignmentId, composite);
       this.#cacheSnapshot(assignmentId, composite);
     }
+    // Composite-only ticks (Prompt-canvas view, or overlay dropped for wire budget) must
+    // invalidate cached overlay ink so Full Framing never remaps a stale layer.
     if ( overlay ) this.latestOverlaySnapshots.set(assignmentId, overlay);
+    else if ( composite ) this.latestOverlaySnapshots.delete(assignmentId);
 
     this.selectedAssignmentId ??= assignmentId;
     if ( this.selectedAssignmentId !== assignmentId ) return;
@@ -249,13 +301,21 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
     const assignment = this.activePrompt?.getAssignment(assignmentId);
     if ( !assignment || !this.activePrompt ) return;
-    const overlaySrc = overlay ?? this.latestOverlaySnapshots.get(assignmentId) ?? null;
-    void this.#resolveSourceFramingPreviewSrc(assignment, overlaySrc).then(src => {
+    const resolveSeq = ++this.#previewResolveSeq;
+    const epoch = this.#framingPreviewEpoch;
+    void this.#selectedPreviewContext(assignment, FRAMING_VIEW.FULL).then(preview => {
+      if ( resolveSeq !== this.#previewResolveSeq ) return;
       if ( this.selectedAssignmentId !== assignmentId ) return;
+      if ( epoch !== this.#framingPreviewEpoch ) return;
       if ( normalizeFramingView(this.framingView, {
         hasSource: hasSourceBackground(this.activePrompt)
       }) !== FRAMING_VIEW.FULL ) return;
-      if ( src ) this.#updatePreviewImage(src);
+      if ( preview.src ) {
+        void this.#setPreviewFrame(preview.src, {
+          epoch,
+          framingView: FRAMING_VIEW.FULL
+        });
+      }
     });
   }
 
@@ -277,13 +337,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.selectedAssignmentId = Object.keys(this.activePrompt?.assignments ?? {})[0] ?? null;
     this.#hydrateSnapshotCache();
     await this.#hydrateSubmissionCache();
-    if ( this.activePrompt && isSocketReady() ) {
-      for ( const assignment of Object.values(this.activePrompt.assignments) ) {
-        if ( assignment.isActive && game.users.get(assignment.userId)?.active ) {
-          await emit.requestSnapshot(assignment.userId, assignment.id);
-        }
-      }
-    }
+    await this.#requestLiveSnapshots();
     return {
       adopted: Boolean(this.activePrompt),
       remaining: Math.max(0, prompts.length - 1),
@@ -299,7 +353,15 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const hasSource = hasSourceBackground(this.activePrompt);
     this.framingView = normalizeFramingView(this.framingView, { hasSource });
     const framingView = this.framingView;
+    // Join the live-resolve protocol: this render resolves a preview too, but its pixels reach
+    // the DOM through Handlebars rather than a seq-checked `.then`. Stash the sequence so
+    // `_onRender` can tell whether a live resolve overlapped (and outdated) this render.
+    this.#renderPreviewResolveSeq = this.#previewResolveSeq;
     const selectedPreview = await this.#selectedPreviewContext(selectedAssignment, framingView);
+    const reviewContext = resolveReviewContextSrc({
+      review: selectedPreview,
+      lastPaintedSrc: this.#lastPaintedSrcForSelection()
+    });
     const hasActivePrompt = Boolean(this.activePrompt);
     const viewAssetPath = resolveFramingViewAssetPath(selectedAssignment, framingView);
     const savedAndGateOpen = isSaveGateOpen(selectedAssignment);
@@ -312,8 +374,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       timerControls: this.#timerControlsContext(),
       maxCanvasDim: INTERNAL.MAX_CANVAS_DIM,
       fitModes: this.#fitModeOptions(),
-      selectedSnapshot: selectedPreview.src,
-      selectedPreviewHeading: selectedPreview.heading,
+      selectedSnapshot: reviewContext.src,
+      selectedPreviewHeading: reviewContext.heading,
       selectedAssignmentId: this.selectedAssignmentId,
       canSend: !this.activePrompt,
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
@@ -348,9 +410,53 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     void this.#ensurePreviewBackgroundImage();
     this.#updateFramingEditor();
     this.#ensureFramingEditor();
+    if ( this.activePrompt ) {
+      this.#committedReviewFramingView ??= normalizeFramingView(this.framingView, {
+        hasSource: hasSourceBackground(this.activePrompt)
+      });
+    }
     this.#layoutReviewPlate();
     this.#ensureReviewPlateStage();
+    // `_replaceHTML` has committed, so the template src is what is on screen now.
+    this.#notePaintedPreviewSrc(context?.selectedSnapshot ?? null);
+    this.#reassertPreviewAfterRender();
     this.#refreshExpiryTicker();
+  }
+
+  /**
+   * Record the src currently showing on the review plate, scoped to its assignment so a
+   * selection change can never resurrect the previous assignment's frame.
+   * @param {string|null} src Painted preview src.
+   * @returns {void}
+   */
+  #notePaintedPreviewSrc(src) {
+    this.#lastPaintedPreviewSrc = src ?? null;
+    this.#lastPaintedPreviewAssignmentId = this.selectedAssignmentId;
+  }
+
+  /**
+   * Last painted src, but only when it belongs to the current selection.
+   * @returns {string|null}
+   */
+  #lastPaintedSrcForSelection() {
+    if ( this.#lastPaintedPreviewAssignmentId !== this.selectedAssignmentId ) return null;
+    return this.#lastPaintedPreviewSrc;
+  }
+
+  /**
+   * Re-assert the newest preview when a live resolve overlapped this render.
+   * A slow render's `_replaceHTML` can paint template pixels over a newer live frame; the
+   * template has no seq check of its own, so the overlap is only detectable here.
+   * `#refreshSelectedPreview` is seq- and `pendingRemap`-guarded, so re-entry is safe, and an
+   * unchanged overlay remaps out of cache.
+   * @returns {void}
+   */
+  #reassertPreviewAfterRender() {
+    const renderSeq = this.#renderPreviewResolveSeq;
+    this.#renderPreviewResolveSeq = null;
+    if ( renderSeq === null || renderSeq === this.#previewResolveSeq ) return;
+    if ( !this.activePrompt ) return;
+    void this.#refreshSelectedPreview();
   }
 
   /** @override */
@@ -500,8 +606,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       promptPreview: truncated.text,
       promptTruncated: truncated.truncated,
       drawingName: this.activePrompt.drawingName || game.i18n.localize("DRAWING-PROMPTS.player.untitled"),
-      canvasWidth: this.activePrompt.canvasWidth,
-      canvasHeight: this.activePrompt.canvasHeight,
       hasTimer: this.activePrompt.timerStatus !== "none",
       timerDuration: formatClock(timerSeconds * 1000),
       timerCountdownText: timerCountdown.text,
@@ -535,24 +639,28 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         : "DRAWING-PROMPTS.manager.actions.pauseTimer"),
       adjustments: [
         {
-          deltaMs: extendShort * 1000,
-          label: formatTimerAdjustment(extendShort, 1),
-          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.extend")
-        },
-        {
-          deltaMs: extendLong * 1000,
-          label: formatTimerAdjustment(extendLong, 1),
-          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.extend")
+          deltaMs: -reduceLong * 1000,
+          label: formatTimerAdjustment(reduceLong, -1),
+          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.reduce"),
+          isMinus: true
         },
         {
           deltaMs: -reduceShort * 1000,
           label: formatTimerAdjustment(reduceShort, -1),
-          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.reduce")
+          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.reduce"),
+          isMinus: true
         },
         {
-          deltaMs: -reduceLong * 1000,
-          label: formatTimerAdjustment(reduceLong, -1),
-          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.reduce")
+          deltaMs: extendShort * 1000,
+          label: formatTimerAdjustment(extendShort, 1),
+          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.extend"),
+          isMinus: false
+        },
+        {
+          deltaMs: extendLong * 1000,
+          label: formatTimerAdjustment(extendLong, 1),
+          tooltip: game.i18n.localize("DRAWING-PROMPTS.manager.timer.extend"),
+          isMinus: false
         }
       ]
     };
@@ -576,7 +684,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #layoutFramingPlate() {
     if ( this.activePrompt ) return;
     const stage = this.element?.querySelector("[data-dp-framing-stage]");
-    const plate = stage?.querySelector(".dp-framing-viewport");
+    const plate = stage?.querySelector(".dp-framing-plate");
     if ( !stage || !plate ) return;
     layoutPlateInStage(plate, stage, {
       width: this.draft.canvasWidth,
@@ -594,8 +702,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const plate = stage?.querySelector("[data-dp-review-plate]");
     if ( !stage || !plate ) return;
     const hasSource = hasSourceBackground(this.activePrompt);
+    const framingView = this.#committedReviewFramingView
+      ?? normalizeFramingView(this.framingView, { hasSource });
     const aspect = resolveReviewPlateAspect({
-      framingView: this.framingView,
+      framingView,
       prompt: this.activePrompt,
       hasSource
     });
@@ -632,12 +742,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Repaint the Prompt Framing editor viewport over the source image.
+   * Repaint the Prompt Framing editor plate over the source image.
    * @returns {void}
    */
   #updateFramingEditor() {
     if ( this.activePrompt ) return;
-    const canvasEl = this.element?.querySelector("[data-dp-framing-viewport]");
+    const canvasEl = this.element?.querySelector("[data-dp-framing-plate]");
     if ( !canvasEl ) return;
     const emptyEl = this.element?.querySelector("[data-dp-framing-empty]");
     const { path, naturalWidth, naturalHeight } = this.draft.background;
@@ -757,11 +867,11 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Resolve the framing editor viewport canvas and its display size.
+   * Resolve the framing editor plate canvas and its display size.
    * @returns {{canvas: HTMLCanvasElement, width: number, height: number}|null}
    */
-  #framingViewportMetrics() {
-    const canvas = this.element?.querySelector("[data-dp-framing-viewport]");
+  #framingPlateMetrics() {
+    const canvas = this.element?.querySelector("[data-dp-framing-plate]");
     if ( !canvas ) return null;
     return {
       canvas,
@@ -771,15 +881,15 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Attach pan/zoom handlers to the Prompt Framing editor viewport.
+   * Attach pan/zoom handlers to the Prompt Framing editor plate.
    * @returns {void}
    */
   #ensureFramingEditor() {
     if ( this.activePrompt || this.#framingEditorAttached ) return;
     const root = this.element?.querySelector("[data-dp-framing-editor]");
     const stage = root?.querySelector("[data-dp-framing-stage]");
-    const viewport = root?.querySelector(".dp-framing-viewport");
-    if ( !viewport ) return;
+    const plate = root?.querySelector(".dp-framing-plate");
+    if ( !plate ) return;
 
     const onWheel = event => this.#onFramingWheel(event);
     const onPointerDown = event => this.#onFramingPointerDown(event);
@@ -792,18 +902,18 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const onBlur = () => this.#endFramingPan();
 
     this.#framingEditorHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onBlur };
-    this.#framingViewportEl = viewport;
-    viewport.addEventListener("wheel", onWheel, { passive: false });
-    viewport.addEventListener("pointerdown", onPointerDown);
-    viewport.addEventListener("pointermove", onPointerMove);
-    viewport.addEventListener("pointerup", onPointerUp);
-    viewport.addEventListener("pointercancel", onPointerUp);
-    viewport.addEventListener("dblclick", onDblClick);
+    this.#framingViewportEl = plate;
+    plate.addEventListener("wheel", onWheel, { passive: false });
+    plate.addEventListener("pointerdown", onPointerDown);
+    plate.addEventListener("pointermove", onPointerMove);
+    plate.addEventListener("pointerup", onPointerUp);
+    plate.addEventListener("pointercancel", onPointerUp);
+    plate.addEventListener("dblclick", onDblClick);
     window.addEventListener("blur", onBlur);
     if ( typeof ResizeObserver !== "undefined" ) {
       this.#framingResizeObserver = new ResizeObserver(() => this.#updateFramingEditor());
       // Observe the void stage so plate re-letterboxes when the pane resizes.
-      this.#framingResizeObserver.observe(stage ?? viewport);
+      this.#framingResizeObserver.observe(stage ?? plate);
     }
     this.#framingEditorAttached = true;
   }
@@ -849,7 +959,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    */
   #zoomDraftFraming(factor) {
     const framing = resolveDraftFraming(this.draft.background);
-    const metrics = this.#framingViewportMetrics();
+    const metrics = this.#framingPlateMetrics();
     if ( !framing || !metrics ) return;
     this.#applyDraftFraming(zoomFraming(framing, {
       factor,
@@ -869,7 +979,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    */
   #onFramingWheel(event) {
     const framing = resolveDraftFraming(this.draft.background);
-    const metrics = this.#framingViewportMetrics();
+    const metrics = this.#framingPlateMetrics();
     if ( !framing || !metrics ) return;
     event.preventDefault();
     const gesture = classifyWheelGesture(event);
@@ -919,7 +1029,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #onFramingPointerMove(event) {
     if ( this.#framingPanPointerId !== event.pointerId || !this.#framingPanLast ) return;
     const framing = resolveDraftFraming(this.draft.background);
-    const metrics = this.#framingViewportMetrics();
+    const metrics = this.#framingPlateMetrics();
     if ( !framing || !metrics ) return;
     const dxDisplay = event.clientX - this.#framingPanLast.x;
     const dyDisplay = event.clientY - this.#framingPanLast.y;
@@ -1092,10 +1202,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( next === this.framingView ) return;
     // Session UI only — must not touch clearFramingViewAssets / savedSubmissionTs (Save gate).
     this.framingView = next;
+    this.#framingPreviewEpoch += 1;
+    // Re-arm the players' overlay gate for the new view: on it supplies live remap ink, off stops the bytes.
+    void this.#requestLiveSnapshots();
     this.#updateFramingViewToggle();
-    this.#layoutReviewPlate();
-    void this.#refreshSelectedPreview();
     this.#updatePlaceActionsForFramingView();
+    // Single atomic preview update (aspect + image together) — do not layout before the new src is ready.
+    void this.#refreshSelectedPreview();
   }
 
   /**
@@ -1316,7 +1429,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const imagePath = resolveFramingViewAssetPath(assignment, framingView);
     const { PlaceDialog } = await import("./place-dialog.mjs");
     try {
-      await PlaceDialog.open(assignment, { framingView, imagePath });
+      // Dialog stays visible for mode selection; canvas yield starts after Place commits.
+      const dialog = await PlaceDialog.open(assignment, { framingView, imagePath });
+      await waitForApplicationClose(dialog);
     } catch (err) {
       ui.notifications.warn(err.message);
     }
@@ -1331,7 +1446,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     });
     const service = await import("../prompts/prompt-service.mjs");
     try {
-      await service.applyAssignmentTransform(assignmentId, { framingView });
+      await DrawingPromptManager.withCanvasYield(async () => {
+        await service.applyAssignmentTransform(assignmentId, { framingView });
+      });
     } catch (err) {
       ui.notifications.warn(err.message);
     }
@@ -1454,120 +1571,46 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /**
-   * Resolve preview source and heading for the selected assignment.
+   * Resolve preview source and heading for the selected assignment via deep Assignment review.
    * @param {import("../prompts/prompt-models.mjs").DrawingAssignment|null} assignment Selected assignment.
    * @param {string} [framingView] Framing View for this preview.
-   * @returns {Promise<{src: string|null, heading: string}>}
+   * @returns {Promise<import("../prompts/assignment-review.mjs").AssignmentReviewResult>}
    */
   async #selectedPreviewContext(assignment, framingView = FRAMING_VIEW.PROMPT_CANVAS) {
-    if ( !assignment ) {
-      return {
-        src: null,
-        heading: game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview")
-      };
-    }
-    const view = normalizeFramingView(framingView, {
-      hasSource: hasSourceBackground(this.activePrompt)
-    });
-    const snapshot = this.latestSnapshots.get(assignment.id) ?? null;
-    const headingSubmitted = assignment.assets.name || game.i18n.localize("DRAWING-PROMPTS.manager.submittedDrawing");
-    const headingLive = game.i18n.localize("DRAWING-PROMPTS.manager.sections.preview");
-    const heading = assignment.status === STATUS.SUBMITTED ? headingSubmitted : headingLive;
-
-    if ( view === FRAMING_VIEW.FULL ) {
-      const src = await this.#resolveSourceFramingPreviewSrc(assignment);
-      return { src, heading };
-    }
-
-    let pendingSrc = null;
-    if ( assignment.status === STATUS.SUBMITTED ) {
+    let pendingSubmission = null;
+    if ( assignment?.status === STATUS.SUBMITTED ) {
       const service = await import("../prompts/prompt-service.mjs");
-      const submission = service.getPendingSubmission(assignment.id);
-      pendingSrc = pendingSubmissionPromptCanvasPreviewSrc(submission);
+      pendingSubmission = service.getPendingSubmission(assignment.id);
     }
-    const src = resolvePromptCanvasReviewSrc({
-      liveSrc: snapshot,
-      pendingSrc,
-      savedPath: assignment.primaryImagePath ?? null,
-      framedPath: this.activePrompt?.background?.framedPath ?? null
+    return resolveAssignmentReview({
+      assignment,
+      prompt: this.activePrompt,
+      framingView,
+      liveSnapshot: assignment ? (this.latestSnapshots.get(assignment.id) ?? null) : null,
+      liveOverlaySnapshot: assignment ? (this.latestOverlaySnapshots.get(assignment.id) ?? null) : null,
+      pendingSubmission,
+      remapCache: this.#sourceFramingPreviewCache,
+      localize: key => game.i18n.localize(key)
     });
-    return { src, heading };
   }
 
   /**
-   * Resolve Full Framing preview: saved fullPath when gate open for current submission,
-   * otherwise remapped live/pending **overlay only** via dual-Save geometry (never merged/composite),
-   * otherwise source image alone when delivery exists.
-   * @param {import("../prompts/prompt-models.mjs").DrawingAssignment} assignment Assignment.
-   * @param {string|null} [overlaySrcHint] Optional live overlay data URL.
-   * @returns {Promise<string|null>}
+   * Ask active player clients for a fresh live snapshot, telling them whether the
+   * current Framing View needs overlay (ink-only) bytes for its live remap.
+   * @param {object} [options] Options.
+   * @param {string|null} [options.assignmentId=null] Limit the request to one assignment.
+   * @returns {Promise<void>}
    */
-  async #resolveSourceFramingPreviewSrc(assignment, overlaySrcHint = null) {
-    const savedFull = resolveFramingViewAssetPath(assignment, FRAMING_VIEW.FULL);
-    const savedFullPath = savedFull && isSaveGateOpen(assignment) ? savedFull : null;
-    if ( savedFullPath ) {
-      return resolveSourceFramingReviewSrc({
-        savedFullPath,
-        remappedSrc: null,
-        sourcePath: null
-      });
-    }
-
-    let overlaySrc = overlaySrcHint;
-    let submission = null;
-    if ( assignment.status === STATUS.SUBMITTED ) {
-      const service = await import("../prompts/prompt-service.mjs");
-      submission = service.getPendingSubmission(assignment.id);
-      overlaySrc = pendingSubmissionOverlayPreviewSrc(submission)
-        ?? this.latestOverlaySnapshots.get(assignment.id)
-        ?? overlaySrcHint
-        ?? null;
-    } else {
-      overlaySrc = overlaySrcHint
-        ?? this.latestOverlaySnapshots.get(assignment.id)
-        ?? null;
-    }
-
-    let remappedSrc = null;
-    if ( overlaySrc && this.activePrompt ) {
-      const cacheKey = sourceFramingPreviewCacheKey(assignment.id, this.activePrompt.id, overlaySrc);
-      const cached = this.#sourceFramingPreviewCache.get(cacheKey);
-      if ( cached ) {
-        remappedSrc = cached;
-      } else {
-        // Drop other keys for this assignment so reloads don't grow unbounded.
-        for ( const key of this.#sourceFramingPreviewCache.keys() ) {
-          if ( key.startsWith(`${assignment.id}|`) ) this.#sourceFramingPreviewCache.delete(key);
-        }
-
-        const load = (async () => {
-          try {
-            const dataUrl = await buildSourceFramingPreviewDataUrl({
-              src: overlaySrc,
-              prompt: this.activePrompt,
-              submission
-            });
-            if ( dataUrl ) this.#sourceFramingPreviewCache.set(cacheKey, dataUrl);
-            return dataUrl;
-          } catch (err) {
-            console.warn("drawing-prompts | Full Framing preview remap failed", err);
-            return null;
-          }
-        })();
-        this.#sourceFramingPreviewLoad = load;
-        remappedSrc = await load;
-        if ( this.#sourceFramingPreviewLoad === load ) this.#sourceFramingPreviewLoad = null;
-      }
-    }
-
-    const sourcePath = hasSourceBackground(this.activePrompt)
-      ? (this.activePrompt.background?.path ?? null)
-      : null;
-    return resolveSourceFramingReviewSrc({
-      savedFullPath: null,
-      remappedSrc,
-      sourcePath
+  async #requestLiveSnapshots({ assignmentId = null } = {}) {
+    if ( !this.activePrompt || !isSocketReady() ) return;
+    const includeOverlay = framingViewNeedsLiveOverlay(this.framingView, {
+      hasSource: hasSourceBackground(this.activePrompt)
     });
+    for ( const assignment of Object.values(this.activePrompt.assignments) ) {
+      if ( assignmentId && assignment.id !== assignmentId ) continue;
+      if ( !assignment.isActive || !game.users.get(assignment.userId)?.active ) continue;
+      await emit.requestSnapshot(assignment.userId, assignment.id, { includeOverlay });
+    }
   }
 
   /**
@@ -1647,13 +1690,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     });
     this.#hydrateSnapshotCache();
     await this.#hydrateSubmissionCache();
-    if ( isSocketReady() ) {
-      for ( const assignment of Object.values(this.activePrompt.assignments) ) {
-        if ( assignment.isActive && game.users.get(assignment.userId)?.active ) {
-          await emit.requestSnapshot(assignment.userId, assignment.id);
-        }
-      }
-    }
+    await this.#requestLiveSnapshots();
     await this.render({ parts: ["body"] });
   }
 
@@ -1741,12 +1778,22 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const assignment = this.#selectedAssignment();
     const assignmentId = this.selectedAssignmentId;
     const framingView = this.framingView;
+    const resolveSeq = ++this.#previewResolveSeq;
+    const epoch = this.#framingPreviewEpoch;
     const preview = await this.#selectedPreviewContext(assignment, framingView);
+    if ( resolveSeq !== this.#previewResolveSeq ) return;
     if ( this.selectedAssignmentId !== assignmentId || this.framingView !== framingView ) return;
-    this.#layoutReviewPlate();
-    this.#setPreviewFrame(preview.src);
+    if ( epoch !== this.#framingPreviewEpoch ) return;
+    // Live Full Framing often resolves before overlay ink arrives. Keep the Prompt-canvas
+    // pixels until remapped Full Framing is ready — never paint bare source as an interim.
+    if ( preview.pendingRemap ) {
+      const legend = this.element?.querySelector(".dp-preview-panel fieldset > legend");
+      if ( legend ) legend.textContent = preview.heading;
+      return;
+    }
     const legend = this.element?.querySelector(".dp-preview-panel fieldset > legend");
     if ( legend ) legend.textContent = preview.heading;
+    await this.#setPreviewFrame(preview.src, { epoch, framingView });
   }
 
   /**
@@ -1788,14 +1835,29 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /**
    * Update the review-mode preview frame without rerendering the full form.
+   * Layout + image swap happen together after the bitmap is ready so Framing View
+   * switches never flash a stretched prior image at the new aspect.
    * @param {string|null} src Preview image URL or data URL.
-   * @returns {void}
+   * @param {{epoch?: number|null, framingView?: string|null}} [options] Optional guards / committed view.
+   * @returns {Promise<void>}
    */
-  #setPreviewFrame(src) {
-    const frame = this.element?.querySelector(".is-review [data-dp-review-plate]")
-      ?? this.element?.querySelector(".is-review .dp-preview-frame");
+  async #setPreviewFrame(src, { epoch = null, framingView = null } = {}) {
+    let frame = this.#reviewPlateElement();
     if ( !frame ) return;
+    if ( epoch != null && epoch !== this.#framingPreviewEpoch ) return;
+    const commitView = framingView
+      ?? normalizeFramingView(this.framingView, { hasSource: hasSourceBackground(this.activePrompt) });
     if ( src ) {
+      const ready = await decodePreviewImage(src);
+      if ( epoch != null && epoch !== this.#framingPreviewEpoch ) return;
+      if ( !frame.isConnected ) {
+        // A render's `_replaceHTML` detached the plate we captured before the decode await.
+        // This src is still the newest frame — bailing here would silently discard it and
+        // leave the older template pixels up. Re-query, and only give up if the plate is gone.
+        frame = this.#reviewPlateElement();
+        if ( !frame?.isConnected ) return;
+      }
+
       let img = frame.querySelector("img");
       frame.querySelector(".dp-empty")?.remove();
       if ( !img ) {
@@ -1804,7 +1866,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         img.alt = game.i18n.localize("DRAWING-PROMPTS.manager.alt.assignmentPreview");
         frame.append(img);
       }
-      img.src = src;
+      // Commit aspect with the bitmap in one turn — ResizeObserver must not layout to the
+      // toggle's Framing View while the prior live Prompt-canvas image is still showing.
+      this.#committedReviewFramingView = commitView;
+      if ( ready?.src ) img.src = ready.src;
+      else img.src = src;
+      this.#notePaintedPreviewSrc(src);
       this.#layoutReviewPlate();
       return;
     }
@@ -1813,6 +1880,19 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     empty.className = "dp-empty";
     empty.textContent = game.i18n.localize("DRAWING-PROMPTS.manager.empty.noSnapshot");
     frame.append(empty);
+    this.#committedReviewFramingView = commitView;
+    this.#notePaintedPreviewSrc(null);
+    this.#layoutReviewPlate();
+  }
+
+  /**
+   * Current review plate element, or null when the manager is not in review mode.
+   * @returns {HTMLElement|null}
+   */
+  #reviewPlateElement() {
+    return this.element?.querySelector(".is-review [data-dp-review-plate]")
+      ?? this.element?.querySelector(".is-review .dp-preview-frame")
+      ?? null;
   }
 
   /**
@@ -1821,7 +1901,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #updatePreviewImage(dataUrl) {
-    this.#setPreviewFrame(dataUrl);
+    void this.#setPreviewFrame(dataUrl, {
+      epoch: this.#framingPreviewEpoch,
+      framingView: this.framingView
+    });
   }
 
   /**
@@ -2008,48 +2091,6 @@ function userCanUploadFiles(user) {
 }
 
 /**
- * Resolve a Prompt-canvas preview source from a cached pending submission (prefers merged).
- * @param {object|null} submission Submission payload.
- * @returns {string|null} Preview source.
- */
-function pendingSubmissionPromptCanvasPreviewSrc(submission) {
-  const src = pickSubmissionPromptCanvasSrc(submission);
-  if ( !src ) return null;
-  if ( submission?.mode === "staged" ) {
-    return `${encodeURI(src)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}`;
-  }
-  return src;
-}
-
-/**
- * Resolve an overlay-only preview source for Full Framing remap (never merged).
- * @param {object|null} submission Submission payload.
- * @returns {string|null} Overlay path or data URL.
- */
-function pendingSubmissionOverlayPreviewSrc(submission) {
-  const src = pickSubmissionOverlaySrc(submission);
-  if ( !src ) return null;
-  if ( submission?.mode === "staged" ) {
-    return `${encodeURI(src)}?ts=${encodeURIComponent(String(submission.receiptTs ?? Date.now()))}`;
-  }
-  return src;
-}
-
-/**
- * Compact cache key for Full Framing remapped previews (avoid storing full data URLs as keys).
- * @param {string} assignmentId Assignment id.
- * @param {string} promptId Prompt id.
- * @param {string} src Prompt-canvas image source.
- * @returns {string}
- */
-function sourceFramingPreviewCacheKey(assignmentId, promptId, src) {
-  const value = String(src ?? "");
-  const head = value.slice(0, 48);
-  const tail = value.length > 64 ? value.slice(-24) : "";
-  return `${assignmentId}|${promptId}|${value.length}|${head}|${tail}`;
-}
-
-/**
  * Whether a framing ROI matches Prompt canvas aspect closely enough for isotropic Placed fill.
  * @param {{width?: number, height?: number}} framing Framing rect.
  * @param {number} canvasWidth Canvas width.
@@ -2093,6 +2134,23 @@ function validDimension(value) {
 function normalizeNumber(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) ? number : 0;
+}
+
+/**
+ * Decode a preview URL into an Image so Framing View swaps can layout after the bitmap is ready.
+ * @param {string} src Image URL or data URL.
+ * @returns {Promise<HTMLImageElement|null>}
+ */
+function decodePreviewImage(src) {
+  if ( !src ) return Promise.resolve(null);
+  return new Promise(resolve => {
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+    if ( img.complete && img.naturalWidth > 0 ) resolve(img);
+  });
 }
 
 /**

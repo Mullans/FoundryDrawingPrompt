@@ -9,7 +9,8 @@ import {
   defaultPromptFraming,
   dualSaveFilenames,
   mapPromptToSource,
-  mapSourceToPrompt
+  mapSourceToPrompt,
+  splatOverlayInk
 } from "../scripts/drawing/prompt-framing.mjs";
 
 test("defaultPromptFraming is the full source image rect", () => {
@@ -209,6 +210,26 @@ test("computeFullFramingRect expands for pad outside the source", () => {
   }), { x: -1, y: -2, width: 6, height: 7 });
 });
 
+test("computeFramingGeometry Full Framing includes Fit letterbox pad beyond Prompt Framing", () => {
+  // Landscape source framed fully, Fit-canvas onto a taller Prompt canvas → vertical letterbox.
+  // Canvas pad maps outside the framing rect in source space and must expand Full Framing.
+  const geometry = computeFramingGeometry({
+    sourceWidth: 200,
+    sourceHeight: 100,
+    framing: { x: 0, y: 0, width: 200, height: 100 },
+    fitMode: FIT_MODE.FIT_CANVAS,
+    canvasWidth: 100,
+    canvasHeight: 100
+  });
+  assert.ok(geometry.framedPlacement.dy > 0, "letterbox inset expected");
+  assert.ok(
+    geometry.fullRect.height > 100,
+    `Full Framing must include canvas pad in source space, got height ${geometry.fullRect.height}`
+  );
+  assert.ok(geometry.fullRect.y < 0, "pad above source expands plate upward");
+  assert.ok(geometry.fullRect.y + geometry.fullRect.height > 100, "pad below source expands plate downward");
+});
+
 test("bakeDualRasters: prompt-facing is canvas-sized; Full Framing remaps marker", () => {
   // Source 4×4, framing center 2×2 crop, stretch onto 4×4 prompt canvas → scale 2.
   // Union with source stays 4×4 (crop inside source).
@@ -374,6 +395,133 @@ test("bakeDualRasters with sourceUnderlay: semi-transparent ink blends over sour
   assert.ok(Math.abs(pixel[2] - 128) <= 1, `blue channel ${pixel[2]}`);
   assert.deepEqual(getPixel(source, 2, 1, 1), [0, 0, 255, 255]);
 });
+
+test("bakeDualRasters undersampling: colliding overlay pixels keep ink alpha instead of stacking", () => {
+  // Source 2×2, full framing, stretch onto a 4×4 prompt canvas → 4 overlay pixels
+  // land on every plate pixel. Repeated source-over would darken toward opaque.
+  const geometry = computeFramingGeometry({
+    sourceWidth: 2,
+    sourceHeight: 2,
+    framing: { x: 0, y: 0, width: 2, height: 2 },
+    fitMode: FIT_MODE.STRETCH,
+    canvasWidth: 4,
+    canvasHeight: 4
+  });
+
+  const overlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(overlay, 4, x, y, [255, 0, 0, 128]);
+    }
+  }
+
+  const { source } = bakeDualRasters({ geometry, overlay });
+  assert.equal(source.width, 2);
+  assert.equal(source.height, 2);
+  for ( let y = 0; y < 2; y++ ) {
+    for ( let x = 0; x < 2; x++ ) {
+      assert.deepEqual(getPixel(source, 2, x, y), [255, 0, 0, 128], `stacked alpha at (${x},${y})`);
+    }
+  }
+});
+
+test("bakeDualRasters undersampling over an underlay blends once per plate pixel", () => {
+  const geometry = computeFramingGeometry({
+    sourceWidth: 2,
+    sourceHeight: 2,
+    framing: { x: 0, y: 0, width: 2, height: 2 },
+    fitMode: FIT_MODE.STRETCH,
+    canvasWidth: 4,
+    canvasHeight: 4
+  });
+
+  const sourceUnderlay = blankRgba(2, 2);
+  for ( let y = 0; y < 2; y++ ) {
+    for ( let x = 0; x < 2; x++ ) {
+      setPixel(sourceUnderlay, 2, x, y, [0, 0, 255, 255]);
+    }
+  }
+
+  const overlay = blankRgba(4, 4);
+  for ( let y = 0; y < 4; y++ ) {
+    for ( let x = 0; x < 4; x++ ) {
+      setPixel(overlay, 4, x, y, [255, 0, 0, 128]);
+    }
+  }
+
+  const { source } = bakeDualRasters({ geometry, overlay, sourceUnderlay });
+  const pixel = getPixel(source, 2, 0, 0);
+  // One 50% red composite over opaque blue — not four stacked ones.
+  assert.equal(pixel[3], 255);
+  assert.ok(Math.abs(pixel[0] - 128) <= 1, `red channel ${pixel[0]}`);
+  assert.equal(pixel[1], 0);
+  assert.ok(Math.abs(pixel[2] - 128) <= 1, `blue channel ${pixel[2]}`);
+});
+
+test("splatOverlayInk falls back to the plate pixel holding the overlay pixel center", () => {
+  // A collapsing map gives every overlay pixel a zero-area rect, forcing the
+  // fallback. Pixel-edge convention puts continuous 2.7 in plate pixel 2, not 3.
+  const overlay = blankRgba(1, 1);
+  setPixel(overlay, 1, 0, 0, [255, 0, 0, 255]);
+
+  const ink = splatOverlayInk({
+    plate: { width: 4, height: 4 },
+    overlay,
+    mapPoint: () => ({ x: 2.7, y: 1.2 })
+  });
+
+  assert.equal(ink.width, 4);
+  assert.equal(ink.height, 4);
+  assert.deepEqual(getPixel(ink, 4, 2, 1), [255, 0, 0, 255]);
+  assert.deepEqual(getPixel(ink, 4, 3, 1), [0, 0, 0, 0]);
+});
+
+test("splatOverlayInk drops ink whose mapped center leaves the plate", () => {
+  const overlay = blankRgba(1, 1);
+  setPixel(overlay, 1, 0, 0, [255, 0, 0, 255]);
+
+  const ink = splatOverlayInk({
+    plate: { width: 2, height: 2 },
+    overlay,
+    mapPoint: () => ({ x: -0.4, y: 0.5 })
+  });
+
+  for ( let y = 0; y < 2; y++ ) {
+    for ( let x = 0; x < 2; x++ ) {
+      assert.deepEqual(getPixel(ink, 2, x, y), [0, 0, 0, 0]);
+    }
+  }
+});
+
+test("splatOverlayInk keeps the most opaque contribution on a shared plate pixel", () => {
+  const overlay = blankRgba(2, 1);
+  setPixel(overlay, 2, 0, 0, [255, 0, 0, 100]);
+  setPixel(overlay, 2, 1, 0, [0, 255, 0, 200]);
+  const plate = { width: 1, height: 1 };
+  const mapPoint = () => ({ x: 0.5, y: 0.5 });
+
+  assert.deepEqual(
+    getPixel(splatOverlayInk({ plate, overlay, mapPoint }), 1, 0, 0),
+    [0, 255, 0, 200]
+  );
+
+  const reversed = blankRgba(2, 1);
+  setPixel(reversed, 2, 0, 0, [0, 255, 0, 200]);
+  setPixel(reversed, 2, 1, 0, [255, 0, 0, 100]);
+  assert.deepEqual(
+    getPixel(splatOverlayInk({ plate, overlay: reversed, mapPoint }), 1, 0, 0),
+    [0, 255, 0, 200]
+  );
+});
+
+test("splatOverlayInk returns a transparent plate-sized layer without overlay data", () => {
+  const ink = splatOverlayInk({ plate: { width: 3, height: 2 }, overlay: null, mapPoint: (x, y) => ({ x, y }) });
+  assert.equal(ink.width, 3);
+  assert.equal(ink.height, 2);
+  assert.equal(ink.data.length, 3 * 2 * 4);
+  assert.ok(ink.data.every(byte => byte === 0));
+});
+
 /**
  * @param {number} width
  * @param {number} height

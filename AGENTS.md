@@ -77,10 +77,39 @@ Target: **Foundry v14 first** (current stable 14.364), keep v13 compatibility wh
 
 No build step (plain ESM). Use this lifecycle for each verification batch:
 
-1. Set `$foundryRoot = (Resolve-Path '.\FoundryVTT-WindowsPortable-14.364').Path`, then run `.\tools\link-module.ps1 -FoundryDataPath $foundryRoot`.
-2. Start a fresh background server and retain its PID: `$foundryProcess = Start-Process node -ArgumentList @("$foundryRoot\App\resources\app\main.js", "--dataPath=$foundryRoot", "--port=30000", "--world=test-world", "--noupdate", "--hotReload") -WindowStyle Hidden -PassThru`. Poll `http://localhost:30000/join` for HTTP 200 instead of using a fixed sleep. If port 30000 belongs to an unknown process, inspect/report it; never kill it blindly.
-3. Run `node --test tests/`. For Foundry-facing or UI changes, also run `node tools/e2e-smoke.mjs` and check GM/player browser consoles for errors. UI automation must type and click through the real UI, not call only the module API.
-4. Always clean up in a `finally` block: `if ($foundryProcess -and -not $foundryProcess.HasExited) { Stop-Process -Id $foundryProcess.Id }`. Stop only the PID started for the current batch.
+1. **Link the module** (PowerShell, once per environment — idempotent):
+   ```powershell
+   $foundryRoot = (Resolve-Path '.\FoundryVTT-WindowsPortable-14.364').Path
+   .\tools\link-module.ps1 -FoundryDataPath $foundryRoot
+   ```
+2. **Start the server as a harness-tracked background task**, not with `Start-Process`. Use the Bash tool with `run_in_background: true`:
+   ```bash
+   cd C:/Code/FoundryVTT && FR="$(pwd)/FoundryVTT-WindowsPortable-14.364" && exec node "$FR/App/resources/app/main.js" --dataPath="$FR" --port=30000 --world=test-world --noupdate --hotReload
+   ```
+   > **Do not use `Start-Process … -PassThru` from the PowerShell tool.** If that call is slow enough to be moved to the background, the spawned child is torn down when the task is reaped and the server dies seconds after reporting a PID — leaving `/join` unanswered with no error to read. This bit a full verification batch; the symptom is "STARTED PID nnn" followed by nothing listening on 30000.
+3. **Poll for readiness** — never a fixed sleep:
+   ```bash
+   for i in $(seq 1 40); do
+     code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://localhost:30000/join)
+     [ "$code" = "200" ] && { echo "READY"; break; }; sleep 2
+   done
+   ```
+   If port 30000 belongs to an unknown process, inspect and report it; never kill it blindly.
+4. Run `node --test tests/`. For Foundry-facing or UI changes, also run `node tools/e2e-smoke.mjs` (Foundry already up on `:30000`, world `test-world`). The smoke run now fails on GM/player browser console errors itself — do not rely on a human reading them. UI automation must type and click through the real UI, not call only the module API. The run includes **layout geometry asserts** (`tools/e2e-layout-geometry.mjs`) so compose/review panel overflow and column overlap fail the e2e — unit tests alone cannot catch that.
+   - First run on a new machine needs the browser: `cd tools && npx playwright install chromium`.
+5. **Stop the server by port, not by task id.** A harness background-task id is not a PID, so resolve the owner:
+   ```powershell
+   Get-NetTCPConnection -LocalPort 30000 -State Listen -ErrorAction SilentlyContinue |
+     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+   ```
+   Stop only the server started for the current batch.
+
+**Writing e2e assertions.** Three traps, each of which has already produced a green run that proved nothing:
+
+- **Red-check every new assertion.** Restore the pre-fix file (`git show <ref>:<path> > <path>`), confirm the run fails *with the message you expect*, then restore. An assertion never observed failing is not evidence.
+- **Never return a Foundry or PIXI object from `page.evaluate`.** Playwright serializes the return value, and a circular object like a canvas layer degrades the call so a real failure reads as a pass. `canvas.tokens.activate()` returns the layer — wrap it: `page.evaluate(() => { canvas.tokens.activate(); })`.
+- **Assert the precondition separately.** "The thing never armed" and "the thing leaked" often fail identically on a count comparison. Assert that setup actually happened before asserting what changed, or a broken flow will masquerade as the bug being tested.
+- **Leave global canvas state as you found it.** A failed run can leave a different canvas layer active; the next run then behaves differently. Set the layer you need at the *start* of an assertion, not only at the end.
 
 **Wedged-server rule:** a long-running headless test server can silently wedge — static file fetches hang (dynamic `import()` awaits forever with no rejection) and socket relays drop, which perfectly mimics impossible module bugs with symptoms that move between runs. Before deep-diving any shifting-symptom failure, kill and restart the test server and re-run the repro twice; only debug the module if the failure survives a fresh server. Prefer one fresh server per verification batch.
 

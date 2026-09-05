@@ -29,6 +29,24 @@
     <label class="dp-color-control">
       <span>{{localize "DRAWING-PROMPTS.player.fields.color"}}</span>
       <input type="color" class="dp-color-input" value="{{color}}">
+      <div class="dp-recent-colors" role="group" aria-label="{{localize "DRAWING-PROMPTS.player.fields.recentColors"}}">
+        {{#each recentColors}}
+        {{#if this}}
+        <button type="button" data-action="setRecentColor" data-color="{{this}}" class="dp-recent-color-swatch" style="--dp-recent-color: {{this}};" data-tooltip aria-label="{{this}}">
+          <span class="dp-recent-color-swatch-face" inert></span>
+        </button>
+        {{else}}
+        <button type="button" class="dp-recent-color-swatch is-empty" disabled aria-disabled="true" aria-label="{{localize "DRAWING-PROMPTS.player.fields.recentColorEmpty"}}">
+          <span class="dp-recent-color-swatch-face" inert></span>
+        </button>
+        {{/if}}
+        {{/each}}
+        {{#if playerColor}}
+        <button type="button" data-action="setRecentColor" data-color="{{playerColor}}" class="dp-recent-color-swatch is-player-color" style="--dp-recent-color: {{playerColor}};" data-tooltip aria-label="{{localize "DRAWING-PROMPTS.player.fields.playerColor"}}">
+          <span class="dp-recent-color-swatch-face" inert></span>
+        </button>
+        {{/if}}
+      </div>
     </label>
 
     <label class="dp-size-control">
@@ -91,7 +109,7 @@
       {{#if backgroundError}}
       <p class="dp-canvas-error">{{backgroundError}}</p>
       {{else}}
-      <div class="dp-canvas-viewport">
+      <div class="dp-display-stage">
         {{#if backgroundLoading}}
         <p class="dp-canvas-note">{{localize "DRAWING-PROMPTS.player.canvas.loading"}}</p>
         {{/if}}

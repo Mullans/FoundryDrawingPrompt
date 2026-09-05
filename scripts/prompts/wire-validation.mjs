@@ -30,14 +30,13 @@ export function isValidSnapshotDataUrl(value) {
  * @returns {boolean} Whether valid.
  */
 export function isValidSnapshotPayload(value) {
-  if ( isValidSnapshotDataUrl(value) ) return true;
+  if ( typeof value === "string" ) return isValidSnapshotDataUrl(value);
   if ( !value || typeof value !== "object" ) return false;
-  const hasComposite = value.composite != null;
-  const hasOverlay = value.overlay != null;
-  if ( !hasComposite && !hasOverlay ) return false;
-  if ( hasComposite && !isValidSnapshotDataUrl(value.composite) ) return false;
-  if ( hasOverlay && !isValidSnapshotDataUrl(value.overlay) ) return false;
-  return true;
+  const parts = [value.composite, value.overlay].filter(part => part != null);
+  if ( !parts.length ) return false;
+  if ( !parts.every(part => isValidSnapshotDataUrl(part)) ) return false;
+  // Composite and overlay ride one socket message, so they share a single budget.
+  return estimateSnapshotPayloadWireBytes(value) <= INTERNAL.MAX_SNAPSHOT_WIRE_BYTES;
 }
 
 /**
@@ -57,6 +56,16 @@ export function normalizeSnapshotPayload(payload) {
     };
   }
   return { composite: null, overlay: null };
+}
+
+/**
+ * Estimate the combined wire bytes of a live snapshot payload.
+ * @param {string|{composite?: string, overlay?: string}|null|undefined} payload Snapshot payload.
+ * @returns {number} Estimated bytes.
+ */
+export function estimateSnapshotPayloadWireBytes(payload) {
+  const { composite, overlay } = normalizeSnapshotPayload(payload);
+  return (composite?.length ?? 0) + (overlay?.length ?? 0);
 }
 
 /**

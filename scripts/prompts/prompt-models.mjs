@@ -1,5 +1,6 @@
 import { BG_SOURCE, FIT_MODE, STATUS } from "../constants.mjs";
-import { assertBackgroundUnlocked } from "./framed-delivery.mjs";
+import { normalizeStoredFraming } from "../drawing/prompt-framing.mjs";
+import { assertBackgroundUnlocked } from "./framing-delivery.mjs";
 import { normalizeTimerState } from "./timer-service.mjs";
 
 const TERMINAL_STATUSES = new Set([STATUS.SUBMITTED, STATUS.REJECTED, STATUS.CANCELLED]);
@@ -234,8 +235,9 @@ export class DrawingPrompt {
     this.promptText = data.promptText ?? "";
     this.drawingName = data.drawingName ?? "";
     this.assetFolderName = data.assetFolderName ?? null;
-    this.canvasWidth = Number(data.canvasWidth ?? 1024);
-    this.canvasHeight = Number(data.canvasHeight ?? 768);
+    this.canvasWidth = Number(data.canvasWidth ?? 512);
+    this.canvasHeight = Number(data.canvasHeight ?? 512);
+    this.canvasHeight = Number(data.canvasHeight ?? 512);
     this.background = {
       sourceType: data.background?.sourceType ?? BG_SOURCE.BLANK,
       path: data.background?.path ?? null,
@@ -393,19 +395,4 @@ export class DrawingPrompt {
   assignmentForUser(userId) {
     return Object.values(this.assignments).find(assignment => assignment.userId === userId) ?? null;
   }
-}
-
-/**
- * @param {{x?: number, y?: number, width?: number, height?: number}|null|undefined} framing
- * @returns {{x: number, y: number, width: number, height: number}|null}
- */
-function normalizeStoredFraming(framing) {
-  if ( framing == null ) return null;
-  if ( typeof framing !== "object" ) return null;
-  return {
-    x: Number(framing.x) || 0,
-    y: Number(framing.y) || 0,
-    width: Number(framing.width) || 0,
-    height: Number(framing.height) || 0
-  };
 }

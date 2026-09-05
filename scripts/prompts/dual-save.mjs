@@ -1,8 +1,16 @@
 import { BG_SOURCE, FRAMING_VIEW } from "../constants.mjs";
-import { bakeDualRasters, compositeSameSizeSourceOver, computeFramingGeometry, dualSaveFilenames, initFullPlateFromUnderlay } from "../drawing/prompt-framing.mjs";
+import {
+  bakeDualRasters,
+  compositeSameSizeSourceOver,
+  dualSaveFilenames,
+  initFullPlateFromUnderlay,
+  splatOverlayInk
+} from "../drawing/prompt-framing.mjs";
 import { canvasToEncodedImage } from "../drawing/export-service.mjs";
-import { resolvePromptFraming } from "./framed-delivery.mjs";
+import { computeDualSaveGeometry } from "./framing-delivery.mjs";
 import { isSaveGateOpen } from "./transitions.mjs";
+
+export { computeDualSaveGeometry };
 
 /**
  * Whether the prompt has a source image suitable for Full Framing dual Save.
@@ -29,6 +37,17 @@ export function normalizeFramingView(framingView, { hasSource = false } = {}) {
     return FRAMING_VIEW.FULL;
   }
   return FRAMING_VIEW.PROMPT_CANVAS;
+}
+
+/**
+ * Whether a Framing View remaps player ink live and therefore needs overlay-only
+ * (ink) snapshot bytes. Prompt canvas renders the composite snapshot as-is.
+ * @param {string|null|undefined} framingView Candidate view.
+ * @param {{hasSource?: boolean}} [options] Context.
+ * @returns {boolean}
+ */
+export function framingViewNeedsLiveOverlay(framingView, { hasSource = false } = {}) {
+  return normalizeFramingView(framingView, { hasSource }) === FRAMING_VIEW.FULL;
 }
 
 /**
@@ -97,23 +116,6 @@ export function resolveTileDimensionsForFramingView(
     width: Math.max(1, Math.round(width)),
     height: Math.max(1, Math.round(height))
   };
-}
-
-/**
- * Framing geometry for dual Save remapping into Full Framing plate space.
- * @param {{background?: object, canvasWidth?: number, canvasHeight?: number}} prompt Prompt.
- * @returns {ReturnType<typeof computeFramingGeometry>}
- */
-export function computeDualSaveGeometry(prompt) {
-  const background = prompt?.background ?? {};
-  return computeFramingGeometry({
-    sourceWidth: background.naturalWidth,
-    sourceHeight: background.naturalHeight,
-    framing: resolvePromptFraming(prompt),
-    fitMode: background.fitMode,
-    canvasWidth: prompt.canvasWidth,
-    canvasHeight: prompt.canvasHeight
-  });
 }
 
 /**
@@ -334,46 +336,38 @@ async function bakeAndEncodeSourceSpaceRaster({
 }
 
 /**
- * Composite a Prompt-canvas overlay onto a same-size underlay (source-over).
+ * Composite a Prompt-canvas overlay onto an underlay (source-over).
  * Used when Save must rematerialize merged (ink + prompt image) from overlay + Framed bg.
- * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} underlay Underlay RGBA.
- * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} overlay Overlay RGBA.
+ * Equal dimensions composite pixel for pixel; a wire-scaled overlay is remapped through
+ * the shared area splat first, so it neither leaves holes when scaled up nor stacks alpha
+ * when scaled down. Malformed buffers degrade to an underlay copy instead of throwing.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} underlay Underlay RGBA.
+ * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}|null} overlay Overlay RGBA.
  * @returns {{width: number, height: number, data: Uint8ClampedArray}}
  */
 export function compositeOverlayOntoUnderlay(underlay, overlay) {
-  const width = Number(underlay?.width) || 1;
-  const height = Number(underlay?.height) || 1;
+  const overlayWidth = pixelDimension(overlay?.width);
+  const overlayHeight = pixelDimension(overlay?.height);
+  const width = pixelDimension(underlay?.width) || overlayWidth || 1;
+  const height = pixelDimension(underlay?.height) || overlayHeight || 1;
   const merged = {
     width,
     height,
-    data: new Uint8ClampedArray(underlay.data)
+    data: new Uint8ClampedArray(width * height * 4)
   };
-  const overlayWidth = Number(overlay?.width) || width;
-  const overlayHeight = Number(overlay?.height) || height;
-  const scaleX = width / Math.max(1, overlayWidth);
-  const scaleY = height / Math.max(1, overlayHeight);
-  const data = overlay?.data;
-  if ( !data ) return merged;
-
-  for ( let py = 0; py < overlayHeight; py++ ) {
-    for ( let px = 0; px < overlayWidth; px++ ) {
-      const srcOffset = (py * overlayWidth + px) * 4;
-      const alpha = data[srcOffset + 3];
-      if ( !alpha ) continue;
-      const dx = Math.min(width - 1, Math.max(0, Math.round((px + 0.5) * scaleX - 0.5)));
-      const dy = Math.min(height - 1, Math.max(0, Math.round((py + 0.5) * scaleY - 0.5)));
-      const destOffset = (dy * width + dx) * 4;
-      compositeSourceOverPixel(
-        merged.data,
-        destOffset,
-        data[srcOffset],
-        data[srcOffset + 1],
-        data[srcOffset + 2],
-        alpha
-      );
-    }
+  copyRgbaBytes(merged.data, underlay?.data);
+  if ( !overlay?.data || !overlayWidth || !overlayHeight ) return merged;
+  if ( overlayWidth === width && overlayHeight === height ) {
+    return compositeSameSizeSourceOver(merged, overlay);
   }
-  return merged;
+
+  const scaleX = width / overlayWidth;
+  const scaleY = height / overlayHeight;
+  return compositeSameSizeSourceOver(merged, splatOverlayInk({
+    plate: merged,
+    overlay,
+    mapPoint: (x, y) => ({ x: x * scaleX, y: y * scaleY })
+  }));
 }
 
 /**
@@ -410,38 +404,30 @@ export async function bakeAndEncodePromptCanvasMerged({ overlay, prompt, format 
 }
 
 /**
- * Source-over composite of one pixel onto an RGBA buffer (shared with rematerialize).
- * @param {Uint8ClampedArray} dest Destination buffer.
- * @param {number} destOffset Byte offset.
- * @param {number} sr Red.
- * @param {number} sg Green.
- * @param {number} sb Blue.
- * @param {number} sa Alpha 0–255.
+ * Normalize a declared buffer dimension to a whole pixel count.
+ * @param {unknown} value Declared width or height.
+ * @returns {number} Positive integer, or 0 when unusable.
+ */
+function pixelDimension(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+/**
+ * Copy as many RGBA bytes as both buffers allow; the remainder stays transparent.
+ * Tolerates buffers whose length disagrees with their declared dimensions.
+ * @param {Uint8ClampedArray} dest Destination bytes.
+ * @param {ArrayLike<number>|null|undefined} source Source bytes.
  * @returns {void}
  */
-function compositeSourceOverPixel(dest, destOffset, sr, sg, sb, sa) {
-  if ( sa >= 255 ) {
-    dest[destOffset] = sr;
-    dest[destOffset + 1] = sg;
-    dest[destOffset + 2] = sb;
-    dest[destOffset + 3] = 255;
+function copyRgbaBytes(dest, source) {
+  if ( !source ) return;
+  const length = Math.min(dest.length, Number(source.length) || 0);
+  if ( length === Number(source.length) ) {
+    dest.set(source);
     return;
   }
-  const srcA = sa / 255;
-  const dstA = dest[destOffset + 3] / 255;
-  const outA = srcA + dstA * (1 - srcA);
-  if ( outA <= 0 ) {
-    dest[destOffset] = 0;
-    dest[destOffset + 1] = 0;
-    dest[destOffset + 2] = 0;
-    dest[destOffset + 3] = 0;
-    return;
-  }
-  const invSrcA = 1 - srcA;
-  dest[destOffset] = Math.round((sr * srcA + dest[destOffset] * dstA * invSrcA) / outA);
-  dest[destOffset + 1] = Math.round((sg * srcA + dest[destOffset + 1] * dstA * invSrcA) / outA);
-  dest[destOffset + 2] = Math.round((sb * srcA + dest[destOffset + 2] * dstA * invSrcA) / outA);
-  dest[destOffset + 3] = Math.round(outA * 255);
+  for ( let i = 0; i < length; i++ ) dest[i] = source[i];
 }
 
 /**

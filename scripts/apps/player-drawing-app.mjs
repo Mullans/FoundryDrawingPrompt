@@ -2,6 +2,13 @@ import { CANVAS_CHROME, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constan
 import { CANVAS_CHROME_CSS_CLASSES, canvasChromeCssClass, normalizeCanvasChrome } from "../drawing/canvas-chrome.mjs";
 import { DrawingEngine } from "../drawing/drawing-engine.mjs";
 import {
+  parseRecentColors,
+  pushRecentColor,
+  recentColorSlots,
+  serializeRecentColors,
+  shouldRecordDrawnColor
+} from "../drawing/recent-colors.mjs";
+import {
   ZOOM_STEP,
   classifyWheelGesture,
   clampView,
@@ -17,6 +24,7 @@ import { restoreEngineFromSubmission } from "../drawing/submission-restore.mjs";
 import { loadBackgroundImage } from "../foundry/background-source-service.mjs";
 import { canStageUploads, stageSubmissionImages } from "../prompts/asset-service.mjs";
 import { updateStatus } from "../prompts/client-store.mjs";
+import { isValidSnapshotPayload } from "../prompts/wire-validation.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { createLeadingTrailingThrottle } from "../utils/throttle.mjs";
 import { formatClock, formatTimerState } from "../utils/timer-chip.mjs";
@@ -42,6 +50,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     position: { width: 820, height: 720 },
     actions: {
       setTool: PlayerDrawingApp.#onSetTool,
+      setRecentColor: PlayerDrawingApp.#onSetRecentColor,
       setCanvasChrome: PlayerDrawingApp.#onSetCanvasChrome,
       clearLayer: PlayerDrawingApp.#onClearLayer,
       undo: PlayerDrawingApp.#onUndo,
@@ -118,11 +127,15 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   /**
    * Send an immediate snapshot for an open assignment window.
    * @param {string} assignmentId Assignment id.
+   * @param {object} [options] Options.
+   * @param {boolean} [options.includeOverlay=false] Whether the GM needs overlay (ink-only) bytes.
    * @returns {Promise<void>}
    */
-  static async sendSnapshotForAssignment(assignmentId) {
+  static async sendSnapshotForAssignment(assignmentId, { includeOverlay = false } = {}) {
     const app = this.#registry.get(assignmentId);
-    if ( app ) await app.#sendSnapshot();
+    if ( !app ) return;
+    app.#overlayRequested = includeOverlay;
+    await app.#sendSnapshot();
   }
 
   /**
@@ -136,6 +149,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.mode = mode;
     this.#background = assignmentPayload.prompt.background ?? {};
     this.#color = initialBrushColor();
+    this.#recentColors = initialRecentColors();
     this.#canvasChrome = initialCanvasChrome();
   }
 
@@ -148,8 +162,16 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #engine = null;
   #engineReadyPromise = null;
   #snapshotThrottle = null;
+  /** Whether the GM's Framing View needs overlay (ink-only) bytes for its live remap. */
+  #overlayRequested = false;
   #activeTool = "brush";
   #color = "#000000";
+  /** @type {string[]} */
+  #recentColors = [];
+  /** @type {string|null} */
+  #lastRecordedOpId = null;
+  /** Skip persisting recent colors while replaying a restored op log (still adopt tip op ids). */
+  #suppressRecentColorRecord = false;
   #brushSize = 8;
   #brushOpacity = 1;
   #canvasChrome = CANVAS_CHROME.CHECKERBOARD;
@@ -181,6 +203,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       backgroundLoading: this.#backgroundState === "loading",
       activeTool: this.#activeTool,
       color: this.#color,
+      recentColors: recentColorSlots(this.#recentColors, 3),
+      playerColor: resolvePlayerColor(),
       brushSize: this.#brushSize,
       brushOpacity: this.#brushOpacity,
       brushOpacityPercent: formatPercent(this.#brushOpacity),
@@ -376,10 +400,11 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     engine.setBrushOpacity(this.#brushOpacity);
     this.#unsubscribers = [
       engine.onChange(() => {
+        this.#maybeRecordDrawnColor();
         this.#refreshToolbarState();
         this.#queueSnapshot();
       }),
-      engine.onColorSampled(hex => this.#applySampledColor(hex)),
+      engine.onColorSampled(hex => this.#applyColor(hex)),
       engine.onWarning(key => ui.notifications.warn(game.i18n.localize(key)))
     ];
     this.#engine = engine;
@@ -397,11 +422,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( !submission ) return;
     const key = restorationKey(submission);
     if ( this.#restorationKey === key ) return;
+    this.#suppressRecentColorRecord = true;
     try {
       const restored = await restoreEngineFromSubmission(engine, submission, this.assignmentPayload.prompt);
       if ( restored ) this.#restorationKey = key;
     } catch (err) {
       console.warn("drawing-prompts | failed to restore reopened submission", err);
+    } finally {
+      this.#suppressRecentColorRecord = false;
     }
   }
 
@@ -419,11 +447,11 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   }
 
   /**
-   * Attach ephemeral pan/zoom navigation to the player viewport (resets per open).
+   * Attach ephemeral pan/zoom navigation to the player Display stage (resets per open).
    * @returns {void}
    */
   #ensureNavigation() {
-    const viewport = this.element?.querySelector(".dp-canvas-viewport");
+    const viewport = this.element?.querySelector(".dp-display-stage");
     const canvas = this.element?.querySelector(".dp-display-canvas");
     if ( !viewport || !canvas || this.#backgroundError ) {
       this.#destroyNavigation();
@@ -456,11 +484,37 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       this.#resetNavigation();
     };
     const onKeyDown = event => {
-      if ( event.code !== "Space" || event.repeat || !this.rendered ) return;
+      if ( !this.rendered ) return;
       const target = event.target;
       if ( target?.closest?.("input, textarea, select, [contenteditable='true']") ) return;
-      this.#spaceHeld = true;
-      if ( this.element?.contains(target) || target === document.body ) event.preventDefault();
+
+      if ( event.code === "Space" && !event.repeat ) {
+        this.#spaceHeld = true;
+        if ( this.element?.contains(target) || target === document.body ) event.preventDefault();
+        return;
+      }
+
+      if ( event.key === "Enter" && this.#engine?.commitLineDraft() ) {
+        event.preventDefault();
+        return;
+      }
+      if ( event.key === "Escape" && this.#engine?.cancelLineDraft() ) {
+        event.preventDefault();
+        return;
+      }
+
+      const toolByKey = {
+        b: "brush",
+        e: "eraser",
+        l: "line",
+        f: "fill",
+        i: "eyedropper"
+      };
+      const tool = toolByKey[String(event.key || "").toLowerCase()];
+      if ( tool && !event.ctrlKey && !event.metaKey && !event.altKey ) {
+        this.#selectTool(tool);
+        event.preventDefault();
+      }
     };
     const onKeyUp = event => {
       if ( event.code === "Space" ) this.#spaceHeld = false;
@@ -527,7 +581,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @returns {{contentWidth: number, contentHeight: number, viewportWidth: number, viewportHeight: number}|null}
    */
   #navSizes() {
-    const viewport = this.#navViewport ?? this.element?.querySelector(".dp-canvas-viewport");
+    const viewport = this.#navViewport ?? this.element?.querySelector(".dp-display-stage");
     if ( !viewport ) return null;
     const prompt = this.assignmentPayload.prompt;
     return {
@@ -706,21 +760,31 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   async #sendSnapshot() {
     if ( !this.#canSendSnapshots() || !this.#engine ) return;
-    const opts = {
-      maxEdge: INTERNAL.SNAPSHOT_MAX_EDGE,
-      quality: INTERNAL.SNAPSHOT_QUALITY
-    };
-    // Composite for Prompt-canvas live; overlay-only for Full Framing remap (matches dual Save).
-    const snapshot = {
-      composite: this.#engine.getCompositeSnapshot(opts),
-      overlay: this.#engine.getOverlaySnapshot(opts)
-    };
     await emit.drawingSnapshot(
       this.assignmentPayload.prompt.gmUserId,
       this.assignmentPayload.assignment.id,
       game.user.id,
-      snapshot
+      this.#buildSnapshotPayload()
     );
+  }
+
+  /**
+   * Build the live snapshot payload. Composite feeds the Prompt-canvas GM view; overlay-only
+   * ink rides along only while the GM's Framing View remaps it (matches dual Save).
+   * @returns {{composite: string, overlay?: string}}
+   */
+  #buildSnapshotPayload() {
+    const opts = {
+      maxEdge: INTERNAL.SNAPSHOT_MAX_EDGE,
+      quality: INTERNAL.SNAPSHOT_QUALITY
+    };
+    const composite = this.#engine.getCompositeSnapshot(opts);
+    if ( !this.#overlayRequested ) return { composite };
+    const payload = { composite, overlay: this.#engine.getOverlaySnapshot(opts) };
+    // Combined wire budget: drop overlay and keep composite rather than failing the tick.
+    if ( isValidSnapshotPayload(payload) ) return payload;
+    console.debug("drawing-prompts | dropped overlay snapshot over the combined snapshot wire budget");
+    return { composite };
   }
 
   /**
@@ -741,9 +805,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #wireToolbarInputs() {
     const colorInput = this.element?.querySelector(".dp-color-input");
     colorInput?.addEventListener("input", event => {
-      this.#color = event.currentTarget.value;
-      this.#engine?.setColor(this.#color);
-      void game.settings.set(MODULE_ID, SETTINGS.LAST_BRUSH_COLOR, this.#color);
+      this.#applyColor(event.currentTarget.value);
     });
     const sizeInput = this.element?.querySelector(".dp-size-input");
     sizeInput?.addEventListener("input", event => {
@@ -792,7 +854,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @returns {void}
    */
   #selectTool(tool) {
-    if ( !["brush", "eraser", "fill", "eyedropper"].includes(tool) ) return;
+    if ( !["brush", "eraser", "fill", "eyedropper", "line"].includes(tool) ) return;
     this.#activeTool = tool;
     this.#engine?.setTool(tool);
     this.#refreshToolbarState();
@@ -820,11 +882,12 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( opacityValue ) opacityValue.textContent = formatPercent(this.#brushOpacity);
     const colorInput = root.querySelector(".dp-color-input");
     if ( colorInput && colorInput.value !== this.#color ) colorInput.value = this.#color;
+    this.#syncRecentColorSwatches(root);
     const opacityInput = root.querySelector(".dp-opacity-input");
     if ( opacityInput && Number(opacityInput.value) !== this.#brushOpacity ) opacityInput.value = String(this.#brushOpacity);
     const canvas = root.querySelector(".dp-display-canvas");
     if ( canvas ) {
-      canvas.classList.remove("tool-brush", "tool-eraser", "tool-fill", "tool-eyedropper");
+      canvas.classList.remove("tool-brush", "tool-eraser", "tool-fill", "tool-eyedropper", "tool-line");
       canvas.classList.add(`tool-${this.#activeTool}`);
     }
     for ( const button of root.querySelectorAll("[data-action='setCanvasChrome']") ) {
@@ -840,15 +903,127 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   }
 
   /**
-   * Apply an eyedropper color sample to app state and controls.
-   * @param {string} hex Sampled color.
+   * Apply a brush color without recording recent history (palette drag / swatch pick).
+   * @param {string} hex Color.
    * @returns {void}
    */
-  #applySampledColor(hex) {
-    this.#color = hex;
-    this.#engine?.setColor(hex);
+  #applyColor(hex) {
+    const next = normalizeHex(hex);
+    if ( !next ) return;
+    this.#color = next;
+    this.#engine?.setColor(next);
     void game.settings.set(MODULE_ID, SETTINGS.LAST_BRUSH_COLOR, this.#color);
     this.#refreshToolbarState();
+  }
+
+  /**
+   * Record a color that was actually committed to the drawing (stroke/fill).
+   * @param {string} hex Color.
+   * @returns {void}
+   */
+  #recordDrawnColor(hex) {
+    const next = normalizeHex(hex);
+    if ( !next ) return;
+    // Re-read before writing. #recentColors is a constructor-time snapshot, and a
+    // player can hold two assignment windows at once (#registry is keyed per
+    // assignment, and nothing closes the sibling). Pushing onto the stale snapshot
+    // made the shared client setting last-writer-wins, so each window persisted a
+    // divergent history and dropped the other's colors. The client-scope write is
+    // synchronous, so this re-read always observes the sibling's last write.
+    const stored = parseRecentColors(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS), 3);
+    this.#recentColors = pushRecentColor(stored, next, 3);
+    void game.settings.set(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS, serializeRecentColors(this.#recentColors));
+    if ( this.element ) this.#syncRecentColorSwatches(this.element);
+  }
+
+  /**
+   * When a stroke/fill op lands at the tip of the log, remember its color.
+   * @returns {void}
+   */
+  #maybeRecordDrawnColor() {
+    // The manager's preview window shares this application class. It draws nothing
+    // a player owns, but it writes *this* client's LAST_BRUSH_COLORS -- so a GM
+    // previewing a submission pollutes the GM's own palette (not a player's).
+    if ( this.mode === "preview" ) return;
+    const log = this.#engine?.getOpLog?.();
+    if ( !log ) return;
+    // Tip selection stays here: "is the pointer at the end" is undo/redo state
+    // owned by the op log, not a palette concern. A pointer behind the end means
+    // there is no tip to consider, which the helper reads as a null op.
+    const op = log.pointer === log.ops.length ? log.ops.at(-1) : null;
+    const { record, nextLastRecordedOpId } = shouldRecordDrawnColor({
+      op,
+      lastRecordedOpId: this.#lastRecordedOpId,
+      suppressed: this.#suppressRecentColorRecord
+    });
+    this.#lastRecordedOpId = nextLastRecordedOpId;
+    if ( record ) this.#recordDrawnColor(op.color);
+  }
+
+  /**
+   * Keep recent-color swatches in sync without a full AppV2 rerender.
+   * @param {HTMLElement} root Root element.
+   * @returns {void}
+   */
+  #syncRecentColorSwatches(root) {
+    const group = root.querySelector(".dp-recent-colors");
+    if ( !group ) return;
+    const slots = recentColorSlots(this.#recentColors, 3);
+    const historyButtons = [...group.querySelectorAll(".dp-recent-color-swatch:not(.is-player-color)")];
+    const playerColor = resolvePlayerColor();
+    for ( let i = 0; i < slots.length; i++ ) {
+      const color = slots[i];
+      let button = historyButtons[i];
+      if ( !button ) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "dp-recent-color-swatch";
+        button.innerHTML = '<span class="dp-recent-color-swatch-face" inert></span>';
+        const playerBtn = group.querySelector(".dp-recent-color-swatch.is-player-color");
+        if ( playerBtn ) group.insertBefore(button, playerBtn);
+        else group.append(button);
+      }
+      if ( color ) {
+        button.dataset.action = "setRecentColor";
+        button.dataset.color = color;
+        button.disabled = false;
+        button.classList.remove("is-empty");
+        button.style.setProperty("--dp-recent-color", color);
+        button.setAttribute("aria-label", color);
+        button.dataset.tooltip = "";
+        button.removeAttribute("aria-disabled");
+      } else {
+        delete button.dataset.action;
+        delete button.dataset.color;
+        button.disabled = true;
+        button.classList.add("is-empty");
+        button.style.removeProperty("--dp-recent-color");
+        button.setAttribute("aria-label", game.i18n.localize("DRAWING-PROMPTS.player.fields.recentColorEmpty"));
+        button.setAttribute("aria-disabled", "true");
+        button.dataset.tooltip = "";
+      }
+    }
+    for ( let i = slots.length; i < historyButtons.length; i++ ) historyButtons[i].remove();
+
+    let playerButton = group.querySelector(".dp-recent-color-swatch.is-player-color");
+    if ( playerColor ) {
+      if ( !playerButton ) {
+        playerButton = document.createElement("button");
+        playerButton.type = "button";
+        playerButton.className = "dp-recent-color-swatch is-player-color";
+        playerButton.innerHTML = '<span class="dp-recent-color-swatch-face" inert></span>';
+        group.append(playerButton);
+      }
+      playerButton.dataset.action = "setRecentColor";
+      playerButton.dataset.color = playerColor;
+      playerButton.disabled = false;
+      playerButton.style.setProperty("--dp-recent-color", playerColor);
+      playerButton.setAttribute("aria-label", game.i18n.localize("DRAWING-PROMPTS.player.fields.playerColor"));
+      playerButton.dataset.tooltip = "";
+      playerButton.removeAttribute("aria-disabled");
+    } else {
+      playerButton?.remove();
+    }
   }
 
   /**
@@ -859,6 +1034,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     return [
       { name: "brush", icon: "fa-solid fa-paintbrush", label: "DRAWING-PROMPTS.player.tools.brush", active: this.#activeTool === "brush" },
       { name: "eraser", icon: "fa-solid fa-eraser", label: "DRAWING-PROMPTS.player.tools.eraser", active: this.#activeTool === "eraser" },
+      { name: "line", icon: "fa-solid fa-slash", label: "DRAWING-PROMPTS.player.tools.line", active: this.#activeTool === "line" },
       { name: "fill", icon: "fa-solid fa-fill-drip", label: "DRAWING-PROMPTS.player.tools.fill", active: this.#activeTool === "fill" },
       { name: "eyedropper", icon: "fa-solid fa-eye-dropper", label: "DRAWING-PROMPTS.player.tools.eyedropper", active: this.#activeTool === "eyedropper" }
     ];
@@ -899,6 +1075,17 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   static async #onSetTool(_event, target) {
     this.#selectTool(target.dataset.tool);
+  }
+
+  /**
+   * @this {PlayerDrawingApp}
+   * @param {Event} _event Event.
+   * @param {HTMLElement} target Action target.
+   * @returns {Promise<void>}
+   */
+  static async #onSetRecentColor(_event, target) {
+    if ( !target.dataset.color ) return;
+    this.#applyColor(target.dataset.color);
   }
 
   /**
@@ -1001,13 +1188,29 @@ function formatPercent(value) {
 }
 
 /**
+ * Resolve the Foundry user identity color for the always-on fourth swatch.
+ * @returns {string|null}
+ */
+function resolvePlayerColor() {
+  return normalizeHex(game.user?.color) ?? null;
+}
+
+/**
  * Resolve the initial brush color for this client.
  * @returns {string}
  */
 function initialBrushColor() {
   return normalizeHex(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLOR))
-    ?? normalizeHex(game.user?.color)
+    ?? resolvePlayerColor()
     ?? "#000000";
+}
+
+/**
+ * Resolve recent brush colors for this client (drawn colors only; do not seed from current brush).
+ * @returns {string[]}
+ */
+function initialRecentColors() {
+  return parseRecentColors(game.settings.get(MODULE_ID, SETTINGS.LAST_BRUSH_COLORS), 3);
 }
 
 /**

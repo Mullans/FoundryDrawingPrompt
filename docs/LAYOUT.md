@@ -11,7 +11,7 @@ Codebase layout lives in `README.md`. This file maps **documentation and resourc
 - `docs/LAYOUT.md`: this map of documentation and local resource folders.
 - `docs/agents/`: tracked agent how-to docs (domain, issue tracker, triage labels).
 - `docs/adr/`: architectural decision records when present (created by domain-modeling workflows).
-- `docs/design/`: short product/display design notes tied to active slices (not personal archive).
+- `docs/design/`: short product/display design notes tied to active slices (not personal archive). Grilled UI/layout decisions that implementers must follow belong here (with an ADR when the decision is hard to reverse / surprising).
 - `mockups/`: tracked HTML UI mockups used as visual references.
 - `tools/forge-probe.md`: tracked Forge path-probe snippets for console debugging.
 

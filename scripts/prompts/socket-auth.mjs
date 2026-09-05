@@ -50,3 +50,24 @@ export function assertPromptGmMatchesInitiator(initiatorId, promptGmUserId) {
     throw new Error("DRAWING-PROMPTS.errors.unauthorizedSocketInitiator");
   }
 }
+
+/**
+ * Assert the socket initiator is the player who owns the targeted assignment.
+ * The wire `userId` is checked against the initiator first, as defense in depth:
+ * a disagreement between the two means the payload is forged or malformed, which
+ * is worth rejecting distinctly from a caller who simply targeted an assignment
+ * that is not theirs. Only `initiatorId` is authoritative — it comes from
+ * `socketdata`, not from the caller's arguments.
+ * @param {string|null|undefined} initiatorId Socket initiator user id.
+ * @param {string|null|undefined} wireUserId Player user id supplied by the caller.
+ * @param {string|null|undefined} assignmentUserId Assignment owner user id.
+ * @returns {void}
+ */
+export function assertSenderOwnsAssignment(initiatorId, wireUserId, assignmentUserId) {
+  if ( !initiatorId || initiatorId !== wireUserId ) {
+    throw new Error("DRAWING-PROMPTS.errors.unauthorizedSocketInitiator");
+  }
+  if ( !assignmentUserId || initiatorId !== assignmentUserId ) {
+    throw new Error("DRAWING-PROMPTS.errors.notYourAssignment");
+  }
+}
