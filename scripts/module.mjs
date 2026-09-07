@@ -4,6 +4,7 @@ import { registerSettings, migrateLegacySettings } from "./settings.mjs";
 import { initSocket } from "./socket.mjs";
 import { getSocketHandlers, openPlayerPromptList, openPromptManager } from "./prompts/prompt-service.mjs";
 import { loadAllPrompts } from "./prompts/persistence-service.mjs";
+import { recoverInterruptedPromptDeliveries } from "./prompts/prompt-delivery.mjs";
 import { renderTokenTransformHUD } from "./foundry/token-transform-service.mjs";
 
 Hooks.once("init", () => {
@@ -19,6 +20,7 @@ Hooks.once("ready", async () => {
   await migrateLegacySettings();
   if ( !globalThis.socketlib ) ui.notifications.error(game.i18n.localize("DRAWING-PROMPTS.errors.socketlibMissing"));
   if ( game.user.isGM ) {
+    await recoverInterruptedPromptDeliveries();
     const activeCount = loadAllPrompts().filter(prompt => prompt.needsAttention).length;
     if ( activeCount ) ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.notifications.activePrompts", { count: activeCount }));
   }

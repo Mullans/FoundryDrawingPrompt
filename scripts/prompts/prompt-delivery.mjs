@@ -7,7 +7,7 @@ import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { emit } from "../socket.mjs";
 import { getAssignment as getClientAssignment } from "./client-store.mjs";
 import { prepareFramedBackgroundForSend, serializeBackgroundForPlayer } from "./framed-delivery.mjs";
-import { loadPrompt, savePrompt } from "./persistence-service.mjs";
+import { loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
 import { assertGM, assertSenderOwnsAssignment } from "./socket-auth.mjs";
 import { requirePromptAssignment } from "./prompt-context.mjs";
 import { refreshManager } from "./ui-bridge.mjs";
@@ -144,6 +144,30 @@ export const DELIVERY_TIMEOUT_MS = 10_000;
 const attempts = new Map();
 const receiptWaiters = new Map();
 
+/**
+ * Reconcile interrupted receipt attempts when the GM reloads. Drawing data is untouched.
+ * An in-memory attempt owns its deadline; only orphaned pending metadata needs a decision.
+ */
+export async function recoverInterruptedPromptDeliveries() {
+  if ( !game.user.isGM ) return;
+  for ( const prompt of loadAllPrompts() ) {
+    if ( prompt.gmUserId !== game.user.id || attempts.has(prompt.id) ) continue;
+    const unresolved = Object.values(prompt.assignments).filter(assignment => assignment.isActive
+      && ["pending", "sending"].includes(assignment.delivery.status));
+    if ( !unresolved.length ) continue;
+    // Share the same gate as dispatch: an invitation started during reconciliation queues
+    // behind this metadata update, while an already-running attempt was skipped above.
+    const recovery = { ids: [], generations: {}, promise: (async () => {
+      for ( const assignment of unresolved ) {
+        await updateDelivery(prompt.id, assignment.id, "failed", "interrupted", assignment.delivery.generation);
+      }
+    })() };
+    attempts.set(prompt.id, recovery);
+    try { await recovery.promise; }
+    finally { if ( attempts.get(prompt.id) === recovery ) attempts.delete(prompt.id); }
+  }
+}
+
 /** Persist only delivery metadata, merging against current lifecycle/timer state. */
 async function updateDelivery(promptId, assignmentId, status, error = null, generation = null) {
   const prompt = loadPrompt(promptId);
@@ -162,7 +186,10 @@ async function updateDelivery(promptId, assignmentId, status, error = null, gene
 export async function acknowledgePromptDelivery(initiatorId, assignmentId, userId, generation = 0) {
   let pair;
   try { pair = validateOwningGMSender(initiatorId, assignmentId, userId); }
-  catch { return { accepted: false, reason: "invalid-invitation" }; }
+  catch (error) {
+    console.debug("drawing-prompts | ignored assignment receipt", error);
+    return { accepted: false, reason: "invalid-invitation" };
+  }
   if ( generation !== pair.assignment.delivery.generation ) return { accepted: false, reason: "stale-invitation" };
   if ( !pair.assignment.isActive ) return { accepted: false, reason: "inactive-assignment" };
   const prompt = await updateDelivery(pair.prompt.id, assignmentId, "received", null, generation);

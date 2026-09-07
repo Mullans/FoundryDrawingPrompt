@@ -18,6 +18,21 @@ globalThis.game = {
 };
 const { DrawingPromptManager } = await import("../scripts/apps/drawing-prompt-manager.mjs");
 
+test("withdrawn invitations cannot enable Resend All while cancelled recipients can", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({ id: "resend-membership", gmUserId: "gm", assignments: {
+    withdrawn: { id: "withdrawn", userId: "u1", status: "cancelled", delivery: { status: "withdrawn" } }
+  } });
+  const withdrawn = await manager._prepareContext({});
+  assert.equal(withdrawn.canResendAll, false);
+  assert.equal(withdrawn.rows[0].canResend, false);
+  manager.activePrompt.getAssignment("withdrawn").delivery.status = "received";
+  const cancelled = await manager._prepareContext({});
+  assert.equal(cancelled.canResendAll, true);
+  assert.equal(cancelled.rows[0].canResend, true);
+});
+
 test("Send paints busy feedback before storage, prevents duplicate creation, and recovers from failure", async () => {
   const manager = new DrawingPromptManager();
   Object.assign(manager.draft, { promptText: "Draw a bird", canvasWidth: 512, canvasHeight: 512,

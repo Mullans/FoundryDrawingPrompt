@@ -326,3 +326,79 @@ test("delayed resent OPEN after a second GM cancellation cannot install an activ
     assert.equal(opened, false);
   } finally { PlayerDrawingApp.open = originalOpen; PlayerDrawingApp.closeAssignment = originalClose; }
 });
+
+for ( const interruptedStatus of ["pending", "sending"] ) {
+  test(`GM reload makes persisted ${interruptedStatus} invitations actionable without inventing receipt`, async () => {
+    emit.openDrawingPrompt = async () => { throw new Error("transport unavailable"); };
+    const prompt = await lifecycle.createAndSendPrompt(draft);
+    stored.assignments.a1.delivery.status = interruptedStatus;
+    const { loadPrompt } = await import("../scripts/prompts/persistence-service.mjs");
+    assert.equal(loadPrompt(prompt.id).deliverySummary.needsResolution, false);
+    await delivery.recoverInterruptedPromptDeliveries();
+    const reloaded = loadPrompt(prompt.id);
+    assert.equal(reloaded.deliverySummary.needsResolution, true, "reload left Retry/Continue unavailable");
+    assert.equal(reloaded.deliverySummary.isSending, false);
+    assert.equal(reloaded.deliverySummary.hasRecipients, false);
+    assert.equal(reloaded.getAssignment("a1").delivery.error, "interrupted");
+  });
+}
+
+test("rejected receipt authorization is logged without accepting the forged identity", async () => {
+  emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
+  await lifecycle.createAndSendPrompt(draft);
+  const originalDebug = console.debug;
+  const logs = [];
+  console.debug = (...args) => logs.push(args);
+  try {
+    assert.equal((await delivery.acknowledgePromptDelivery("u2", "a1", "u1")).accepted, false);
+    assert.equal(logs.length, 1, "authorization rejection must be logged and dropped");
+  } finally { console.debug = originalDebug; }
+});
+
+test("startup reconciliation leaves live delivery deadlines in control", async () => {
+  let wire;
+  emit.openDrawingPrompt = async (_userId, payload) => { wire = payload; };
+  const prompt = await lifecycle.createAndSendPrompt({ ...draft, awaitDeliveries: false });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stored.assignments.a1.delivery.status, "sending");
+  await delivery.recoverInterruptedPromptDeliveries();
+  assert.equal(stored.assignments.a1.delivery.status, "sending");
+  assert.equal(stored.assignments.a1.delivery.error, null);
+  await delivery.acknowledgePromptDelivery("u1", wire.assignment.id, "u1");
+  await delivery.deliverPromptAssignments(prompt);
+  assert.equal(prompt.deliverySummary.received.length, 1);
+});
+
+test("recovery preserves confirmed membership and ignores another GM's unresolved invitations", async () => {
+  emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+  await lifecycle.createAndSendPrompt(draft);
+  await delivery.recoverInterruptedPromptDeliveries();
+  assert.equal(stored.assignments.a1.delivery.status, "received");
+  stored.gmUserId = "other-gm";
+  stored.assignments.a1.delivery.status = "sending";
+  await delivery.recoverInterruptedPromptDeliveries();
+  assert.equal(stored.assignments.a1.delivery.status, "sending");
+});
+
+test("Retry queues behind startup reconciliation and reuses the interrupted assignment", async () => {
+  emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
+  const prompt = await lifecycle.createAndSendPrompt(draft);
+  stored.assignments.a1.delivery.status = "pending";
+  const entry = entries.get(prompt.id);
+  const originalSave = entry.setFlag;
+  let release;
+  let first = true;
+  entry.setFlag = async (...args) => {
+    if ( first ) { first = false; await new Promise(resolve => { release = resolve; }); }
+    return originalSave(...args);
+  };
+  const recovering = delivery.recoverInterruptedPromptDeliveries();
+  await new Promise(resolve => setImmediate(resolve));
+  emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+  const retrying = lifecycle.retryPromptDeliveries(prompt.id);
+  release();
+  await recovering;
+  const retried = await retrying;
+  assert.equal(retried.deliverySummary.received[0].assignmentId, "a1");
+  assert.equal(stored.assignments.a1.delivery.error, null);
+});
