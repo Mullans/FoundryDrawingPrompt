@@ -198,6 +198,31 @@ function installFoundryEnvironment() {
 /** Left mouse button pointerdown event. */
 const leftClick = () => ({ button: 0, preventDefault() {}, stopPropagation() {} });
 
+test("SCR-57 a committed create remains pending through abandonment and records its result once", async () => {
+  const env = installFoundryEnvironment();
+  let release;
+  try {
+    const originalScene = canvas.scene;
+    originalScene.createEmbeddedDocuments = async (documentName, data) => {
+      env.createCalls.push({ documentName, data });
+      await new Promise(resolve => { release = resolve; });
+      return [env.createdDoc];
+    };
+    const pending = placeWithLayerPreview({ layerName: "tiles", createData: {} });
+    await flush();
+    env.stage.emit("pointerdown", leftClick());
+    env.hooks.callAll("activateCanvasLayer", env.otherLayer);
+    env.hooks.callAll("canvasTearDown");
+    canvas.scene = { createEmbeddedDocuments() { throw new Error("wrong scene"); } };
+    env.stage.emit("pointerdown", leftClick());
+    await assertStillPending(pending);
+    release();
+    assert.equal(await pending, env.createdDoc);
+    assert.equal(env.createCalls.length, 1);
+    env.assertFullyUnregistered();
+  } finally { release?.(); env.restore(); }
+});
+
 test("previewPixelSize prefers placeable w/h over grid-unit document width", () => {
   assert.deepEqual(
     previewPixelSize({ w: 100, h: 200, document: { width: 1, height: 1 } }, { width: 1, height: 1 }),

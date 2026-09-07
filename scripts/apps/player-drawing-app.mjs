@@ -24,7 +24,7 @@ import { restoreEngineFromSubmission } from "../drawing/submission-restore.mjs";
 import { loadBackgroundImage } from "../foundry/background-source-service.mjs";
 import { canStageUploads, stageSubmissionImages } from "../prompts/asset-service.mjs";
 import { updateStatus } from "../prompts/client-store.mjs";
-import { isValidSnapshotPayload } from "../prompts/wire-validation.mjs";
+import { selectLiveSnapshotPayload } from "../prompts/live-snapshot.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { createLeadingTrailingThrottle } from "../utils/throttle.mjs";
 import { formatClock, formatTimerState } from "../utils/timer-chip.mjs";
@@ -760,18 +760,20 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   async #sendSnapshot() {
     if ( !this.#canSendSnapshots() || !this.#engine ) return;
+    const payload = this.#buildSnapshotPayload();
+    if ( !payload ) return;
     await emit.drawingSnapshot(
       this.assignmentPayload.prompt.gmUserId,
       this.assignmentPayload.assignment.id,
       game.user.id,
-      this.#buildSnapshotPayload()
+      payload
     );
   }
 
   /**
    * Build the live snapshot payload. Composite feeds the Prompt-canvas GM view; overlay-only
    * ink rides along only while the GM's Framing View remaps it (matches dual Save).
-   * @returns {{composite: string, overlay?: string}}
+   * @returns {{composite?: string, overlay?: string}|null}
    */
   #buildSnapshotPayload() {
     const opts = {
@@ -779,12 +781,11 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       quality: INTERNAL.SNAPSHOT_QUALITY
     };
     const composite = this.#engine.getCompositeSnapshot(opts);
-    if ( !this.#overlayRequested ) return { composite };
-    const payload = { composite, overlay: this.#engine.getOverlaySnapshot(opts) };
-    // Combined wire budget: drop overlay and keep composite rather than failing the tick.
-    if ( isValidSnapshotPayload(payload) ) return payload;
-    console.debug("drawing-prompts | dropped overlay snapshot over the combined snapshot wire budget");
-    return { composite };
+    return selectLiveSnapshotPayload({
+      composite,
+      overlay: this.#overlayRequested ? this.#engine.getOverlaySnapshot(opts) : undefined,
+      overlayRequested: this.#overlayRequested
+    });
   }
 
   /**

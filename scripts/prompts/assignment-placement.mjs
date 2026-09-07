@@ -136,7 +136,7 @@ export async function placeAssignmentAsTile(assignmentId, {
   let tile = null;
   if ( interactive ) {
     const { placeWithLayerPreview } = await import("../foundry/canvas-place-preview.mjs");
-    tile = await placeWithLayerPreview({ layerName: "tiles", createData: tileData });
+    tile = await placeWithLayerPreview({ layerName: "tiles", createData: tileData, scene });
     if ( !tile ) return null;
   } else {
     [tile] = await scene.createEmbeddedDocuments("Tile", [tileData]);
@@ -215,7 +215,7 @@ export async function placeAssignmentAsToken(assignmentId, {
     const tokenData = tokenDocument.toObject();
     if ( interactive ) {
       const { placeWithLayerPreview } = await import("../foundry/canvas-place-preview.mjs");
-      token = await placeWithLayerPreview({ layerName: "tokens", createData: tokenData });
+      token = await placeWithLayerPreview({ layerName: "tokens", createData: tokenData, scene });
       if ( !token ) {
         if ( createdActor && actor?.id ) {
           try {
