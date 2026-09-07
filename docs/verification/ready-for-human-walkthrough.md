@@ -26,24 +26,18 @@ Sections are ordered so one Foundry session covers all of them. Sections 1–6 s
 
 ### Start the session
 
-1. Link the module into the portable install (idempotent, PowerShell, from the repo root):
+Follow the hub [verification lifecycle](https://github.com/Mullans/FoundryHub/blob/dev/standards/verification.md) to link modules, start Foundry, poll readiness, and stop the server after the run. Use the configured test world and port (defaults: **`test-world`**, **30000**).
 
-   ```powershell
-   $foundryRoot = (Resolve-Path '.\FoundryVTT-WindowsPortable-14.364').Path
-   .\tools\link-module.ps1 -FoundryDataPath $foundryRoot
-   ```
-
-2. Start Foundry on port **30000**, world **`test-world`**. Wait for `http://localhost:30000/join` to answer before opening any browser.
-3. Open **two browser profiles** (separate profiles, not two tabs — Foundry binds one user per session):
+1. Open **two browser profiles** (separate profiles, not two tabs — Foundry binds one user per session):
    * Profile 1 → join as the **GM**.
    * Profile 2 → join as **Player A**.
-4. Section 4 additionally needs a **third client**: either Player A opening a second assignment window in the same session, or a **Player B** in a third profile. Player B is the cleaner test and also serves section "Two players, ordinary lifecycle" below — prefer it.
-5. Confirm module settings before building Prompt A (Configure Settings → Module Settings → Drawing Prompts):
+2. Section 4 additionally needs a **third client**: either Player A opening a second assignment window in the same session, or a **Player B** in a third profile. Player B is the cleaner test and also serves section "Two players, ordinary lifecycle" below — prefer it.
+3. Confirm module settings before building Prompt A (Configure Settings → Module Settings → Drawing Prompts):
    * **Live GM preview** — on (sections 4 and 5 depend on live snapshots).
    * **Auto-open player window** — on (saves a click per assignment).
-6. Have a **source image** ready in the world's data — ideally a character portrait that is clearly *not* square, so letterbox pad is unambiguous. Sections 5 and 6 need it; sections 1–4 do not.
+4. Have a **source image** ready in the world's data — ideally a character portrait that is clearly *not* square, so letterbox pad is unambiguous. Sections 5 and 6 need it; sections 1–4 do not.
 
-If any step behaves strangely and the symptom **moves between attempts**, restart the Foundry server before investigating. A wedged long-running server mimics module bugs convincingly (see `AGENTS.md` § Verification).
+For symptoms that **move between attempts**, apply the hub verification lifecycle's [wedged-server rule](https://github.com/Mullans/FoundryHub/blob/dev/standards/verification.md#wedged-server-rule).
 
 ### Two regressions that ride along — read once, do not repeat per section
 
@@ -103,7 +97,7 @@ The manager switches to review mode. Leave it open.
 - [ ] No canvas width × height readout anywhere in the summary bar.
 - [ ] No background thumbnail in the live summary.
 - [ ] Expanding the long prompt quote does not push the timer block onto its own row or out of the summary bar.
-- [ ] Dimensions, if shown at all, appear only as preview corner info and are muted on preview — not as summary crumbs.
+- [ ] No canvas width × height readout appears in a preview corner, per [ADR-0003](../adr/0003-gm-live-manager-timer-block.md).
 
 **What failure looks like:** the countdown chip rendering on the summary row while Pause / Reset / Stop wrap to a second row underneath (this is the exact regression the ticket was filed for); the ± adjustment buttons stacking vertically instead of flanking as wings; a `512 × 768` dimensions string reappearing next to the drawing name; the timer block sliding out past the right edge of the summary bar once the prompt quote expands.
 
@@ -371,4 +365,4 @@ There is nothing for a tester to click that is specific to SCR-25. Writing steps
 | SCR-50 (rides along) | 6.3, 6.4 | | human paths only |
 | SCR-55 (rides along) | 4.7, 4.8 | | human paths only |
 
-When the run is done: comment the outcome on each Linear ticket, then move the ones that passed. Leave anything that failed `ready-for-human` with the failing section number and, for section 5.3, the attempt number and what the player was doing.
+When the run is done: record the outcome on each Linear ticket within the authorized tracker scope. A human decides which passing tickets to move to Done; agents do so only with explicit user authorization, following the hub [issue workflow](https://github.com/Mullans/FoundryHub/blob/dev/docs/agents/issue-tracker.md). Leave anything that failed `ready-for-human` with the failing section number and, for section 5.3, the attempt number and what the player was doing.

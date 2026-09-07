@@ -55,6 +55,8 @@ Working model for how Prompt canvas geometry shows up in UI. Domain terms: `CONT
 
 #### Paint arbitration (SCR-51)
 
+Apply the hub [asynchronous rendering standard](https://github.com/Mullans/FoundryHub/blob/dev/standards/async-rendering.md). The rules below describe its Drawing Prompts assignment and Framing View behavior.
+
 The review plate has two paint paths — the async one (a resolved preview painted onto the plate element) and the synchronous one (a template render binding `selectedSnapshot` and replacing the plate subtree). **Both are paint paths and both obey the same arbitration.** Treating the template render as exempt is what allowed a render to overwrite newer live pixels, and allowed a render mid-remap to blank the plate.
 
 | Rule | Detail |

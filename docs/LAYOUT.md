@@ -1,36 +1,41 @@
-# Documentation and local resources
+# Drawing Prompts documentation and local resources
 
-Codebase layout lives in `README.md`. This file maps **documentation and resource folders**: which are tracked, which are skill-owned, and which are personal organization.
+This repository owns Drawing Prompts product documentation, architectural history, and feature verification. Reusable development guidance lives in FoundryHub.
 
-## Tracked docs
+## Module documentation
 
-- `AGENTS.md`: shared agent instructions for this repo.
-- `CLAUDE.md`: Claude-specific orchestration (Codex delegation, skill pointers).
-- `CONTEXT.md`: domain vocabulary (ubiquitous language).
-- `README.md`: module product docs and codebase-oriented layout.
-- `docs/LAYOUT.md`: this map of documentation and local resource folders.
-- `docs/agents/`: tracked agent how-to docs (domain, issue tracker, triage labels).
-- `docs/adr/`: architectural decision records when present (created by domain-modeling workflows).
-- `docs/design/`: short product/display design notes tied to active slices (not personal archive). Grilled UI/layout decisions that implementers must follow belong here (with an ADR when the decision is hard to reverse / surprising).
-- `mockups/`: tracked HTML UI mockups used as visual references.
-- `tools/forge-probe.md`: tracked Forge path-probe snippets for console debugging.
+- [AGENTS.md](../AGENTS.md): module identity and context pointers, importing shared hub instructions.
+- [CLAUDE.md](../CLAUDE.md): imports AGENTS.md.
+- [CONTEXT.md](../CONTEXT.md): domain vocabulary.
+- [README.md](../README.md): product usage and codebase layout.
+- [docs/adr/](adr/): the five architectural decisions for framing/dual saves, display layers, timer layout, placement lifecycle, and socket trust. These records retain their product context and rejected alternatives.
+- [docs/design/](design/): Drawing Prompts display surfaces and live manager layout specifications.
+- [docs/verification/](verification/): product walkthrough cases and sign-off evidence.
+- mockups/: tracked HTML UI references.
+- [tools/forge-probe.md](../tools/forge-probe.md): module-specific Forge path-probe snippets.
 
-## Personal organization (untracked)
+## Shared FoundryHub guidance
 
-- `docs/archive/`: untracked personal archive for generated or research docs kept for later.
-- `ignore__*`: catch-all prefix for ad-hoc local dumps that should stay out of git.
+- [Agent instructions](https://github.com/Mullans/FoundryHub/blob/dev/AGENTS.md)
+- [Domain documentation workflow](https://github.com/Mullans/FoundryHub/blob/dev/docs/agents/domain.md)
+- [Linear workflow](https://github.com/Mullans/FoundryHub/blob/dev/docs/agents/issue-tracker.md) and [triage labels](https://github.com/Mullans/FoundryHub/blob/dev/docs/agents/triage-labels.md)
+- [Codex delegation](https://github.com/Mullans/FoundryHub/blob/dev/docs/agents/codex-delegation.md)
+- [Verification lifecycle](https://github.com/Mullans/FoundryHub/blob/dev/standards/verification.md)
+- [Canvas placement](https://github.com/Mullans/FoundryHub/blob/dev/standards/canvas-placement.md), [socket security](https://github.com/Mullans/FoundryHub/blob/dev/standards/socket-security.md), and [asynchronous rendering](https://github.com/Mullans/FoundryHub/blob/dev/standards/async-rendering.md)
 
-## Skill-tied local trees (untracked)
+The former module docs/agents/ guides and docs/codex_delegation.md were consolidated into those hub documents. New shared guidance belongs there; module product rules belong here.
 
-- `docs/superpowers/plans/`: untracked; used by the Superpowers `writing-plans` skill to store plan files.
-- `docs/superpowers/specs/`: untracked; used by the Superpowers `brainstorming` skill to store design specs.
-- `.planning/`: untracked; GSD skill tree (`ROADMAP.md`, `STATE.md`, phases, research).
-- `.worktrees/`: untracked; Superpowers preferred project-local git worktree root.
-- `.superpowers/`: untracked; Superpowers runtime state (for example SDD progress).
-- `.cursor/`: untracked; Cursor IDE plans and project UI state.
-- `.design-sync/`: untracked; Claude Design durable sync config, notes, and owned previews.
-- `.ds-sync/`: untracked; Claude Design staged converter scripts and isolated npm deps.
-- `ds-bundle/`: untracked; Claude Design generated bundle output.
-- `design-system/`: untracked; hand-authored Foundry house-style package (`foundry-ds`) synced via Claude Design.
-- `.claude/`, `.agents/`: untracked; local agent and skill tooling state.
-- `skills-lock.json`: untracked; Claude skills lockfile (pinned skill hashes).
+## Local history and resources (untracked)
+
+- docs/archive/: retained Drawing Prompts plans, design prompts, issue reports, and dated research. Treat research as historical input requiring validation before reuse. Installation archives are local runtime resources.
+- docs/superpowers/plans/ and docs/superpowers/specs/: retained module implementation plans and design specs.
+- ignore__*: ad-hoc local dumps.
+- .planning/: local GSD roadmap, state, phases, and research.
+- .worktrees/: local worktrees.
+- .superpowers/: Superpowers runtime state.
+- .cursor/: Cursor plans and project state.
+- .design-sync/, .ds-sync/, ds-bundle/: local design sync state, conversion tooling, and generated output.
+- design-system/: existing local design reference; canonical cross-module design guidance lives in [FoundryHub/design-system](https://github.com/Mullans/FoundryHub/tree/dev/design-system).
+- .claude/, .agents/, skills-lock.json: local agent tooling and skill state.
+
+Workspace brainstorms belong in FoundryHub's docs/ideas/; settled Drawing Prompts terms and decisions are recorded in this module's glossary, design notes, and ADRs.
