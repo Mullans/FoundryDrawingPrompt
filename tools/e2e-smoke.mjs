@@ -269,10 +269,15 @@ async function assertAbandonedPlacementIsSafe(page) {
     const el = document.querySelector(".drawing-prompts-manager");
     return Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
   });
-  await page.waitForFunction(() => {
+  // Hiding happens before asynchronous placement preparation. Wait for the actual
+  // preview and input listener, otherwise this test abandons before placement starts.
+  await page.waitForFunction(idle => {
     const el = document.querySelector(".drawing-prompts-manager");
-    return Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
-  }, null, { timeout: 10000 });
+    const hidden = Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
+    return hidden && canvas.tiles.active
+      && canvas.tiles.preview?.children?.some(preview => preview.document && !preview.destroyed)
+      && (canvas.stage?.listenerCount?.("pointerdown") ?? 0) > idle;
+  }, idleListeners, { timeout: 10000 });
 
   // Abandon by switching canvas layer -- PlaceablesLayer#_deactivate destroys the preview.
   // NOTE: never return the layer from evaluate(); serializing that circular PIXI object
@@ -321,6 +326,8 @@ async function assertAbandonedPlacementIsSafe(page) {
 }
 
 async function placeSavedTile(page) {
+  await page.evaluate(() => { canvas.tiles.activate(); });
+  const idleListeners = await page.evaluate(() => canvas.stage?.listenerCount?.("pointerdown") ?? 0);
   await page.locator(".drawing-prompts-manager button[data-action='openPlaceDialog']").click();
   const placeDialog = page.locator("#drawing-prompts-place-dialog, .drawing-prompts-place-dialog").last();
   await placeDialog.waitFor({ state: "visible", timeout: 10000 });
@@ -329,10 +336,13 @@ async function placeSavedTile(page) {
   await placeDialog.waitFor({ state: "hidden", timeout: 15000 });
 
   // Interactive place: manager yields (display:none) and a tile preview follows the cursor.
-  await page.waitForFunction(() => {
+  await page.waitForFunction(idle => {
     const el = document.querySelector(".drawing-prompts-manager");
-    return Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
-  }, null, { timeout: 10000 });
+    const hidden = Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
+    return hidden && canvas.tiles.active
+      && canvas.tiles.preview?.children?.some(preview => preview.document && !preview.destroyed)
+      && (canvas.stage?.listenerCount?.("pointerdown") ?? 0) > idle;
+  }, idleListeners, { timeout: 10000 });
 
   const board = page.locator("canvas#board").first();
   await board.waitFor({ state: "visible", timeout: 10000 });
