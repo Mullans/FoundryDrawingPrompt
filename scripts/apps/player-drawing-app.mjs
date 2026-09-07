@@ -1,6 +1,7 @@
 import { CANVAS_CHROME, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { CANVAS_CHROME_CSS_CLASSES, canvasChromeCssClass, normalizeCanvasChrome } from "../drawing/canvas-chrome.mjs";
 import { DrawingEngine } from "../drawing/drawing-engine.mjs";
+import { ownsDrawingShortcut } from "../drawing/shortcut-focus.mjs";
 import {
   parseRecentColors,
   pushRecentColor,
@@ -475,8 +476,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @returns {void}
    */
   #wireNavigation(viewport) {
+    // Canvas is not natively focusable. Give pointer work a real keyboard owner;
+    // never infer ownership from a frontmost application after focus leaves it.
+    viewport.tabIndex = 0;
     const onWheel = event => this.#onNavWheel(event);
-    const onPointerDown = event => this.#onNavPointerDown(event);
+    const onPointerDown = event => {
+      viewport.focus({ preventScroll: true });
+      this.#onNavPointerDown(event);
+    };
     const onPointerMove = event => this.#onNavPointerMove(event);
     const onPointerUp = event => this.#onNavPointerUp(event);
     const onDblClick = event => {
@@ -484,22 +491,23 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       this.#resetNavigation();
     };
     const onKeyDown = event => {
-      if ( !this.rendered ) return;
-      const target = event.target;
-      if ( target?.closest?.("input, textarea, select, [contenteditable='true']") ) return;
+      if ( !this.rendered || !ownsDrawingShortcut(this.element, event) ) return;
 
       if ( event.code === "Space" && !event.repeat ) {
         this.#spaceHeld = true;
-        if ( this.element?.contains(target) || target === document.body ) event.preventDefault();
+        event.preventDefault();
+        event.stopPropagation();
         return;
       }
 
       if ( event.key === "Enter" && this.#engine?.commitLineDraft() ) {
         event.preventDefault();
+        event.stopPropagation();
         return;
       }
       if ( event.key === "Escape" && this.#engine?.cancelLineDraft() ) {
         event.preventDefault();
+        event.stopPropagation();
         return;
       }
 
@@ -514,6 +522,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       if ( tool && !event.ctrlKey && !event.metaKey && !event.altKey ) {
         this.#selectTool(tool);
         event.preventDefault();
+        event.stopPropagation();
       }
     };
     const onKeyUp = event => {
@@ -523,11 +532,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       this.#spaceHeld = false;
       this.#endPanDrag();
     };
+    const onFocusOut = event => {
+      if ( !this.element?.contains(event.relatedTarget) ) onBlur();
+    };
     const onContextMenu = event => {
       event.preventDefault();
     };
 
-    this.#navHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur, onContextMenu };
+    this.#navHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur, onFocusOut, onContextMenu };
     viewport.addEventListener("wheel", onWheel, { passive: false });
     viewport.addEventListener("pointerdown", onPointerDown, true);
     viewport.addEventListener("pointermove", onPointerMove);
@@ -535,7 +547,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     viewport.addEventListener("pointercancel", onPointerUp);
     viewport.addEventListener("dblclick", onDblClick);
     viewport.addEventListener("contextmenu", onContextMenu);
-    window.addEventListener("keydown", onKeyDown);
+    this.element.addEventListener("focusout", onFocusOut);
+    this.element.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
 
@@ -564,7 +577,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       viewport.removeEventListener("contextmenu", handlers.onContextMenu);
     }
     if ( handlers ) {
-      window.removeEventListener("keydown", handlers.onKeyDown);
+      this.element?.removeEventListener("focusout", handlers.onFocusOut);
+      this.element?.removeEventListener("keydown", handlers.onKeyDown);
       window.removeEventListener("keyup", handlers.onKeyUp);
       window.removeEventListener("blur", handlers.onBlur);
     }
