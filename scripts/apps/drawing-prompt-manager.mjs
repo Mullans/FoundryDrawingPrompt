@@ -186,6 +186,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     };
     this.activePrompt = null;
     this.isSending = false;
+    this.#closed = false;
     this.latestSnapshots = new Map();
     /** @type {Map<string, string>} Latest overlay-only (ink) live snapshots for Full Framing remaps. */
     this.latestOverlaySnapshots = new Map();
@@ -201,6 +202,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   #expiryTimerId;
   #expiryStateSignature;
+  #closed;
   #formListenersAttached = false;
   #sourceFramingPreviewCache;
   /**
@@ -384,7 +386,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       selectedAssignmentId: this.selectedAssignmentId,
       canSend: !this.activePrompt && !this.isSending,
       isSending: this.isSending || Boolean(delivery?.isSending),
-      sendLabel: this.isSending ? "Sending..." : "Send",
+      sendLabel: game.i18n.localize(this.isSending
+        ? "DRAWING-PROMPTS.manager.actions.sending"
+        : "DRAWING-PROMPTS.manager.actions.sendPrompt"),
       setupLocked: this.isSending || Boolean(this.activePrompt),
       deliveryFeedback: null,
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
@@ -470,6 +474,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @override */
   _onClose(options) {
+    this.#closed = true;
     super._onClose(options);
     this.#destroyFramingEditor();
     this.#destroyReviewPlateStage();
@@ -536,7 +541,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    */
   #validateDraft(draft) {
     if ( !draft.drawingName ) {
-      ui.notifications.warn("Drawing name is required.");
+      ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.manager.validation.drawingName"));
       return false;
     }
     if ( !draft.selectedUserIds.length ) return warn("DRAWING-PROMPTS.manager.validation.users");
@@ -1291,15 +1296,16 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.isSending = true;
     try {
       await this.render({ parts: ["body"] });
+      if ( this.#closed ) return;
       this.activePrompt = await work();
       this.selectedAssignmentId = this.activePrompt?.deliverySummary?.received[0]?.assignmentId ?? null;
     } catch (error) {
-      ui.notifications.error(error.message);
+      if ( !this.#closed ) ui.notifications.error(error.message);
     } finally {
       this.isSending = false;
-      await this.render({ parts: ["body"] });
+      if ( !this.#closed ) await this.render({ parts: ["body"] });
     }
-    if ( this.activePrompt?.deliverySummary.needsResolution ) await this.showDeliveryWarning();
+    if ( !this.#closed && this.activePrompt?.deliverySummary.needsResolution ) await this.showDeliveryWarning();
   }
 
   /** Show unresolved initial delivery as a separate modal bound to this prompt. */
@@ -1309,30 +1315,38 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( !promptId || !delivery?.needsResolution ) return;
     const noRecipients = !delivery.hasRecipients;
     const names = escapeHtml(delivery.failed.map(recipient => recipient.userName).join(", "));
-    const explanation = noRecipients
-      ? "Not enough players to start the drawing."
-      : "Continue to start the drawing without these players.";
-    const choice = await DialogV2.wait({
-      window: { title: "Delivery warning", icon: "fa-solid fa-triangle-exclamation" },
-      classes: ["drawing-prompts", "dp-delivery-warning-dialog"],
-      content: `<div class="dp-delivery-warning">
-        <p><strong>No response from:</strong> ${names}</p>
-        <p>${explanation}</p>
-      </div>`,
-      buttons: [
-        { action: "retry", label: "Retry", icon: "fa-solid fa-arrows-rotate", callback: () => "retry" },
-        { action: "continue", label: "Continue", icon: "fa-solid fa-play", disabled: noRecipients,
-          callback: () => "continue" },
-        ...(noRecipients ? [{ action: "back", label: "Back to setup", icon: "fa-solid fa-arrow-left",
-          callback: () => "back" }] : [])
-      ],
-      rejectClose: false,
-      modal: true
-    });
-    if ( this.activePrompt?.id !== promptId ) return;
-    if ( choice === "retry" ) await DrawingPromptManager.#onRetryDeliveries.call(this);
-    else if ( choice === "continue" && !noRecipients ) await DrawingPromptManager.#onContinueDeliveries.call(this);
-    else if ( choice === "back" && noRecipients ) await DrawingPromptManager.#onBackToSetup.call(this);
+    const explanation = game.i18n.localize(noRecipients
+      ? "DRAWING-PROMPTS.manager.delivery.notEnoughPlayers"
+      : "DRAWING-PROMPTS.manager.delivery.continueWithoutPlayers");
+    do {
+      const choice = await DialogV2.wait({
+        window: {
+          title: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.title"),
+          icon: "fa-solid fa-triangle-exclamation"
+        },
+        classes: ["drawing-prompts", "dp-delivery-warning-dialog"],
+        content: `<div class="dp-delivery-warning">
+          <p><strong>${game.i18n.localize("DRAWING-PROMPTS.manager.delivery.noResponse")}</strong> ${names}</p>
+          <p>${explanation}</p>
+        </div>`,
+        buttons: [
+          { action: "retry", label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.retry"),
+            icon: "fa-solid fa-arrows-rotate", callback: () => "retry" },
+          { action: "continue", label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.continue"),
+            icon: "fa-solid fa-play", disabled: noRecipients, callback: () => "continue" },
+          ...(noRecipients ? [{ action: "back",
+            label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.backToSetup"),
+            icon: "fa-solid fa-arrow-left", callback: () => "back" }] : [])
+        ],
+        rejectClose: false,
+        modal: true
+      });
+      if ( this.#closed || this.activePrompt?.id !== promptId ) return;
+      if ( choice === "retry" ) return DrawingPromptManager.#onRetryDeliveries.call(this);
+      if ( choice === "continue" && !noRecipients ) return DrawingPromptManager.#onContinueDeliveries.call(this);
+      if ( choice === "back" && noRecipients ) return DrawingPromptManager.#onBackToSetup.call(this);
+      if ( !noRecipients ) return;
+    } while ( true );
   }
 
   /** @this {DrawingPromptManager} */

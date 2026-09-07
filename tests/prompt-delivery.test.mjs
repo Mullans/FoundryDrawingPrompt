@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { before, beforeEach, test } from "node:test";
 
 let lifecycle, delivery, emit, models, stored, entries, sequence;
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+  return { promise, resolve, reject };
+}
+
 before(async () => {
   globalThis.foundry = { applications: { api: {
     ApplicationV2: class {}, DialogV2: class {}, HandlebarsApplicationMixin: Base => class extends Base {}
@@ -59,7 +67,11 @@ test("default awaited delivery resolves on automatic receipt without waiting for
 test("initial receipts wait for every delivery to settle and the timer starts at release", async () => {
   let firstReceipt;
   let firstReceiptResolved = false;
+  let dispatched = 0;
+  const bothDispatched = deferred();
   emit.openDrawingPrompt = (userId, payload) => {
+    dispatched++;
+    if ( dispatched === 2 ) bothDispatched.resolve();
     if ( userId === "u1" ) {
       firstReceipt = delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId)
         .then(result => { firstReceiptResolved = true; return result; });
@@ -68,17 +80,32 @@ test("initial receipts wait for every delivery to settle and the timer starts at
     return new Promise(() => {});
   };
   const originalTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, ms, ...args) => originalTimeout(fn, Math.min(ms, 30), ...args);
+  const originalClearTimeout = globalThis.clearTimeout;
+  const originalDateNow = Date.now;
+  const timers = [];
+  const firstTimerCleared = deferred();
+  let now = 1_000_000;
+  globalThis.setTimeout = fn => {
+    const handle = { fn, cleared: false };
+    timers.push(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = handle => {
+    handle.cleared = true;
+    if ( handle === timers[0] ) firstTimerCleared.resolve();
+  };
+  Date.now = () => now;
   try {
-    const startedAt = Date.now();
     const sending = lifecycle.createAndSendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
-    for ( let n = 0; n < 20 && !firstReceipt; n++ ) await new Promise(resolve => originalTimeout(resolve, 2));
-    await new Promise(resolve => originalTimeout(resolve, 5));
+    await bothDispatched.promise;
+    await firstTimerCleared.promise;
     assert.equal(firstReceiptResolved, false, "a successful recipient must remain gated while another invitation is unresolved");
     assert.equal(stored.timerStatus, "paused");
     assert.equal(stored.deadlineAt, null);
     assert.equal(stored.remainingMs, 60_000);
 
+    now = 1_005_000;
+    timers.find(handle => !handle.cleared).fn();
     const prompt = await sending;
     const receipt = await firstReceipt;
     assert.equal(receipt.accepted, true);
@@ -86,10 +113,13 @@ test("initial receipts wait for every delivery to settle and the timer starts at
     assert.equal(prompt.deliverySummary.received.length, 1);
     assert.equal(prompt.deliverySummary.failed.length, 1);
     assert.equal(prompt.timerStatus, "running");
-    assert.ok(prompt.deadlineAt >= startedAt + 60_000,
-      "the initial delivery wait must not consume drawing time");
+    assert.equal(prompt.deadlineAt, 1_065_000, "the initial delivery wait must not consume drawing time");
     assert.equal(receipt.timerState.deadlineAt, prompt.deadlineAt);
-  } finally { globalThis.setTimeout = originalTimeout; }
+  } finally {
+    globalThis.setTimeout = originalTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    Date.now = originalDateNow;
+  }
 });
 
 test("unconfirmed dispatch completion is bounded, Retry keeps identity, and repeated Retry shares one attempt", async () => {

@@ -3,15 +3,25 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 let sequence = 0;
+const english = JSON.parse(readFileSync(new URL("../lang/en.json", import.meta.url), "utf8"));
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+  return { promise, resolve, reject };
+}
+
 class TestDialogV2 {
   static calls = [];
+  static results = [];
   static async wait(options) {
     this.calls.push(options);
-    return null;
+    return this.results.length ? this.results.shift() : "dismissed-test-dialog";
   }
 }
 globalThis.foundry = { applications: { api: {
-  ApplicationV2: class {}, DialogV2: TestDialogV2, HandlebarsApplicationMixin: Base => Base
+  ApplicationV2: class { _onClose() {} }, DialogV2: TestDialogV2, HandlebarsApplicationMixin: Base => Base
 } }, utils: { randomID: () => `id${++sequence}` } };
 globalThis.CONST = { DOCUMENT_OWNERSHIP_LEVELS: { NONE: 0 } };
 globalThis.Hooks = { callAll() {} };
@@ -20,9 +30,13 @@ globalThis.game = {
   user: { id: "gm", isGM: true },
   users: new Map([["u1", { id: "u1", name: "Ada", active: true, can: () => false }]]),
   journal: [],
-  folders: [{ id: "folder", name: "DRAWING-PROMPTS.journal.folderName", type: "JournalEntry" }],
+  folders: [{ id: "folder", name: english["DRAWING-PROMPTS.journal.folderName"], type: "JournalEntry" }],
   settings: { get: () => undefined },
-  i18n: { localize: key => key, format: key => key }
+  i18n: {
+    localize: key => english[key] ?? key,
+    format: (key, data = {}) => Object.entries(data).reduce(
+      (value, [name, replacement]) => value.replaceAll(`{${name}}`, String(replacement)), english[key] ?? key)
+  }
 };
 const { DrawingPromptManager } = await import("../scripts/apps/drawing-prompt-manager.mjs");
 
@@ -101,6 +115,7 @@ test("drawing name appears before optional prompt text and a name-only prompt se
 
 test("zero receipts use a separate modal with disabled Continue and Back to setup preserves configuration", async () => {
   TestDialogV2.calls.length = 0;
+  TestDialogV2.results = [null, "back"];
   const entries = new Map();
   game.journal = { get: id => entries.get(id), [Symbol.iterator]: function* () { yield* entries.values(); } };
   globalThis.JournalEntry = { create: async () => {
@@ -119,12 +134,9 @@ test("zero receipts use a separate modal with disabled Continue and Back to setu
     canvasHeight: 480, timerSeconds: 120, selectedUserIds: new Set(["u1"]) });
   manager.render = async () => manager;
   await DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(manager);
-  const failed = await manager._prepareContext({});
-  assert.equal(failed.mode, "setup");
-  assert.equal(failed.canSend, false, "retry must not create another invitation");
-  assert.equal(failed.deliveryFeedback, null, "delivery warnings must not be embedded in the manager");
-  assert.equal(entries.size, 1, "retain the attempt for same-invitation Retry");
-  const dialog = TestDialogV2.calls.at(-1);
+  const setup = await manager._prepareContext({});
+  assert.equal(TestDialogV2.calls.length, 2, "dismissing the modal must present the real choices again");
+  const dialog = TestDialogV2.calls[0];
   assert.equal(dialog.modal, true);
   assert.match(dialog.content, /No response from:.*Ada/s);
   assert.match(dialog.content, /Not enough players to start the drawing\./);
@@ -133,9 +145,6 @@ test("zero receipts use a separate modal with disabled Continue and Back to setu
     ["continue", "Continue", true],
     ["back", "Back to setup", false]
   ]);
-
-  await DrawingPromptManager.DEFAULT_OPTIONS.actions.backToSetup.call(manager);
-  const setup = await manager._prepareContext({});
   assert.equal(setup.canSend, true);
   assert.equal(setup.deliveryFeedback, null);
   assert.equal(entries.size, 0);
@@ -148,6 +157,7 @@ test("zero receipts use a separate modal with disabled Continue and Back to setu
 });
 
 test("partial delivery modal uses the requested Continue explanation", async () => {
+  TestDialogV2.results = ["dismissed-test-dialog"];
   const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
   const manager = new DrawingPromptManager();
   manager.activePrompt = new DrawingPrompt({ id: "partial", gmUserId: "gm", assignments: {
@@ -159,4 +169,61 @@ test("partial delivery modal uses the requested Continue explanation", async () 
   assert.match(dialog.content, /No response from:.*Ben/s);
   assert.match(dialog.content, /Continue to start the drawing without these players\./);
   assert.equal(dialog.buttons.find(button => button.action === "continue").disabled, false);
+});
+
+test("closing during delivery prevents completion render and warning resurrection", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = [];
+  const createStarted = deferred();
+  const releaseCreate = deferred();
+  const entries = new Map();
+  game.journal = { get: id => entries.get(id), [Symbol.iterator]: function* () { yield* entries.values(); } };
+  globalThis.JournalEntry = { create: async data => {
+    createStarted.resolve();
+    await releaseCreate.promise;
+    let stored = structuredClone(data.flags["drawing-prompts"].prompt);
+    const entry = { id: `prompt${++sequence}`, getFlag: () => stored,
+      setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; } };
+    entries.set(entry.id, entry);
+    return entry;
+  } };
+  const { emit } = await import("../scripts/socket.mjs");
+  emit.openDrawingPrompt = async () => { throw new Error("offline"); };
+  const manager = new DrawingPromptManager();
+  Object.assign(manager.draft, { promptText: "", drawingName: "Close race", canvasWidth: 512,
+    canvasHeight: 512, timerSeconds: 0, selectedUserIds: new Set(["u1"]) });
+  let renders = 0;
+  manager.render = async () => { renders++; return manager; };
+
+  const sending = DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(manager);
+  await createStarted.promise;
+  manager._onClose({});
+  const rendersAtClose = renders;
+  releaseCreate.resolve();
+  await sending;
+
+  assert.equal(renders, rendersAtClose, "delivery completion must not render a closed manager");
+  assert.equal(TestDialogV2.calls.length, 0, "delivery completion must not open a warning after close");
+});
+
+test("new delivery UI copy is localized with exact English values", () => {
+  const expected = {
+    "DRAWING-PROMPTS.manager.actions.sending": "Sending...",
+    "DRAWING-PROMPTS.manager.validation.drawingName": "Drawing name is required.",
+    "DRAWING-PROMPTS.manager.delivery.title": "Delivery warning",
+    "DRAWING-PROMPTS.manager.delivery.noResponse": "No response from:",
+    "DRAWING-PROMPTS.manager.delivery.continueWithoutPlayers": "Continue to start the drawing without these players.",
+    "DRAWING-PROMPTS.manager.delivery.notEnoughPlayers": "Not enough players to start the drawing.",
+    "DRAWING-PROMPTS.manager.delivery.retry": "Retry",
+    "DRAWING-PROMPTS.manager.delivery.continue": "Continue",
+    "DRAWING-PROMPTS.manager.delivery.backToSetup": "Back to setup",
+    "DRAWING-PROMPTS.manager.fields.promptTextOptional": "Prompt text (optional)"
+  };
+  for ( const [key, value] of Object.entries(expected) ) assert.equal(english[key], value, key);
+  const source = readFileSync(new URL("../scripts/apps/drawing-prompt-manager.mjs", import.meta.url), "utf8");
+  const template = readFileSync(new URL("../templates/drawing-prompt-manager.hbs", import.meta.url), "utf8");
+  for ( const value of Object.values(expected) ) {
+    assert.equal(source.includes(`\"${value}\"`) || template.includes(value), false,
+      `user-facing copy must come from localization: ${value}`);
+  }
 });

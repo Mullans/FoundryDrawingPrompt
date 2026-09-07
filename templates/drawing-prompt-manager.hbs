@@ -1,6 +1,6 @@
 <div class="dp-manager-shell is-{{mode}}">
   {{#if isSending}}
-  <p class="dp-sending-status" role="status"><i class="fa-solid fa-spinner fa-spin" inert></i> Sending...</p>
+  <p class="dp-sending-status" role="status"><i class="fa-solid fa-spinner fa-spin" inert></i> {{localize "DRAWING-PROMPTS.manager.actions.sending"}}</p>
   {{/if}}
   {{#if hasActivePrompt}}
   <div class="dp-review-mode">
@@ -239,9 +239,9 @@
         </div>
 
         <div class="form-group stacked">
-          <label for="dp-prompt-text">{{localize "DRAWING-PROMPTS.manager.fields.promptText"}} (optional)</label>
+          <label for="dp-prompt-text">{{localize "DRAWING-PROMPTS.manager.fields.promptTextOptional"}}</label>
           <div class="form-fields">
-            <textarea id="dp-prompt-text" name="promptText" rows="4" placeholder="{{localize 'DRAWING-PROMPTS.manager.fields.promptText'}} (optional)">{{draft.promptText}}</textarea>
+            <textarea id="dp-prompt-text" name="promptText" rows="4" placeholder="{{localize 'DRAWING-PROMPTS.manager.fields.promptTextOptional'}}">{{draft.promptText}}</textarea>
           </div>
         </div>
 
