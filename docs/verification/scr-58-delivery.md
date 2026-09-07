@@ -10,6 +10,8 @@ Failed or unconfirmed invitations show player names and Retry/Continue. Retry pr
 
 Intentional resend after cancellation advances an invitation generation. Old OPEN, cancellation and receipt messages cannot override that newer attempt. A delayed duplicate OPEN cannot cancel an already submitted drawing. The existing `drawing-prompts.assignmentSent` hook remains available alongside delivery updates and timing hooks.
 
+When the owning GM reloads, orphaned Pending/Sending invitations become failed/interrupted and expose Retry/Continue. Startup preserves confirmed recipients and live attempts; Retry queues behind reconciliation and reuses assignment identity. Withdrawn invitations cannot enable resend controls. Receipt authorization rejections log locally at debug level and return a generic rejection.
+
 ## Automated verification
 
 On 2026-09-07, the full repository suite and both browser commands below passed on local Foundry 14.364. The final delivery run also proved both generation-1 player windows reopen after Cancel All/Resend All, with no captured GM/player console errors. Standards and Spec reviewers independently re-reviewed both remediation rounds and reported no remaining actionable findings at `b1fd0cb`.
@@ -21,6 +23,8 @@ On 2026-09-07, the full repository suite and both browser commands below passed 
 The membership-only disconnect case waits for in-flight preview requests to settle before disconnecting its test player. This avoids conflating membership persistence with socketlib's expected transport error when a snapshot target disappears during dispatch. It does not assert that all preview/disconnect races are resolved.
 
 The original nonblocking regression was reproduced with unresolved OPEN at the real `createAndSendPrompt` seam. The UI regression was reproduced with stalled Journal creation: no Sending render before storage and duplicate creation possible. These are local reproductions, not evidence of the cause of the reported Forge delay.
+
+PR #6 review remediations at `944b17f` passed independent Standards and Spec reviews and 25 focused delivery/manager tests. The extended delivery browser run finished successfully at 20:40 UTC on 2026-09-07: actual GM navigation recovered both persisted Pending and partially received/Sending prompts, exposed usable Retry/Continue, preserved same-ID Retry, and excluded a withdrawn recipient from UI Resend All. No GM/player console errors were captured; test fixtures were removed. This verifies invitation recovery, not unsent drawing recovery.
 
 ## Timing evidence
 

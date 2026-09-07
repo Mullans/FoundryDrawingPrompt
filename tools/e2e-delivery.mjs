@@ -115,6 +115,44 @@ async function restoreOpen() {
   });
 }
 
+async function reloadGM() {
+  progress("reload GM browser and wait for startup delivery reconciliation");
+  await gm.evaluate(async () => {
+    await foundry.applications.instances.get("drawing-prompts-manager")?.close();
+  });
+  await gm.waitForFunction(() => deliveryTest.pendingSnapshotRequests === 0);
+  const timing = await gm.evaluate(() => deliveryTest.timing);
+  await gm.reload({ waitUntil: "domcontentloaded" });
+  await gm.waitForFunction(() => globalThis.game?.ready, null, { timeout: 30000 });
+  // A real navigation discards every local attempt, waiter, and test override.
+  // Reinstall only observation; do not invoke recovery or manufacture receipts.
+  await gm.evaluate(async timing => {
+    globalThis.deliveryTest = { timing, pendingSnapshotRequests: 0 };
+    deliveryTest.hook = Hooks.on("drawing-prompts.deliveryTiming", event => deliveryTest.timing.push(event));
+    const { emit } = await import("/modules/drawing-prompts/scripts/socket.mjs");
+    deliveryTest.originalRequestSnapshot = emit.requestSnapshot;
+    emit.requestSnapshot = async function (...args) {
+      deliveryTest.pendingSnapshotRequests++;
+      try { return await deliveryTest.originalRequestSnapshot.apply(this, args); }
+      finally { deliveryTest.pendingSnapshotRequests--; }
+    };
+  }, timing);
+}
+
+async function openReloadedPrompt(id) {
+  await gm.evaluate(async id => {
+    await game.modules.get("drawing-prompts").api.openPromptManager();
+    const manager = foundry.applications.instances.get("drawing-prompts-manager");
+    if ( manager.activePrompt?.id !== id ) throw new Error("Reload fixture was not adopted as the newest active prompt");
+    await manager.render({ parts: ["body"] });
+  }, id);
+  const retry = gm.locator("button[data-action='retryDeliveries']");
+  const continued = gm.locator("button[data-action='continueDeliveries']");
+  await retry.waitFor({ state: "visible" });
+  assert.equal(await retry.isEnabled(), true, "interrupted Retry is actionable");
+  assert.equal(await continued.isEnabled(), true, "interrupted Continue is actionable");
+}
+
 try {
   await join(gm, process.env.GM_USER || "Gamemaster");
   await gm.evaluate(() => {
@@ -268,6 +306,60 @@ try {
   }
   progress("bulk resend reopened both generation-1 player windows");
 
+  // Persist the real pre-dispatch state, then navigate away. This models a GM
+  // reload after Journal creation but before dispatch without a synthetic receipt.
+  progress("persist pending invitation before actual GM reload");
+  const pendingReload = await gm.evaluate(async ({ text, userId }) => {
+    const { DrawingPrompt } = await import("/modules/drawing-prompts/scripts/prompts/prompt-models.mjs");
+    const { createPromptEntry } = await import("/modules/drawing-prompts/scripts/prompts/persistence-service.mjs");
+    const prompt = DrawingPrompt.create({ promptText: text, drawingName: text,
+      canvasWidth: 256, canvasHeight: 256, sentAt: Date.now(), timerStatus: "none" }, [userId]);
+    await createPromptEntry(prompt);
+    return prompt.toObject();
+  }, { text: `${RUN}-reload-pending`, userId: userIds[0] });
+  assert.equal(Object.values(pendingReload.assignments)[0].delivery.status, "pending");
+  await reloadGM();
+  const recoveredPending = await waitDelivery("reload-pending", ["failed"]);
+  assert.equal(Object.values(recoveredPending.assignments)[0].delivery.error, "interrupted");
+  assert.equal(Object.values(recoveredPending.assignments)[0].delivery.receivedAt, null);
+  await openReloadedPrompt(pendingReload.id);
+  assert.equal(await gm.locator("textarea[name='promptText']").inputValue(), `${RUN}-reload-pending`);
+  await gm.locator("button[data-action='retryDeliveries']").click();
+  const recoveredRetry = await waitDelivery("reload-pending", ["received"]);
+  assert.deepEqual(Object.keys(recoveredRetry.assignments), Object.keys(pendingReload.assignments), "reload Retry keeps the original assignment");
+
+  // A real active attempt is lost with the page, not timed out in the fixture.
+  // The other client already received its invitation and must stay a recipient.
+  await blockDelivery([userIds[1]]);
+  await send("reload-sending", userIds);
+  const sendingReload = await waitDelivery("reload-sending", ["received", "sending"]);
+  const missingReloadId = Object.values(sendingReload.assignments).find(a => a.userId === userIds[1]).id;
+  await reloadGM();
+  const recoveredSending = await waitDelivery("reload-sending", ["received", "failed"]);
+  assert.equal(recoveredSending.assignments[missingReloadId].delivery.error, "interrupted", "startup recovered the attempt before its old timeout");
+  assert.equal(recoveredSending.assignments[missingReloadId].delivery.receivedAt, null);
+  await openReloadedPrompt(sendingReload.id);
+  await gm.locator("button[data-action='continueDeliveries']").click();
+  await waitDelivery("reload-sending", ["received", "withdrawn"]);
+
+  progress("Resend All after reload Continue excludes the withdrawn invitation");
+  await gm.evaluate(async () => {
+    const { emit } = await import("/modules/drawing-prompts/scripts/socket.mjs");
+    deliveryTest.originalOpen = emit.openDrawingPrompt;
+    deliveryTest.reloadResends = [];
+    deliveryTest.reloadResendFinished = false;
+    emit.openDrawingPrompt = async function (id, ...args) {
+      deliveryTest.reloadResends.push(id);
+      try { return await deliveryTest.originalOpen.call(this, id, ...args); }
+      finally { deliveryTest.reloadResendFinished = true; }
+    };
+  });
+  await gm.locator("button[data-action='resendAll']").click();
+  await gm.waitForFunction(() => deliveryTest.reloadResendFinished);
+  assert.deepEqual(await gm.evaluate(() => deliveryTest.reloadResends), [userIds[0]], "bulk resend excludes withdrawn recipient");
+  await waitDelivery("reload-sending", ["received", "withdrawn"]);
+  await restoreOpen();
+
   // Established membership is durable across connectivity changes; no new offline invitations.
   progress("disconnect established recipient");
   // This case tests membership, not a preview request losing its target client.
@@ -288,7 +380,7 @@ try {
   for ( const stage of ["storage-create", "framing", "preparation", "receipt", "client-open"] ) assert.ok(timing.some(t => t.stage === stage), `timing captures ${stage}`);
   assert.deepEqual(errors, [], "GM/player consoles remain error-free");
   console.log(JSON.stringify({ timing }, null, 2));
-  console.log("e2e-delivery: PASS (Sending, receipt/render independence, Retry, Continue, zero receipts, membership, socket identity). Local Foundry only; Forge not verified.");
+  console.log("e2e-delivery: PASS (Sending, receipt/render independence, Retry, Continue, zero receipts, actual GM reload recovery, membership, socket identity). Local Foundry only; Forge not verified.");
 } catch (error) {
   console.error(`e2e-delivery: FAIL at ${stage}`, error);
   if ( errors.length ) console.error("Browser errors captured:", errors);
