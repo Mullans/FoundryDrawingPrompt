@@ -124,6 +124,32 @@ try {
   });
   assert.equal(outsideHandled, false);
 
+  progress("held Space clears on focus transfer without a keyup");
+  await focus(0);
+  await player.keyboard.press("b");
+  const beforeFocusTransfer = await counts();
+  const drawingCanvas = roots[0].locator(".dp-display-canvas");
+  const transformBefore = await drawingCanvas.evaluate(canvas => canvas.style.transform);
+  await player.keyboard.down("Space");
+  try {
+    // Deliberately keep the physical key held while leaving and returning.
+    // No keyup is dispatched until after the ordinary drawing assertion.
+    await player.mouse.click(10, 900);
+    await focus(0);
+    const box = await drawingCanvas.boundingBox();
+    assert.ok(box);
+    await player.mouse.move(box.x + box.width * 0.3, box.y + box.height * 0.3);
+    await player.mouse.down();
+    await player.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.5, { steps: 6 });
+    await player.mouse.up();
+    const afterFocusTransfer = await counts();
+    assert.equal(afterFocusTransfer[0], beforeFocusTransfer[0] + 1, "returning without keyup draws instead of retaining Space pan");
+    assert.equal(afterFocusTransfer[1], beforeFocusTransfer[1], "focus transfer leaves the other drawing unchanged");
+    assert.equal(await drawingCanvas.evaluate(canvas => canvas.style.transform), transformBefore, "held-key focus transfer did not pan the canvas");
+  } finally {
+    await player.keyboard.up("Space");
+  }
+
   progress("successive oversized snapshots reach Full Framing");
   await gm.evaluate(async ({ promptId, assignmentId }) => {
     const { loadPrompt } = await import("/modules/drawing-prompts/scripts/prompts/persistence-service.mjs");
