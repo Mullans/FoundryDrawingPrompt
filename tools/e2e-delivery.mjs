@@ -121,6 +121,16 @@ try {
     globalThis.deliveryTest = { timing: [] };
     deliveryTest.hook = Hooks.on("drawing-prompts.deliveryTiming", event => deliveryTest.timing.push(event));
   });
+  await gm.evaluate(async () => {
+    const { emit } = await import("/modules/drawing-prompts/scripts/socket.mjs");
+    deliveryTest.originalRequestSnapshot = emit.requestSnapshot;
+    deliveryTest.pendingSnapshotRequests = 0;
+    emit.requestSnapshot = async function (...args) {
+      deliveryTest.pendingSnapshotRequests++;
+      try { return await deliveryTest.originalRequestSnapshot.apply(this, args); }
+      finally { deliveryTest.pendingSnapshotRequests--; }
+    };
+  });
   for ( let i = 0; i < 2; i++ ) {
     const name = `${RUN}-P${i}`;
     userIds.push(await gm.evaluate(async name => (await User.create({ name, role: CONST.USER_ROLES.PLAYER, password: "" })).id, name));
@@ -260,6 +270,11 @@ try {
 
   // Established membership is durable across connectivity changes; no new offline invitations.
   progress("disconnect established recipient");
+  // This case tests membership, not a preview request losing its target client.
+  await gm.evaluate(async () => {
+    await foundry.applications.instances.get("drawing-prompts-manager")?.close();
+  });
+  await gm.waitForFunction(() => deliveryTest.pendingSnapshotRequests === 0);
   await bounded(other.close(), "close second player");
   await gm.waitForFunction(id => !game.users.get(id)?.active, userIds[1], { timeout: 20000 });
   assert.equal(Object.values((await prompt("retry")).assignments).find(a => a.userId === userIds[1]).delivery.status, "received");
@@ -296,6 +311,7 @@ try {
       deliveryTest.releaseStorage?.();
       const { emit } = await import("/modules/drawing-prompts/scripts/socket.mjs");
       if ( deliveryTest.originalOpen ) emit.openDrawingPrompt = deliveryTest.originalOpen;
+      if ( deliveryTest.originalRequestSnapshot ) emit.requestSnapshot = deliveryTest.originalRequestSnapshot;
       Hooks.off("drawing-prompts.deliveryTiming", deliveryTest.hook);
     }
     const prompts = game.journal.filter(e => e.getFlag("drawing-prompts", "prompt")?.promptText?.startsWith(prefix)).map(e => e.id);

@@ -12,9 +12,13 @@ Intentional resend after cancellation advances an invitation generation. Old OPE
 
 ## Automated verification
 
+On 2026-09-07, the full repository suite and both browser commands below passed on local Foundry 14.364. The final delivery run also proved both generation-1 player windows reopen after Cancel All/Resend All, with no captured GM/player console errors. Standards and Spec reviewers independently re-reviewed both remediation rounds and reported no remaining actionable findings at `b1fd0cb`.
+
 - `node --test tests/`: repository suite, including real lifecycle/persistence/transport seam tests and manager Send/Continue action tests.
 - `node tools/e2e-delivery.mjs`: real GM and temporary player clients; held storage and player rendering, timeout, Retry, Continue, late receipt, zero-success setup retention, disconnected membership, offline invitation rejection and socketlib initiator identity. The harness restores instrumentation and removes only its own prompts/users.
 - `node tools/e2e-smoke.mjs`: existing UI/layout, draw, snapshot, staged submission, save, placement and finish regression.
+
+The membership-only disconnect case waits for in-flight preview requests to settle before disconnecting its test player. This avoids conflating membership persistence with socketlib's expected transport error when a snapshot target disappears during dispatch. It does not assert that all preview/disconnect races are resolved.
 
 The original nonblocking regression was reproduced with unresolved OPEN at the real `createAndSendPrompt` seam. The UI regression was reproduced with stalled Journal creation: no Sending render before storage and duplicate creation possible. These are local reproductions, not evidence of the cause of the reported Forge delay.
 
