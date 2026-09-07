@@ -139,6 +139,8 @@ The repository uses `CONTEXT.md` and `docs/adr/` as its primary domain and archi
 
 See `docs/agents/domain.md`.
 
+When brainstorming in the FoundryHub workspace, follow the hub `AGENTS.md` section "Brainstorming and design capture": save brainstorms in the hub's `docs/ideas/` and merge resolved module vocabulary into this repository's root `CONTEXT.md`. A standalone clone uses its own `docs/ideas/`. Keep the glossary limited to domain definitions; product rules and architectural trade-offs belong in design documents and qualifying ADRs.
+
 ### Documentation layout
 
 See `docs/LAYOUT.md` for the map of tracked docs, personal archives, and skill-tied local folders.

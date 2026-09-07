@@ -1,6 +1,6 @@
 # Drawing Prompts
 
-A Foundry VTT module where the GM sends drawing prompts to players, watches them draw live, and turns submitted drawings into scene content.
+A Foundry VTT module where the GM sends drawing prompts to players, watches them draw live, and turns saved drawings into scene content.
 
 ## Language
 
@@ -11,12 +11,26 @@ _Avoid_: Drawing request (alone)
 **Assignment**:
 One player's individual instance of a Prompt. Three targeted players means three Assignments.
 
+**Recipient**:
+A non-GM player whose Prompt was successfully delivered, regardless of subsequent connectivity or submission state. An excluded unsuccessful Invitation does not establish recipient membership.
+
+**Invitation**:
+An attempt to deliver a Prompt to a player that may establish recipient membership or be withdrawn. A withdrawn Invitation cannot be revived by a late response.
+
+**Delivery acknowledgement**:
+Automatic confirmation that a player's client received a Prompt, independent of whether the player acts on it.
+_Avoid_: Player acceptance
+
 **Prompt canvas**:
 The drawing surface players use, at the exact width and height the GM set for the Prompt. All player strokes and the player-side background live in this pixel space.
 _Avoid_: World, drawing world, player viewport (when meaning size)
 
 **Submission**:
-The drawing a player has submitted for an Assignment, stored in Prompt canvas coordinates. A resubmission replaces it and re-arms the Save gate. GM Full Framing review maps this submission onto the composition plate (source ∪ Prompt Framing) for correct placement.
+The drawing a player has submitted for an Assignment. A resubmission becomes the current Submission without replacing previously saved versions.
+
+**Snapshot**:
+A non-final saved version of an in-progress drawing captured by the GM without changing the drawing player's participation or experience.
+_Avoid_: Submission (when the player has not submitted)
 
 **Prompt Framing**:
 The GM-authored axis-aligned region of the source image (crop, pan, zoom; may extend outside the source for zoom-out pad, with exterior empty so Canvas chrome shows through after Fit) that is fed into Fit mode to build the Framed background. Default is the full source image. Locked after the Prompt is first sent to players. Players receive only this framed region after Fit—not the full source—so full source data never reaches player clients.
@@ -35,11 +49,11 @@ Which review the GM is using for a Submission: Prompt canvas (as the player drew
 _Avoid_: View mode, display mode
 
 **Save**:
-The GM action that writes Submission images for **both** Framing Views together to world storage under a name (one action, one save detection—not separate per-view save states). Prompt-canvas framing uses the chosen basename; Full Framing uses the same basename with a `_full` suffix before the extension, at the composition plate size (source ∪ Prompt Framing). Required before any Place or Transform. Switching Framing View does not undo Save; refreshing assets always rewrites both views together.
+The GM action that preserves a version of an individual or Combined artwork, including its applicable Framing Views, for later use in the scene. Saving an in-progress drawing creates a Snapshot without submitting it on the player's behalf.
 _Avoid_: Save only, save this view
 
 **Save gate**:
-The rule that Place and Transform are disabled until the current Submission has been saved. Resubmission re-arms the gate. Toggling Framing View does not re-arm the gate. Actions that invalidate a Submission (for example reopen that forces a new drawing) invalidate every Framing View of that Submission.
+The requirement that Place and Transform use a successfully saved version of the selected drawing. A saved Snapshot qualifies without becoming a Submission.
 
 **Place**:
 The GM action that puts a saved drawing onto the scene, in one of four modes: Tile, New Actor, Copy Actor, Existing Actor. Each mode supports visible or hidden placement.
@@ -65,6 +79,9 @@ The token HUD action that restores a Transformed token's original art and clears
 
 ## Prompt lifecycle
 
+**Preparing**:
+The Beautiful corpse period in which initial Invitations and the participant arrangement are being resolved, before drawing is available and before drawing time begins.
+
 **Draft**:
 A Prompt that exists and may be configured but has not been opened to players.
 
@@ -86,6 +103,35 @@ The user a socket call actually came from, read from socketlib's `socketdata.use
 _Avoid_: Sender (alone), the payload's userId, caller
 
 ## Drawing surface
+
+**Shared drawing**:
+A collaborative drawing in which participating players work in the same space and see the combined contributions, while each controls only their own marks.
+
+**Beautiful corpse**:
+A collaborative drawing made from an ordered horizontal or vertical arrangement of Player pieces, with neighboring contributions visible only in their Overlap regions during drawing.
+
+**Combined artwork**:
+The complete collaborative drawing containing all players' contributions in their shared or adjoining spaces.
+
+**Player piece**:
+One player's assigned portion of a Beautiful corpse artwork, including its overlapping boundaries with neighboring pieces.
+
+**Overlap region**:
+The shared strip between neighboring Beautiful corpse pieces, where both players see the combined contributions but each controls only their own marks.
+
+## Spectator viewing
+
+**Spectator view**:
+An audience-facing view of an in-progress individual or Shared drawing, showing the drawing surface and its timer when configured, without prompt details or player names.
+_Avoid_: GM review, reveal window
+
+**Spectator audience**:
+The players the GM has granted access to an active Spectator view, whether or not they are currently watching.
+
+**Active spectator**:
+An authorized viewer whose Spectator view is open and connected to receive drawing updates. Closing the view or disconnecting ends active viewing without making the viewer a drawing Recipient.
+
+## Canvas display
 
 **Canvas plate**:
 The on-screen rectangle that represents the Prompt canvas at its true aspect ratio (GM width × height). It is the only surface that is “the drawing” for tools and export; Framed background and ink live on the plate. Distinct from any surrounding UI window or navigation padding.
