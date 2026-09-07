@@ -281,3 +281,48 @@ test("assignmentSent fires once per confirmed attempt including retry and ignore
   await lifecycle.resendAssignment("a1");
   assert.deepEqual(sent, [[prompt.id, "a1"], [prompt.id, "a1"]]);
 });
+
+test("resendAll restarts every cancelled assignment after persistence replaces the assignment map", async () => {
+  const dispatched = [];
+  emit.openDrawingPrompt = async (userId, payload) => {
+    dispatched.push([payload.assignment.id, payload.assignment.delivery.generation]);
+    await delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId, payload.assignment.delivery.generation);
+  };
+  emit.cancelDrawingPrompt = async () => {};
+  const prompt = await lifecycle.createAndSendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
+  await lifecycle.cancelAllAssignments(prompt.id);
+  dispatched.length = 0;
+  await lifecycle.resendAllAssignments(prompt.id);
+  assert.deepEqual(dispatched.sort(), [["a1", 1], ["a2", 1]]);
+  for ( const assignment of Object.values(stored.assignments) ) {
+    assert.equal(assignment.status, "pending");
+    assert.equal(assignment.delivery.generation, 1);
+  }
+});
+
+test("delayed resent OPEN after a second GM cancellation cannot install an active client assignment", async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { PlayerDrawingApp } = await import("../scripts/apps/player-drawing-app.mjs");
+  const { upsertAssignment, getAssignment } = await import("../scripts/prompts/client-store.mjs");
+  const { CALLS } = await import("../scripts/socket.mjs");
+  game.user = { id: "u1", isGM: false };
+  upsertAssignment({ prompt: { id: "twice-p", gmUserId: "gm" }, assignment: {
+    id: "twice-a", userId: "u1", status: "cancelled", delivery: { status: "received", generation: 0 }
+  } });
+  emit.assignmentReceived = async () => ({ accepted: false, reason: "inactive-assignment" });
+  const originalOpen = PlayerDrawingApp.open;
+  const originalClose = PlayerDrawingApp.closeAssignment;
+  let opened = false;
+  PlayerDrawingApp.open = async () => { opened = true; };
+  PlayerDrawingApp.closeAssignment = async () => {};
+  try {
+    const response = await getSocketHandlers()[CALLS.OPEN].call({ socketdata: { userId: "gm" } }, {
+      prompt: { id: "twice-p", gmUserId: "gm" }, assignment: {
+        id: "twice-a", userId: "u1", status: "pending", delivery: { status: "received", generation: 1 }
+      }
+    });
+    assert.equal(response.reason, "inactive-assignment");
+    assert.equal(getAssignment("twice-a").assignment.status, "cancelled");
+    assert.equal(opened, false);
+  } finally { PlayerDrawingApp.open = originalOpen; PlayerDrawingApp.closeAssignment = originalClose; }
+});

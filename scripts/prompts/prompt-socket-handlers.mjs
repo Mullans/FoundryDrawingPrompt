@@ -70,14 +70,15 @@ async function handleOpenPrompt(payload) {
   const existing = getClientAssignment(payload.assignment.id);
   const generation = payload.assignment.delivery?.generation ?? 0;
   const existingGeneration = existing?.assignment.delivery?.generation ?? 0;
+  const adopted = !existing || generation > existingGeneration;
   if ( existing && generation < existingGeneration ) return { accepted: false, reason: "stale-invitation" };
-  if ( !existing || generation > existingGeneration ) upsertAssignment(payload);
+  if ( adopted ) upsertAssignment(payload);
   const receipt = await emit.assignmentReceived(payload.prompt.gmUserId, payload.assignment.id, game.user.id, generation);
   payload = getClientAssignment(payload.assignment.id);
   if ( !payload || (payload.assignment.delivery?.generation ?? 0) !== generation ) return { accepted: false, reason: "stale-invitation" };
   if ( !receipt?.accepted ) {
     // A delayed duplicate request cannot rewrite an established submission/recipient.
-    if ( payload.assignment.delivery?.status !== "received" && [STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) {
+    if ( (adopted || payload.assignment.delivery?.status !== "received") && [STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) {
       updateStatus(payload.assignment.id, STATUS.CANCELLED);
       await PlayerDrawingApp.closeAssignment(payload.assignment.id, { silent: true });
     }

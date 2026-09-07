@@ -216,6 +216,48 @@ try {
   assert.equal(await gm.locator("textarea[name='promptText']").inputValue(), `${RUN}-zero`);
   await restoreOpen();
 
+  // Bulk resend must capture both cancelled assignments before the first delivery
+  // refresh replaces the prompt's assignment collection.
+  await send("bulk", userIds);
+  const bulk = await waitDelivery("bulk", ["received", "received"]);
+  const bulkAssignments = Object.values(bulk.assignments);
+  for ( const [index, page] of [player, other].entries() ) {
+    const id = bulkAssignments.find(a => a.userId === userIds[index]).id;
+    await page.waitForFunction(id => [...foundry.applications.instances.values()].some(app =>
+      app.assignmentPayload?.assignment?.id === id && app.mode === "live" && app.rendered
+    ), id);
+  }
+  progress("Cancel All then UI Resend All for two recipients");
+  await gm.evaluate(async id => {
+    const { cancelAllAssignments } = await import("/modules/drawing-prompts/scripts/prompts/prompt-lifecycle.mjs");
+    await cancelAllAssignments(id);
+  }, bulk.id);
+  assert.ok(Object.values((await prompt("bulk")).assignments).every(a => a.status === "cancelled"));
+  for ( const [index, page] of [player, other].entries() ) {
+    const id = bulkAssignments.find(a => a.userId === userIds[index]).id;
+    await page.waitForFunction(id => ![...foundry.applications.instances.values()].some(app =>
+      app.assignmentPayload?.assignment?.id === id && app.rendered
+    ), id);
+  }
+  await gm.locator("button[data-action='resendAll']").click();
+  await gm.waitForFunction(id => {
+    const p = game.journal.get(id)?.getFlag("drawing-prompts", "prompt");
+    const assignments = Object.values(p?.assignments ?? {});
+    return assignments.length === 2 && assignments.every(a =>
+      ["pending", "opened"].includes(a.status) && a.delivery?.status === "received" && a.delivery?.generation === 1
+    );
+  }, bulk.id, { timeout: 20000 });
+  for ( const [index, page] of [player, other].entries() ) {
+    const id = bulkAssignments.find(a => a.userId === userIds[index]).id;
+    await page.waitForFunction(id => [...foundry.applications.instances.values()].some(app => {
+      const assignment = app.assignmentPayload?.assignment;
+      return assignment?.id === id && app.mode === "live" && app.rendered
+        && assignment.delivery?.generation === 1 && ["pending", "opened"].includes(assignment.status)
+        && app.element?.isConnected && app.element.getBoundingClientRect().width > 0;
+    }), id, { timeout: 20000 });
+  }
+  progress("bulk resend reopened both generation-1 player windows");
+
   // Established membership is durable across connectivity changes; no new offline invitations.
   progress("disconnect established recipient");
   await bounded(other.close(), "close second player");

@@ -296,7 +296,8 @@ export async function resendAllAssignments(promptId) {
   const prompt = loadPrompt(promptId);
   if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
   assertPromptOwner(prompt);
-  for ( const assignment of Object.values(prompt.assignments) ) {
+  for ( const assignmentId of Object.keys(prompt.assignments) ) {
+    const assignment = prompt.getAssignment(assignmentId);
     if ( assignment.delivery.status !== "withdrawn" && assignment.status === STATUS.CANCELLED ) {
       assignment.markResent();
       await savePrompt(prompt, { assignmentOnly: assignment.id, restartInvitation: true });
