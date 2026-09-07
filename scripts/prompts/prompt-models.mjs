@@ -18,9 +18,9 @@ export class DrawingAssignment {
     this.userId = data.userId ?? null;
     this.userName = data.userName ?? "";
     this.status = data.status ?? STATUS.PENDING;
-    this.delivery = data.delivery ? { ...data.delivery } : {
+    this.delivery = data.delivery ? { generation: 0, ...data.delivery } : {
       status: data.openedAt || data.status === STATUS.SUBMITTED ? "received" : "pending",
-      receivedAt: data.openedAt ?? null, error: null
+      receivedAt: data.openedAt ?? null, error: null, generation: 0
     };
     this.openedAt = data.openedAt ?? null;
     this.submittedAt = data.submittedAt ?? null;

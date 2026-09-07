@@ -115,7 +115,7 @@ export async function continuePromptDeliveries(promptId) {
     assignment.delivery.status = "withdrawn";
     await savePrompt(prompt, { deliveryOnly: id });
     if ( prompt.getAssignment(id).delivery.status === "withdrawn" && game.users.get(assignment.userId)?.active ) {
-      void Promise.resolve().then(() => emit.cancelDrawingPrompt(assignment.userId, id)).catch(err => console.debug("drawing-prompts | withdrawal notification failed", err));
+      void Promise.resolve().then(() => emit.cancelDrawingPrompt(assignment.userId, id, assignment.delivery.generation)).catch(err => console.debug("drawing-prompts | withdrawal notification failed", err));
     }
   }
   prompt = loadPrompt(promptId);
@@ -167,7 +167,7 @@ export async function cancelAssignment(assignmentId, userId = null) {
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
   assignment.markCancelled(Date.now());
   await savePrompt(prompt, { assignmentOnly: assignment.id });
-  if ( game.users.get(assignment.userId)?.active ) await emit.cancelDrawingPrompt(assignment.userId, assignment.id);
+  if ( game.users.get(assignment.userId)?.active ) await emit.cancelDrawingPrompt(assignment.userId, assignment.id, assignment.delivery.generation);
   Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
   Hooks.callAll("drawing-prompts.assignmentCancelled", prompt, assignment);
   await setManagerWindowOpen(assignment.id, false);
@@ -203,7 +203,7 @@ export async function finishPrompt(promptId) {
   for ( const assignment of Object.values(prompt.assignments) ) {
     if ( assignment.isActive ) {
       assignment.markCancelled(now);
-      if ( game.users.get(assignment.userId)?.active ) await emit.cancelDrawingPrompt(assignment.userId, assignment.id);
+      if ( game.users.get(assignment.userId)?.active ) await emit.cancelDrawingPrompt(assignment.userId, assignment.id, assignment.delivery.generation);
       Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
       Hooks.callAll("drawing-prompts.assignmentCancelled", prompt, assignment);
       await setManagerWindowOpen(assignment.id, false);
@@ -257,7 +257,7 @@ export async function resendAssignment(assignmentId) {
   if ( assignment.delivery.status === "withdrawn" ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.invalidInvitation"));
   if ( assignment.status === STATUS.CANCELLED ) {
     assignment.markResent();
-    await savePrompt(prompt, { assignmentOnly: assignment.id });
+    await savePrompt(prompt, { assignmentOnly: assignment.id, restartInvitation: true });
   } else if ( ![STATUS.PENDING, STATUS.OPENED].includes(assignment.status) ) {
     return;
   }
@@ -299,7 +299,7 @@ export async function resendAllAssignments(promptId) {
   for ( const assignment of Object.values(prompt.assignments) ) {
     if ( assignment.delivery.status !== "withdrawn" && assignment.status === STATUS.CANCELLED ) {
       assignment.markResent();
-      await savePrompt(prompt, { assignmentOnly: assignment.id });
+      await savePrompt(prompt, { assignmentOnly: assignment.id, restartInvitation: true });
     }
   }
   await deliverPromptAssignments(prompt);

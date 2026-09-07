@@ -12,7 +12,26 @@ const gm = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const pages = [gm];
 const errors = [];
 const userIds = [];
+let stage = "initialization";
+function progress(label) {
+  stage = label;
+  console.log(`[${new Date().toISOString()}] ${RUN}: ${label}`);
+}
+async function bounded(promise, label, timeoutMs = 20000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms (stage: ${stage})`)), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 function observe(page, label) {
+  page.setDefaultTimeout(15000);
+  page.setDefaultNavigationTimeout(30000);
+  // Playwright's action timeout does not bound page.evaluate promises (including
+  // socket acknowledgements). Bound every browser evaluation separately.
+  const evaluate = page.evaluate.bind(page);
+  page.evaluate = (...args) => bounded(evaluate(...args), `${label} browser evaluation`);
   page.on("pageerror", error => errors.push(`${label}: ${error.message}`));
   page.on("console", message => {
     if ( message.type() === "error" ) errors.push(`${label}: ${message.text()}`);
@@ -21,6 +40,7 @@ function observe(page, label) {
 observe(gm, "GM");
 
 async function join(page, name) {
+  progress(`join ${name}`);
   await page.goto(`${BASE}/join`, { waitUntil: "domcontentloaded" });
   await page.locator("select[name='userid'], select[name='user'], select#userid").first().selectOption({ label: name });
   const password = page.locator("input[type='password']").first();
@@ -30,6 +50,7 @@ async function join(page, name) {
 }
 
 async function openSetup() {
+  progress("open compose fixture");
   await gm.evaluate(async () => {
     await foundry.applications.instances.get("drawing-prompts-manager")?.close();
     await game.modules.get("drawing-prompts").api.openPromptManager();
@@ -38,6 +59,7 @@ async function openSetup() {
     const manager = foundry.applications.instances.get("drawing-prompts-manager");
     manager.activePrompt = null;
     manager.selectedAssignmentId = null;
+    manager.draft.selectedUserIds = new Set();
     await manager.render({ parts: ["body"] });
   });
   await gm.locator("textarea[name='promptText']").waitFor({ state: "visible" });
@@ -45,12 +67,18 @@ async function openSetup() {
 
 async function send(name, selected) {
   await openSetup();
+  progress(`fill/send ${name}`);
   const manager = gm.locator(".drawing-prompts-manager");
   await manager.locator("textarea[name='promptText']").fill(`${RUN}-${name}`);
   await manager.locator("input[name='drawingName']").fill(`${RUN}-${name}`);
   await manager.locator("input[name='canvasWidth']").fill("256");
   await manager.locator("input[name='canvasHeight']").fill("256");
-  for ( const checkbox of await manager.locator("input[name='selectedUserIds']:checked").all() ) await checkbox.uncheck();
+  // Snapshot identifiers, not nth() locators over a shrinking :checked collection.
+  const checkedIds = await manager.locator("input[name='selectedUserIds']:checked").evaluateAll(inputs => inputs.map(input => input.value));
+  for ( const id of checkedIds ) {
+    const checkbox = manager.locator(`input[name='selectedUserIds'][value='${id}']`);
+    if ( await checkbox.isEnabled() ) await checkbox.uncheck();
+  }
   for ( const id of selected ) await manager.locator(`input[name='selectedUserIds'][value='${id}']`).check();
   await manager.locator("button[data-action='sendPrompt']").click();
 }
@@ -60,6 +88,7 @@ async function prompt(name) {
 }
 
 async function waitDelivery(name, statuses) {
+  progress(`wait ${name}: ${statuses.join(", ")}`);
   await gm.waitForFunction(({ text, statuses }) => {
     const p = game.journal.map(e => e.getFlag("drawing-prompts", "prompt")).find(p => p?.promptText === text);
     const actual = Object.values(p?.assignments ?? {}).map(a => a.delivery?.status).sort();
@@ -126,6 +155,7 @@ try {
     };
   });
   await send("immediate", [userIds[0]]);
+  progress("assert Sending before storage release");
   await gm.waitForFunction(() => deliveryTest.storageEntered);
   assert.match(await gm.locator(".dp-delivery-feedback").first().innerText(), /Sending/i);
   assert.equal(await gm.locator("button[data-action='sendPrompt']").isDisabled(), true);
@@ -140,6 +170,7 @@ try {
     deliveryPlayer.releaseOpen();
   });
   await player.locator(".drawing-prompts-player").waitFor({ state: "visible" });
+  progress("forged receipt through real socketlib");
   const immediateId = Object.keys(immediate.assignments)[0];
   const gmId = await gm.evaluate(() => game.user.id);
   const forged = await other.evaluate(async ({ gmId, id, owner }) => {
@@ -154,6 +185,7 @@ try {
   const partial = await waitDelivery("retry", ["received", "failed"]);
   const originalIds = Object.keys(partial.assignments).sort();
   await restoreOpen();
+  progress("click Retry");
   await gm.locator("button[data-action='retryDeliveries']").click();
   const retried = await waitDelivery("retry", ["received", "received"]);
   assert.deepEqual(Object.keys(retried.assignments).sort(), originalIds);
@@ -163,6 +195,7 @@ try {
   await send("continue", userIds);
   const unresolved = await waitDelivery("continue", ["received", "failed"]);
   const failed = Object.values(unresolved.assignments).find(a => a.userId === userIds[1]);
+  progress("click Continue and reject late receipt");
   await gm.locator("button[data-action='continueDeliveries']").click();
   await waitDelivery("continue", ["received", "withdrawn"]);
   const late = await other.evaluate(async ({ gmId, id }) => {
@@ -184,7 +217,8 @@ try {
   await restoreOpen();
 
   // Established membership is durable across connectivity changes; no new offline invitations.
-  await other.close();
+  progress("disconnect established recipient");
+  await bounded(other.close(), "close second player");
   await gm.waitForFunction(id => !game.users.get(id)?.active, userIds[1], { timeout: 20000 });
   assert.equal(Object.values((await prompt("retry")).assignments).find(a => a.userId === userIds[1]).delivery.status, "received");
   await openSetup();
@@ -198,7 +232,12 @@ try {
   assert.deepEqual(errors, [], "GM/player consoles remain error-free");
   console.log(JSON.stringify({ timing }, null, 2));
   console.log("e2e-delivery: PASS (Sending, receipt/render independence, Retry, Continue, zero receipts, membership, socket identity). Local Foundry only; Forge not verified.");
+} catch (error) {
+  console.error(`e2e-delivery: FAIL at ${stage}`, error);
+  if ( errors.length ) console.error("Browser errors captured:", errors);
+  process.exitCode = 1;
 } finally {
+  progress("restore instrumentation and remove this run's fixtures");
   for ( const page of pages.slice(1) ) {
     if ( page.isClosed() ) continue;
     await page.evaluate(async () => {
@@ -207,7 +246,7 @@ try {
         PlayerDrawingApp.open = deliveryPlayer.originalOpen;
         deliveryPlayer.releaseOpen?.();
       }
-    }).catch(() => {});
+    }).catch(error => { console.error("Player instrumentation cleanup failed", error); process.exitCode = 1; });
   }
   await gm.evaluate(async ({ prefix, ids }) => {
     if ( globalThis.deliveryTest ) {
@@ -222,5 +261,10 @@ try {
     const ownedUsers = ids.filter(id => game.users.get(id)?.name?.startsWith(prefix));
     if ( ownedUsers.length ) await User.deleteDocuments(ownedUsers);
   }, { prefix: RUN, ids: userIds }).catch(error => { console.error("Delivery test cleanup failed", error); process.exitCode = 1; });
-  await browser.close();
+  progress("close browser");
+  await bounded(browser.close(), "browser cleanup", 10000).catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+  progress("finished");
 }

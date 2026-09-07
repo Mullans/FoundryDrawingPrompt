@@ -185,3 +185,99 @@ test("client cancellation during automatic receipt prevents a late OPEN window",
     assert.equal(windowsOpened, 0);
   } finally { PlayerDrawingApp.open = originalOpen; PlayerDrawingApp.closeAssignment = originalClose; }
 });
+
+test("GM Cancel then Resend advances the invitation and opens the player window without reviving old OPEN", async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { PlayerDrawingApp } = await import("../scripts/apps/player-drawing-app.mjs");
+  const { CALLS } = await import("../scripts/socket.mjs");
+  let payload;
+  emit.openDrawingPrompt = async (userId, wire) => {
+    payload = structuredClone(wire);
+    await delivery.acknowledgePromptDelivery(userId, wire.assignment.id, userId, wire.assignment.delivery.generation);
+  };
+  emit.cancelDrawingPrompt = async () => {};
+  const prompt = await lifecycle.createAndSendPrompt(draft);
+  const originalPayload = structuredClone(payload);
+  const gm = game.user;
+  const originalOpen = PlayerDrawingApp.open;
+  const originalClose = PlayerDrawingApp.closeAssignment;
+  let windowsOpened = 0;
+  PlayerDrawingApp.open = async () => { windowsOpened++; };
+  PlayerDrawingApp.closeAssignment = async () => {};
+  game.settings = { get: () => true };
+  const handlers = getSocketHandlers();
+  const context = { socketdata: { userId: "gm" } };
+  try {
+    game.user = { id: "u1", isGM: false };
+    emit.assignmentReceived = async () => ({ accepted: true, timerState: {} });
+    await handlers[CALLS.OPEN].call(context, originalPayload);
+    assert.equal(windowsOpened, 1);
+    game.user = gm;
+    await lifecycle.cancelAssignment("a1");
+    game.user = { id: "u1", isGM: false };
+    await handlers[CALLS.CANCEL].call(context, "a1", 0);
+    emit.assignmentReceived = async () => ({ accepted: false, reason: "invalid-invitation" });
+    await handlers[CALLS.OPEN].call(context, originalPayload);
+    assert.equal(windowsOpened, 1);
+    game.user = gm;
+    await lifecycle.resendAssignment("a1");
+    assert.equal(payload.assignment.delivery.generation, 1);
+    game.user = { id: "u1", isGM: false };
+    emit.assignmentReceived = async () => ({ accepted: true, timerState: {} });
+    await handlers[CALLS.OPEN].call(context, payload);
+    assert.equal(windowsOpened, 2);
+    await handlers[CALLS.OPEN].call(context, originalPayload);
+    await handlers[CALLS.CANCEL].call(context, "a1", 0);
+    assert.equal(windowsOpened, 2);
+    const { getAssignment } = await import("../scripts/prompts/client-store.mjs");
+    assert.equal(getAssignment("a1").assignment.status, "pending");
+  } finally { PlayerDrawingApp.open = originalOpen; PlayerDrawingApp.closeAssignment = originalClose; game.user = gm; }
+});
+
+test("a delayed duplicate OPEN cannot cancel or close an established submission", async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { PlayerDrawingApp } = await import("../scripts/apps/player-drawing-app.mjs");
+  const { upsertAssignment, getAssignment } = await import("../scripts/prompts/client-store.mjs");
+  const { CALLS } = await import("../scripts/socket.mjs");
+  game.user = { id: "u1", isGM: false };
+  upsertAssignment({ prompt: { id: "submitted-p", gmUserId: "gm" }, assignment: {
+    id: "submitted-a", userId: "u1", status: "submitted", delivery: { status: "received", generation: 0 }
+  } });
+  emit.assignmentReceived = async () => ({ accepted: false, reason: "invalid-invitation" });
+  const originalClose = PlayerDrawingApp.closeAssignment;
+  let closed = false;
+  let warned = false;
+  ui.notifications.warn = () => { warned = true; };
+  PlayerDrawingApp.closeAssignment = async () => { closed = true; };
+  try {
+    await getSocketHandlers()[CALLS.OPEN].call({ socketdata: { userId: "gm" } }, {
+      prompt: { id: "submitted-p", gmUserId: "gm" }, assignment: { id: "submitted-a", userId: "u1", status: "pending", delivery: { generation: 0 } }
+    });
+    assert.equal(getAssignment("submitted-a").assignment.status, "submitted");
+    assert.equal(closed, false);
+    assert.equal(warned, false);
+  } finally { PlayerDrawingApp.closeAssignment = originalClose; }
+});
+
+test("receipt distinguishes an inactive established assignment from a withdrawn invitation", async () => {
+  emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+  await lifecycle.createAndSendPrompt(draft);
+  stored.assignments.a1.status = "submitted";
+  assert.deepEqual(await delivery.acknowledgePromptDelivery("u1", "a1", "u1"), { accepted: false, reason: "inactive-assignment" });
+  assert.deepEqual(await delivery.acknowledgePromptDelivery("u1", "a1", "u1", 1), { accepted: false, reason: "stale-invitation" });
+});
+
+test("assignmentSent fires once per confirmed attempt including retry and ignores duplicate acknowledgements", async () => {
+  const sent = [];
+  Hooks.callAll = (event, prompt, assignment) => {
+    if ( event === "drawing-prompts.assignmentSent" ) sent.push([prompt.id, assignment.id]);
+  };
+  emit.openDrawingPrompt = async (userId, payload) => {
+    await delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+    await delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+  };
+  const prompt = await lifecycle.createAndSendPrompt(draft);
+  assert.deepEqual(sent, [[prompt.id, "a1"]]);
+  await lifecycle.resendAssignment("a1");
+  assert.deepEqual(sent, [[prompt.id, "a1"], [prompt.id, "a1"]]);
+});

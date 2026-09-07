@@ -87,8 +87,8 @@ function requireSocket() {
 
 export const emit = {
   /** Request an authenticated receipt decision from the prompt-owning GM. */
-  assignmentReceived(gmUserId, assignmentId, userId) {
-    return requireSocket().executeAsUser(CALLS.RECEIVED, gmUserId, assignmentId, userId);
+  assignmentReceived(gmUserId, assignmentId, userId, generation = 0) {
+    return requireSocket().executeAsUser(CALLS.RECEIVED, gmUserId, assignmentId, userId, generation);
   },
   /**
    * Ask a player client to open a drawing prompt.
@@ -127,8 +127,8 @@ export const emit = {
    * @param {string} assignmentId Assignment id.
    * @returns {Promise<*>}
    */
-  cancelDrawingPrompt(userId, assignmentId) {
-    return requireSocket().executeAsUser(CALLS.CANCEL, userId, assignmentId);
+  cancelDrawingPrompt(userId, assignmentId, generation = 0) {
+    return requireSocket().executeAsUser(CALLS.CANCEL, userId, assignmentId, generation);
   },
 
   /**

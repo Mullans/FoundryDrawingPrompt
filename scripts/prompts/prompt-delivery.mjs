@@ -145,10 +145,11 @@ const attempts = new Map();
 const receiptWaiters = new Map();
 
 /** Persist only delivery metadata, merging against current lifecycle/timer state. */
-async function updateDelivery(promptId, assignmentId, status, error = null) {
+async function updateDelivery(promptId, assignmentId, status, error = null, generation = null) {
   const prompt = loadPrompt(promptId);
   const assignment = prompt?.getAssignment(assignmentId);
   if ( !assignment ) return null;
+  if ( generation !== null && assignment.delivery.generation !== generation ) return prompt;
   assignment.delivery = { ...assignment.delivery, status, error,
     receivedAt: status === "received" ? assignment.delivery.receivedAt ?? Date.now() : assignment.delivery.receivedAt };
   await savePrompt(prompt, { deliveryOnly: assignmentId });
@@ -158,14 +159,20 @@ async function updateDelivery(promptId, assignmentId, status, error = null) {
 }
 
 /** Automatic authenticated client receipt; unknown/withdrawn invitations fail explicitly. */
-export async function acknowledgePromptDelivery(initiatorId, assignmentId, userId) {
+export async function acknowledgePromptDelivery(initiatorId, assignmentId, userId, generation = 0) {
   let pair;
   try { pair = validateOwningGMSender(initiatorId, assignmentId, userId); }
   catch { return { accepted: false, reason: "invalid-invitation" }; }
-  if ( !pair.assignment.isActive ) return { accepted: false, reason: "invalid-invitation" };
-  const prompt = await updateDelivery(pair.prompt.id, assignmentId, "received");
-  if ( prompt?.getAssignment(assignmentId)?.delivery.status !== "received" || !prompt.getAssignment(assignmentId).isActive ) return { accepted: false, reason: "invalid-invitation" };
-  receiptWaiters.get(assignmentId)?.();
+  if ( generation !== pair.assignment.delivery.generation ) return { accepted: false, reason: "stale-invitation" };
+  if ( !pair.assignment.isActive ) return { accepted: false, reason: "inactive-assignment" };
+  const prompt = await updateDelivery(pair.prompt.id, assignmentId, "received", null, generation);
+  const assignment = prompt?.getAssignment(assignmentId);
+  if ( assignment && assignment.delivery.generation !== generation ) return { accepted: false, reason: "stale-invitation" };
+  if ( !assignment || assignment.delivery.status === "withdrawn" ) return { accepted: false, reason: "invalid-invitation" };
+  if ( !assignment.isActive ) return { accepted: false, reason: "inactive-assignment" };
+  if ( assignment.delivery.status !== "received" ) return { accepted: false, reason: "invalid-invitation" };
+  const waiter = receiptWaiters.get(assignmentId);
+  if ( waiter?.generation === generation ) waiter.resolve();
   return { accepted: true, timerState: prompt.timerState };
 }
 
@@ -177,11 +184,13 @@ export async function deliverPromptAssignments(prompt, { assignmentIds = null, t
     const result = await previous.promise;
     const latest = loadPrompt(prompt.id);
     if ( latest ) { prompt.assignments = latest.assignments; prompt.timerState = latest.timerState; }
-    const additional = ids.filter(id => !previous.ids.includes(id));
+    const additional = ids.filter(id => !previous.ids.includes(id)
+      || previous.generations[id] !== prompt.getAssignment(id)?.delivery.generation);
     if ( additional.length && latest ) return deliverPromptAssignments(prompt, { assignmentIds: additional, timeoutMs });
     return result;
   }
-  const attempt = { ids, promise: runDeliveries(prompt, { assignmentIds: ids, timeoutMs }) };
+  const attempt = { ids, generations: Object.fromEntries(ids.map(id => [id, prompt.getAssignment(id)?.delivery.generation])),
+    promise: runDeliveries(prompt, { assignmentIds: ids, timeoutMs }) };
   attempts.set(prompt.id, attempt);
   try { return await attempt.promise; }
   finally { if ( attempts.get(prompt.id) === attempt ) attempts.delete(prompt.id); }
@@ -193,14 +202,15 @@ async function runDeliveries(prompt, { assignmentIds, timeoutMs }) {
   await Promise.all(selected.map(async assignment => {
     const start = performance.now();
     if ( !game.users.get(assignment.userId)?.active ) {
-      await updateDelivery(prompt.id, assignment.id, "failed", "offline");
+      await updateDelivery(prompt.id, assignment.id, "failed", "offline", assignment.delivery.generation);
       return;
     }
-    await updateDelivery(prompt.id, assignment.id, "sending");
+    await updateDelivery(prompt.id, assignment.id, "sending", null, assignment.delivery.generation);
     let timer;
     let settle;
     const receipt = new Promise(resolve => { settle = resolve; });
-    receiptWaiters.set(assignment.id, settle);
+    const waiter = { resolve: settle, generation: assignment.delivery.generation };
+    receiptWaiters.set(assignment.id, waiter);
     timer = setTimeout(() => settle("timeout"), Math.max(1, Math.min(timeoutMs, DELIVERY_TIMEOUT_MS)));
     Promise.resolve().then(() => {
       const dispatchedAt = performance.now();
@@ -212,8 +222,12 @@ async function runDeliveries(prompt, { assignmentIds, timeoutMs }) {
       .catch(() => settle("transport"));
     const error = await receipt;
     clearTimeout(timer);
-    if ( receiptWaiters.get(assignment.id) === settle ) receiptWaiters.delete(assignment.id);
-    if ( error ) await updateDelivery(prompt.id, assignment.id, "failed", error);
+    if ( receiptWaiters.get(assignment.id) === waiter ) receiptWaiters.delete(assignment.id);
+    if ( error ) await updateDelivery(prompt.id, assignment.id, "failed", error, assignment.delivery.generation);
+    else {
+      const latest = loadPrompt(prompt.id);
+      if ( latest ) Hooks.callAll("drawing-prompts.assignmentSent", latest, latest.getAssignment(assignment.id));
+    }
     Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, assignmentId: assignment.id, stage: "receipt", elapsedMs: performance.now() - start, error: error ?? null });
   }));
   const latest = loadPrompt(prompt.id);

@@ -37,8 +37,8 @@ import { isValidSnapshotPayload } from "./wire-validation.mjs";
 export function getSocketHandlers() {
   return {
     [CALLS.OPEN]: handleOpenPrompt,
-    [CALLS.RECEIVED]: function(assignmentId, userId) {
-      return acknowledgePromptDelivery(getSocketInitiatorId(this), assignmentId, userId);
+    [CALLS.RECEIVED]: function(assignmentId, userId, generation = 0) {
+      return acknowledgePromptDelivery(getSocketInitiatorId(this), assignmentId, userId, generation);
     },
     [CALLS.REOPEN]: handleReopenPrompt,
     [CALLS.TIMER_UPDATED]: handleTimerUpdated,
@@ -68,15 +68,26 @@ async function handleOpenPrompt(payload) {
   }
   // Register before awaiting the GM so a cancellation racing the receipt has a target.
   const existing = getClientAssignment(payload.assignment.id);
-  if ( !existing ) upsertAssignment(payload);
-  const receipt = await emit.assignmentReceived(payload.prompt.gmUserId, payload.assignment.id, game.user.id);
-  if ( !receipt?.accepted ) {
-    updateStatus(payload.assignment.id, STATUS.CANCELLED);
-    await PlayerDrawingApp.closeAssignment(payload.assignment.id, { silent: true });
-    ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidInvitation"));
-    return { accepted: false, reason: "invalid-invitation" };
-  }
+  const generation = payload.assignment.delivery?.generation ?? 0;
+  const existingGeneration = existing?.assignment.delivery?.generation ?? 0;
+  if ( existing && generation < existingGeneration ) return { accepted: false, reason: "stale-invitation" };
+  if ( !existing || generation > existingGeneration ) upsertAssignment(payload);
+  const receipt = await emit.assignmentReceived(payload.prompt.gmUserId, payload.assignment.id, game.user.id, generation);
   payload = getClientAssignment(payload.assignment.id);
+  if ( !payload || (payload.assignment.delivery?.generation ?? 0) !== generation ) return { accepted: false, reason: "stale-invitation" };
+  if ( !receipt?.accepted ) {
+    // A delayed duplicate request cannot rewrite an established submission/recipient.
+    if ( payload.assignment.delivery?.status !== "received" && [STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) {
+      updateStatus(payload.assignment.id, STATUS.CANCELLED);
+      await PlayerDrawingApp.closeAssignment(payload.assignment.id, { silent: true });
+    }
+    const reason = receipt?.reason ?? "invalid-invitation";
+    if ( reason === "invalid-invitation" && payload.assignment.delivery?.status !== "received"
+      && ![STATUS.SUBMITTED, STATUS.REJECTED].includes(payload.assignment.status) ) {
+      ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidInvitation"));
+    }
+    return { accepted: false, reason };
+  }
   if ( !payload || ![STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) return;
   Object.assign(payload.prompt, receipt.timerState);
   payload.assignment.delivery = { ...payload.assignment.delivery, status: "received" };
@@ -138,9 +149,10 @@ async function handleTimerUpdated(assignmentId, timerState) {
  * @param {string} assignmentId Assignment id.
  * @returns {Promise<void>}
  */
-async function handleCancelPrompt(assignmentId) {
+async function handleCancelPrompt(assignmentId, generation = 0) {
   const payload = validateKnownActivePlayerAssignment(assignmentId, "cancel");
   if ( !payload ) return;
+  if ( generation < (payload.assignment.delivery?.generation ?? 0) ) return;
   try {
     assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
   } catch (err) {

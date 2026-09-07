@@ -114,7 +114,7 @@ export async function createPromptEntry(prompt) {
  * @param {string|null} [options.assignmentOnly=null] Persist only this assignment and the asset folder name.
  * @returns {Promise<JournalEntry>}
  */
-export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = null, deliveryOnly = null } = {}) {
+export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = null, deliveryOnly = null, restartInvitation = false } = {}) {
   assertGM();
   return promptSaveQueue.enqueue(prompt.id, async () => {
     const entry = game.journal.get(prompt.id);
@@ -127,7 +127,8 @@ export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = n
       const requested = prompt.getAssignment(deliveryOnly);
       if ( !current || !requested ) throw new Error(`Assignment not found: ${deliveryOnly}`);
       // Withdrawal wins over late receipt; confirmed recipients cannot be withdrawn or failed.
-      if ( current.delivery.status !== "withdrawn" && (requested.delivery.status !== "received" || current.isActive)
+      if ( current.delivery.generation === requested.delivery.generation
+        && current.delivery.status !== "withdrawn" && (requested.delivery.status !== "received" || current.isActive)
         && (current.delivery.status !== "received" || requested.delivery.status === "received") ) {
         current.delivery = { ...requested.delivery };
         if ( current.delivery.status === "withdrawn" ) current.status = "cancelled";
@@ -146,6 +147,9 @@ export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = n
       // Lifecycle updates may have been loaded before a receipt/withdrawal completed.
       if ( latest.assignments[assignmentOnly] ) {
         assignment.delivery = { ...latest.assignments[assignmentOnly].delivery };
+        if ( restartInvitation && latest.assignments[assignmentOnly].status === "cancelled" && assignment.delivery.status !== "withdrawn" ) {
+          assignment.delivery.generation += 1;
+        }
         if ( assignment.delivery.status === "withdrawn" ) assignment.status = "cancelled";
       }
       latest.assignments[assignmentOnly] = assignment;
