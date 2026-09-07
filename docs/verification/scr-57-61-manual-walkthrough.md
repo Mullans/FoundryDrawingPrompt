@@ -105,6 +105,6 @@ Always finish with `globalThis.dpWalkthroughDelivery?.restore()` or refresh the 
 - [ ] Finish the walkthrough prompts and remove only the Tiles/Tokens/Actors you created.
 - [ ] Record Pass/Fail/Not tested for sections 1–6. Keep local results distinct from Forge results; Forge timing remains unverified here.
 - [ ] Review PR #6 and PR #7 before integration. This checklist does not mark Linear issues Done.
-- [ ] Separately review `scr-65-recovery-discussion.md`: choose recovery durability, acceptable checkpoint age, editable-history expectations and preview-only fallback before recovery/shared-drawing implementation.
+- [ ] Treat `scr-65-recovery-discussion.md` as prior-state evidence. Recovery durability, editable-history behavior, local-first precedence, and preview exclusion are now approved in [the recovery design](../design/prompt-lifecycle-and-recovery.md).
 
 Shapes, shared drawing, spectators and beautiful-corpse composition are not included in this build.

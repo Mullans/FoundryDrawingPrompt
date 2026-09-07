@@ -39,4 +39,4 @@ The delivery e2e prints measurements. Its deliberate storage and rendering holds
 3. On Forge, compare the timing stages for a normal prompt and a representative framed background, including a slow/unavailable player. Record which stage actually accounts for the reported delay.
 4. Review the PR before integrating this delivery foundation into `dev`. Unit/e2e evidence does not itself authorize Linear Done transitions.
 
-Recovery implementation remains gated by SCR-65's separate user architecture discussion. Live previews are reduced-quality images, not durable full-quality checkpoints.
+Recovery implementation remains pending, but SCR-65's architecture decisions are approved and recorded in [the recovery design](../design/prompt-lifecycle-and-recovery.md). Live previews are reduced-quality images, not recovery sources or durable full-quality checkpoints.
