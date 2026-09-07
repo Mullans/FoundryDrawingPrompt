@@ -23,13 +23,13 @@ Implementation references: `scripts/module.mjs`, `scripts/prompts/prompt-lifecyc
 | GM-persisted full-quality checkpoints | GM can recover and save a received checkpoint after player loss; survives GM refresh once persisted | Requires authenticated version receipts, upload/socket limits, capture cadence and retention decisions. |
 | Hybrid local checkpoints plus GM persistence | Local refresh recovery plus durable GM access to acknowledged checkpoints | Adds revision reconciliation and retention complexity. |
 
-The hybrid option was the original discussion recommendation because it addressed both player refresh and GM saving while a player was unavailable. It was not selected: ongoing recovery is local-first, without periodic full-quality GM checkpoints. The GM's eligible Full submission is fallback only when the local Recovery copy is missing, and quick GM previews are never recovery sources.
+The hybrid option was the original discussion recommendation because it addressed both player refresh and GM saving while a player was unavailable. It was not selected: ongoing recovery is local-first, without periodic full-quality GM checkpoints. A GM-held capture is fallback only when the local Recovery copy is missing, belongs to the same Assignment, contains usable full-quality Submission image data, and is the newest available capture meeting those conditions. Quick GM previews and Saved previews are never recovery sources.
 
 ## Approved decisions
 
 1. The player browser stores the ongoing Recovery copy locally. There is no periodic full-quality GM backup, so cleared browser storage or a device change can lose work not otherwise captured.
-2. The Recovery copy preserves unfinished drafts and undo/redo history. Local work wins over older GM-held data.
-3. An eligible GM-held Full submission is fallback only when no local Recovery copy exists. If history is unavailable, show `History not found.` with OK and restore an eligible full-quality image when available, otherwise a blank drawing.
+2. The Recovery copy preserves unfinished drafts and undo/redo history. Local work wins over every GM-held capture.
+3. Only when no local Recovery copy exists, use the newest available GM-held capture for the same Assignment that contains usable full-quality Submission image data. If history is unavailable, show `History not found.` with OK and restore that eligible capture when available, otherwise a blank drawing.
 4. Quick GM previews are reduced review artifacts, never recovery. Closing a Prompt requests full drawings; a failed capture may retain clearly distinct artwork-only Saved previews, which are also never recovery.
 
 The prior investigation did not establish a diagnosis of abandonment or a Forge-specific root cause for the reported reconnect submission failure. That remains a useful historical fact, not an open architecture decision.

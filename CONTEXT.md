@@ -29,13 +29,13 @@ _Avoid_: World, drawing world, player viewport (when meaning size)
 The drawing a player has submitted for an Assignment. A resubmission becomes the current Submission without replacing previously saved versions.
 
 **Full submission**:
-A full-quality Submission held by the GM that may serve as recovery fallback when the player's Recovery copy is missing.
+A full-quality Submission held by the GM, distinct from a quick GM preview or Saved preview.
 
 **Recovery copy**:
 The retained working copy of an unfinished drawing, including its editable undo/redo history when available.
 
 **Saved preview**:
-An artwork-only image retained when a full drawing cannot be captured as a Prompt closes. It is not a Recovery copy and cannot restore editable history.
+An artwork-only image retained when a full drawing cannot be captured as a Prompt becomes Closed. It is not a Recovery copy and cannot restore editable history.
 
 **Snapshot**:
 A non-final saved version of an in-progress drawing captured by the GM without changing the drawing player's participation or experience.

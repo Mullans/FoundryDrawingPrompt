@@ -18,13 +18,14 @@ Approved product rules for prompt setup, initial delivery, drawing recovery, clo
 
 - The player browser keeps the ongoing Recovery copy in local storage. It retains the unfinished draft and its undo/redo history.
 - Do not send periodic full-quality backup copies to the GM. Quick GM previews remain reduced, transient review images and are never recovery material.
-- A local Recovery copy takes precedence over any older copy held by the GM. Use an eligible GM-held Full submission only when the local Recovery copy is missing; do not replace newer local work with it.
-- When editable history is missing, show a dialog with the exact text `History not found.` and an OK action. Restore an eligible full-quality image when one is available; otherwise open a blank drawing. A restored image without history is a flat starting image, not reconstructed undo/redo state.
+- A local Recovery copy takes precedence over every GM-held capture. Use a GM-held fallback only when the local Recovery copy is missing.
+- A GM-held capture is eligible as fallback only when it belongs to the same Assignment and contains usable full-quality Submission image data. Use the newest available capture that meets both conditions. Quick GM previews and Saved previews are never eligible.
+- When editable history is missing, show a dialog with the exact text `History not found.` and an OK action. Restore the eligible fallback when one is available; otherwise open a blank drawing. A restored image without history is a flat starting image, not reconstructed undo/redo state.
 
-## Ending and closing prompts
+## Closing and reopening a Prompt
 
-- Ending or closing a Prompt requests full drawings from its Recipients for retained recovery. Closing the Drawing Prompt Manager window does not end or close the Prompt and does not trigger that lifecycle transition.
-- If full-drawing capture fails while closing the Prompt, offer exactly these choices:
+- Closing a Prompt requests full drawings from its Recipients for retained recovery. Closing the Drawing Prompt Manager window does not close the Prompt or make it Closed.
+- If full-drawing capture fails while Closing a Prompt, offer exactly these choices:
   - Retry
   - Save available previews and close
   - Close without saving previews
@@ -33,6 +34,6 @@ Approved product rules for prompt setup, initial delivery, drawing recovery, clo
 
 ## Prompt library
 
-- The prompt library is a separate surface. Opening a Prompt from it activates the existing editor singleton rather than creating another editor window.
+- The prompt library is a separate surface. Opening a Prompt from it activates the existing registered editor singleton rather than creating another editor window.
 - The library supports Archive, Restore, and Delete. Delete requires confirmation.
 - Delete removes the Prompt and its associated module data, but does not remove exported files or scene Tiles or Tokens created from its artwork.
