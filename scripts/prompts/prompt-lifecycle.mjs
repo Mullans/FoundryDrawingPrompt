@@ -48,9 +48,9 @@ export async function createAndSendPrompt(draft) {
     background: { ...draft.background },
     timerSeconds,
     sentAt,
-    timerStatus: timerSeconds > 0 ? "running" : "none",
-    deadlineAt: timerSeconds > 0 ? sentAt + (timerSeconds * 1000) : null,
-    remainingMs: null
+    timerStatus: timerSeconds > 0 ? "paused" : "none",
+    deadlineAt: null,
+    remainingMs: timerSeconds > 0 ? timerSeconds * 1000 : null
   }, selectedUserIds);
 
   const storageStarted = performance.now();
@@ -84,7 +84,7 @@ export async function createAndSendPrompt(draft) {
   }
 
   Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "preparation", elapsedMs: performance.now() - started });
-  const deliveries = deliverPromptAssignments(prompt);
+  const deliveries = deliverPromptAssignments(prompt, { initial: true });
   // Attach a rejection handler even in nonblocking API mode.
   if ( draft.awaitDeliveries !== false ) await deliveries;
   else void deliveries.catch(err => console.warn("drawing-prompts | background delivery failed", err));
@@ -97,8 +97,11 @@ export async function retryPromptDeliveries(promptId) {
   const prompt = loadPrompt(promptId);
   if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
   assertPromptOwner(prompt);
-  await deliverPromptAssignments(prompt, { assignmentIds: Object.values(prompt.assignments)
-    .filter(a => ["pending", "sending", "failed"].includes(a.delivery.status)).map(a => a.id) });
+  await deliverPromptAssignments(prompt, {
+    assignmentIds: Object.values(prompt.assignments)
+      .filter(a => ["pending", "sending", "failed"].includes(a.delivery.status)).map(a => a.id),
+    initial: !prompt.deliverySummary.hasRecipients
+  });
   return prompt;
 }
 

@@ -42,7 +42,6 @@ test("awaitDeliveries false returns while the actual OPEN transport is unresolve
   await new Promise(resolve => setImmediate(resolve));
   await delivery.acknowledgePromptDelivery("u1", Object.keys(prompt.assignments)[0], "u1");
   release?.();
-  await delivery.deliverPromptAssignments(prompt);
   assert.equal(result, "returned");
 });
 
@@ -55,6 +54,42 @@ test("default awaited delivery resolves on automatic receipt without waiting for
   assert.equal(prompt.deliverySummary.received.length, 1);
   assert.equal(prompt.deliverySummary.isSending, false);
   assert.equal(stored.assignments.a1.delivery.status, "received");
+});
+
+test("initial receipts wait for every delivery to settle and the timer starts at release", async () => {
+  let firstReceipt;
+  let firstReceiptResolved = false;
+  emit.openDrawingPrompt = (userId, payload) => {
+    if ( userId === "u1" ) {
+      firstReceipt = delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId)
+        .then(result => { firstReceiptResolved = true; return result; });
+      return firstReceipt;
+    }
+    return new Promise(() => {});
+  };
+  const originalTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...args) => originalTimeout(fn, Math.min(ms, 30), ...args);
+  try {
+    const startedAt = Date.now();
+    const sending = lifecycle.createAndSendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
+    for ( let n = 0; n < 20 && !firstReceipt; n++ ) await new Promise(resolve => originalTimeout(resolve, 2));
+    await new Promise(resolve => originalTimeout(resolve, 5));
+    assert.equal(firstReceiptResolved, false, "a successful recipient must remain gated while another invitation is unresolved");
+    assert.equal(stored.timerStatus, "paused");
+    assert.equal(stored.deadlineAt, null);
+    assert.equal(stored.remainingMs, 60_000);
+
+    const prompt = await sending;
+    const receipt = await firstReceipt;
+    assert.equal(receipt.accepted, true);
+    assert.equal(firstReceiptResolved, true);
+    assert.equal(prompt.deliverySummary.received.length, 1);
+    assert.equal(prompt.deliverySummary.failed.length, 1);
+    assert.equal(prompt.timerStatus, "running");
+    assert.ok(prompt.deadlineAt >= startedAt + 60_000,
+      "the initial delivery wait must not consume drawing time");
+    assert.equal(receipt.timerState.deadlineAt, prompt.deadlineAt);
+  } finally { globalThis.setTimeout = originalTimeout; }
 });
 
 test("unconfirmed dispatch completion is bounded, Retry keeps identity, and repeated Retry shares one attempt", async () => {
@@ -75,6 +110,8 @@ test("unconfirmed dispatch completion is bounded, Retry keeps identity, and repe
     assert.equal(first.deliverySummary.received[0].assignmentId, "a1");
     assert.equal(second.deliverySummary.received[0].assignmentId, "a1");
     assert.equal(Object.keys(stored.assignments).length, 1);
+    assert.equal(first.timerStatus, "running", "the first successful Retry must start a timer held by zero initial receipts");
+    assert.ok(Number.isFinite(first.deadlineAt));
   } finally { globalThis.setTimeout = originalTimeout; }
 });
 
@@ -365,7 +402,6 @@ test("startup reconciliation leaves live delivery deadlines in control", async (
   assert.equal(stored.assignments.a1.delivery.status, "sending");
   assert.equal(stored.assignments.a1.delivery.error, null);
   await delivery.acknowledgePromptDelivery("u1", wire.assignment.id, "u1");
-  await delivery.deliverPromptAssignments(prompt);
   assert.equal(prompt.deliverySummary.received.length, 1);
 });
 

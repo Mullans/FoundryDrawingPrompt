@@ -1,19 +1,6 @@
 <div class="dp-manager-shell is-{{mode}}">
   {{#if isSending}}
-  <p class="dp-delivery-feedback" role="status"><i class="fa-solid fa-spinner fa-spin" inert></i> {{localize "DRAWING-PROMPTS.manager.delivery.sending"}}</p>
-  {{/if}}
-  {{#if deliveryFeedback}}
-  <div class="dp-delivery-feedback" role="status">
-    <p>{{deliveryFeedback.message}}</p>
-    {{#if deliveryFeedback.needsResolution}}
-    <p>{{deliveryFeedback.warning}}</p>
-    {{#if deliveryFeedback.noRecipients}}<p>{{localize "DRAWING-PROMPTS.manager.delivery.noRecipients"}}</p>{{/if}}
-    <div class="dp-delivery-actions">
-      <button type="button" data-action="retryDeliveries" {{#if deliveryFeedback.disabled}}disabled{{/if}}>{{localize "DRAWING-PROMPTS.manager.delivery.retry"}}</button>
-      <button type="button" data-action="continueDeliveries" {{#if deliveryFeedback.disabled}}disabled{{/if}}>{{localize "DRAWING-PROMPTS.manager.delivery.continue"}}</button>
-    </div>
-    {{/if}}
-  </div>
+  <p class="dp-sending-status" role="status"><i class="fa-solid fa-spinner fa-spin" inert></i> Sending...</p>
   {{/if}}
   {{#if hasActivePrompt}}
   <div class="dp-review-mode">
@@ -244,17 +231,17 @@
       <fieldset {{#if setupLocked}}disabled{{/if}}>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.prompt"}}</legend>
 
-        <div class="form-group stacked">
-          <label for="dp-prompt-text">{{localize "DRAWING-PROMPTS.manager.fields.promptText"}}</label>
-          <div class="form-fields">
-            <textarea id="dp-prompt-text" name="promptText" rows="4" placeholder="{{localize 'DRAWING-PROMPTS.manager.fields.promptText'}}">{{draft.promptText}}</textarea>
-          </div>
-        </div>
-
         <div class="form-group">
           <label for="dp-drawing-name">{{localize "DRAWING-PROMPTS.manager.fields.drawingName"}}</label>
           <div class="form-fields">
             <input id="dp-drawing-name" type="text" name="drawingName" value="{{draft.drawingName}}">
+          </div>
+        </div>
+
+        <div class="form-group stacked">
+          <label for="dp-prompt-text">{{localize "DRAWING-PROMPTS.manager.fields.promptText"}} (optional)</label>
+          <div class="form-fields">
+            <textarea id="dp-prompt-text" name="promptText" rows="4" placeholder="{{localize 'DRAWING-PROMPTS.manager.fields.promptText'}} (optional)">{{draft.promptText}}</textarea>
           </div>
         </div>
 
@@ -382,7 +369,7 @@
     </button>
     <button class="primary" type="button" data-action="sendPrompt" {{#if canSend}}{{else}}disabled{{/if}}>
       <i class="fa-solid fa-paper-plane" inert></i>
-      <span>{{localize "DRAWING-PROMPTS.manager.actions.sendPrompt"}}</span>
+      <span>{{sendLabel}}</span>
     </button>
   </footer>
   {{/if}}

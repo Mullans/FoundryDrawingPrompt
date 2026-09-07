@@ -63,7 +63,7 @@
   padding-right: 2px;
 }
 
-.drawing-prompts .dp-delivery-feedback {
+.drawing-prompts .dp-sending-status {
   flex: 0 0 auto;
   padding: 6px 10px;
   border: 1px solid var(--dp-panel-border-soft);
@@ -71,13 +71,20 @@
   background: var(--dp-panel-bg);
 }
 
-.drawing-prompts .dp-delivery-feedback p {
-  margin: 0 0 6px;
+.dp-delivery-warning-dialog .window-content {
+  min-width: 360px;
 }
 
-.drawing-prompts .dp-delivery-actions {
-  display: flex;
-  gap: 8px;
+.dp-delivery-warning {
+  padding: 8px 4px;
+}
+
+.dp-delivery-warning p {
+  margin: 0 0 10px;
+}
+
+.dp-delivery-warning p:last-child {
+  margin-bottom: 0;
 }
 
 .drawing-prompts .dp-manager-main,

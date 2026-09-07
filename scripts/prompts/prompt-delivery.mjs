@@ -200,11 +200,18 @@ export async function acknowledgePromptDelivery(initiatorId, assignmentId, userI
   if ( assignment.delivery.status !== "received" ) return { accepted: false, reason: "invalid-invitation" };
   const waiter = receiptWaiters.get(assignmentId);
   if ( waiter?.generation === generation ) waiter.resolve();
-  return { accepted: true, timerState: prompt.timerState };
+  const initialAttempt = attempts.get(prompt.id);
+  if ( initialAttempt?.initial ) await initialAttempt.promise;
+  const resolvedPrompt = loadPrompt(prompt.id) ?? prompt;
+  return { accepted: true, timerState: resolvedPrompt.timerState };
 }
 
 /** Bounded receipt resolution: OPEN completion is diagnostic, never proof of receipt. */
-export async function deliverPromptAssignments(prompt, { assignmentIds = null, timeoutMs = DELIVERY_TIMEOUT_MS } = {}) {
+export async function deliverPromptAssignments(prompt, {
+  assignmentIds = null,
+  timeoutMs = DELIVERY_TIMEOUT_MS,
+  initial = false
+} = {}) {
   const ids = assignmentIds ?? Object.values(prompt.assignments).filter(a => a.isActive).map(a => a.id);
   if ( attempts.has(prompt.id) ) {
     const previous = attempts.get(prompt.id);
@@ -213,17 +220,18 @@ export async function deliverPromptAssignments(prompt, { assignmentIds = null, t
     if ( latest ) { prompt.assignments = latest.assignments; prompt.timerState = latest.timerState; }
     const additional = ids.filter(id => !previous.ids.includes(id)
       || previous.generations[id] !== prompt.getAssignment(id)?.delivery.generation);
-    if ( additional.length && latest ) return deliverPromptAssignments(prompt, { assignmentIds: additional, timeoutMs });
+    if ( additional.length && latest ) return deliverPromptAssignments(prompt, { assignmentIds: additional, timeoutMs, initial });
     return result;
   }
-  const attempt = { ids, generations: Object.fromEntries(ids.map(id => [id, prompt.getAssignment(id)?.delivery.generation])),
-    promise: runDeliveries(prompt, { assignmentIds: ids, timeoutMs }) };
+  const attempt = { ids, initial,
+    generations: Object.fromEntries(ids.map(id => [id, prompt.getAssignment(id)?.delivery.generation])),
+    promise: runDeliveries(prompt, { assignmentIds: ids, timeoutMs, initial }) };
   attempts.set(prompt.id, attempt);
   try { return await attempt.promise; }
   finally { if ( attempts.get(prompt.id) === attempt ) attempts.delete(prompt.id); }
 }
 
-async function runDeliveries(prompt, { assignmentIds, timeoutMs }) {
+async function runDeliveries(prompt, { assignmentIds, timeoutMs, initial }) {
   await ensureFramedBackgroundDelivered(prompt);
   const selected = Object.values(prompt.assignments).filter(a => a.isActive && (!assignmentIds || assignmentIds.includes(a.id)));
   await Promise.all(selected.map(async assignment => {
@@ -257,7 +265,17 @@ async function runDeliveries(prompt, { assignmentIds, timeoutMs }) {
     }
     Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, assignmentId: assignment.id, stage: "receipt", elapsedMs: performance.now() - start, error: error ?? null });
   }));
-  const latest = loadPrompt(prompt.id);
+  let latest = loadPrompt(prompt.id);
+  if ( initial && latest?.deliverySummary.hasRecipients && latest.timerStatus === "paused" ) {
+    const remainingMs = Number(latest.remainingMs ?? (latest.timerSeconds * 1000));
+    latest.timerState = {
+      timerStatus: "running",
+      deadlineAt: Date.now() + remainingMs,
+      remainingMs: null
+    };
+    await savePrompt(latest, { timerOnly: true });
+    latest = loadPrompt(prompt.id) ?? latest;
+  }
   if ( latest ) { prompt.assignments = latest.assignments; prompt.timerState = latest.timerState; }
   Hooks.callAll("drawing-prompts.deliveryUpdated", prompt, prompt.deliverySummary);
   return prompt.deliverySummary;
