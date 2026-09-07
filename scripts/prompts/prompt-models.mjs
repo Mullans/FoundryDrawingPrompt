@@ -18,6 +18,10 @@ export class DrawingAssignment {
     this.userId = data.userId ?? null;
     this.userName = data.userName ?? "";
     this.status = data.status ?? STATUS.PENDING;
+    this.delivery = data.delivery ? { ...data.delivery } : {
+      status: data.openedAt || data.status === STATUS.SUBMITTED ? "received" : "pending",
+      receivedAt: data.openedAt ?? null, error: null
+    };
     this.openedAt = data.openedAt ?? null;
     this.submittedAt = data.submittedAt ?? null;
     this.rejectedAt = data.rejectedAt ?? null;
@@ -94,6 +98,7 @@ export class DrawingAssignment {
       userId: this.userId,
       userName: this.userName,
       status: this.status,
+      delivery: { ...this.delivery },
       openedAt: this.openedAt,
       submittedAt: this.submittedAt,
       rejectedAt: this.rejectedAt,
@@ -182,7 +187,7 @@ export class DrawingAssignment {
    * @returns {boolean}
    */
   get isActive() {
-    return [STATUS.PENDING, STATUS.OPENED].includes(this.status);
+    return this.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED].includes(this.status);
   }
 
   /**
@@ -393,6 +398,18 @@ export class DrawingPrompt {
    * @returns {DrawingAssignment|null}
    */
   assignmentForUser(userId) {
-    return Object.values(this.assignments).find(assignment => assignment.userId === userId) ?? null;
+    return Object.values(this.assignments).find(assignment => assignment.userId === userId && assignment.delivery.status !== "withdrawn") ?? null;
+  }
+
+  /** Delivery membership is independent of drawing status and connectivity. */
+  get deliverySummary() {
+    const summary = { pending: [], received: [], failed: [], withdrawn: [] };
+    for ( const assignment of Object.values(this.assignments) ) {
+      const status = assignment.delivery.status;
+      const bucket = status === "sending" ? "pending" : status;
+      summary[bucket]?.push({ assignmentId: assignment.id, userId: assignment.userId, userName: assignment.userName, status });
+    }
+    return { ...summary, isSending: summary.pending.some(a => a.status === "sending"),
+      needsResolution: summary.failed.length > 0, hasRecipients: summary.received.length > 0 };
   }
 }

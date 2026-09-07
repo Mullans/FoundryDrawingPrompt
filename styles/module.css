@@ -63,6 +63,23 @@
   padding-right: 2px;
 }
 
+.drawing-prompts .dp-delivery-feedback {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 4px;
+  background: var(--dp-panel-bg);
+}
+
+.drawing-prompts .dp-delivery-feedback p {
+  margin: 0 0 6px;
+}
+
+.drawing-prompts .dp-delivery-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .drawing-prompts .dp-manager-main,
 .drawing-prompts .dp-preview-panel,
 .drawing-prompts .dp-review-mode,

@@ -22,7 +22,7 @@ import {
   payloadFor,
   payloadForReopen
 } from "./prompt-delivery.mjs";
-import { DrawingPrompt } from "./prompt-models.mjs";
+import { DrawingAssignment, DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM } from "./socket-auth.mjs";
 import { refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
 
@@ -33,6 +33,11 @@ import { refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
  */
 export async function createAndSendPrompt(draft) {
   assertGM();
+  const started = performance.now();
+  const selectedUserIds = [...new Set(draft.selectedUserIds ?? [])];
+  if ( !selectedUserIds.length || selectedUserIds.some(id => !game.users.get(id)?.active || game.users.get(id)?.isGM) ) {
+    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.onlineRecipientsRequired"));
+  }
   const sentAt = Date.now();
   const timerSeconds = Number(draft.timerSeconds || 0);
   const prompt = DrawingPrompt.create({
@@ -46,13 +51,19 @@ export async function createAndSendPrompt(draft) {
     timerStatus: timerSeconds > 0 ? "running" : "none",
     deadlineAt: timerSeconds > 0 ? sentAt + (timerSeconds * 1000) : null,
     remainingMs: null
-  }, draft.selectedUserIds);
+  }, selectedUserIds);
 
+  const storageStarted = performance.now();
   await createPromptEntry(prompt);
+  Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "storage-create", elapsedMs: performance.now() - storageStarted });
   try {
+    const framingStarted = performance.now();
     await prepareFramedBackgroundForSend(prompt);
+    Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "framing", elapsedMs: performance.now() - framingStarted });
     // Prompt creation requires a full save to establish prompt-level and all assignment state.
+    const saveStarted = performance.now();
     await savePrompt(prompt);
+    Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "storage-save", elapsedMs: performance.now() - saveStarted });
   } catch (err) {
     // Compensate: a failed Send must not leave a sticky undelivered prompt (retry would duplicate).
     try {
@@ -72,8 +83,64 @@ export async function createAndSendPrompt(draft) {
     }
   }
 
-  const deliveries = await deliverPromptAssignments(prompt);
-  if ( draft.awaitDeliveries ) await deliveries;
+  Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "preparation", elapsedMs: performance.now() - started });
+  const deliveries = deliverPromptAssignments(prompt);
+  // Attach a rejection handler even in nonblocking API mode.
+  if ( draft.awaitDeliveries !== false ) await deliveries;
+  else void deliveries.catch(err => console.warn("drawing-prompts | background delivery failed", err));
+  return prompt;
+}
+
+/** Retry only unresolved invitations, preserving their assignment identities. */
+export async function retryPromptDeliveries(promptId) {
+  assertGM();
+  const prompt = loadPrompt(promptId);
+  if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+  assertPromptOwner(prompt);
+  await deliverPromptAssignments(prompt, { assignmentIds: Object.values(prompt.assignments)
+    .filter(a => ["pending", "sending", "failed"].includes(a.delivery.status)).map(a => a.id) });
+  return prompt;
+}
+
+/** Withdraw unconfirmed invitations. Retain successful recipients; discard empty setup. */
+export async function continuePromptDeliveries(promptId) {
+  assertGM();
+  let prompt = loadPrompt(promptId);
+  if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+  assertPromptOwner(prompt);
+  for ( const id of Object.keys(prompt.assignments) ) {
+    prompt = loadPrompt(promptId);
+    const assignment = prompt.getAssignment(id);
+    if ( ["received", "withdrawn"].includes(assignment.delivery.status) ) continue;
+    assignment.delivery.status = "withdrawn";
+    await savePrompt(prompt, { deliveryOnly: id });
+    if ( prompt.getAssignment(id).delivery.status === "withdrawn" && game.users.get(assignment.userId)?.active ) {
+      void Promise.resolve().then(() => emit.cancelDrawingPrompt(assignment.userId, id)).catch(err => console.debug("drawing-prompts | withdrawal notification failed", err));
+    }
+  }
+  prompt = loadPrompt(promptId);
+  if ( !prompt.deliverySummary.hasRecipients ) await deletePromptEntry(promptId);
+  Hooks.callAll("drawing-prompts.deliveryUpdated", prompt, prompt.deliverySummary);
+  return prompt;
+}
+
+/** Add online recipients with new invitation ids, preserving the shared deadline. */
+export async function invitePromptRecipients(promptId, userIds) {
+  assertGM();
+  const prompt = loadPrompt(promptId);
+  if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+  assertPromptOwner(prompt);
+  const ids = [...new Set(userIds)];
+  if ( ids.some(id => !game.users.get(id)?.active || game.users.get(id)?.isGM) ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.onlineRecipientsRequired"));
+  const assignmentIds = [];
+  for ( const userId of ids ) {
+    if ( prompt.assignmentForUser(userId) ) continue;
+    const assignment = DrawingAssignment.create({ promptId, userId, userName: game.users.get(userId).name });
+    prompt.assignments[assignment.id] = assignment;
+    await savePrompt(prompt, { assignmentOnly: assignment.id });
+    assignmentIds.push(assignment.id);
+  }
+  await deliverPromptAssignments(prompt, { assignmentIds });
   return prompt;
 }
 
@@ -187,6 +254,7 @@ export async function resendAssignment(assignmentId) {
   assertGM();
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
+  if ( assignment.delivery.status === "withdrawn" ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.invalidInvitation"));
   if ( assignment.status === STATUS.CANCELLED ) {
     assignment.markResent();
     await savePrompt(prompt, { assignmentOnly: assignment.id });
@@ -195,8 +263,7 @@ export async function resendAssignment(assignmentId) {
   }
   if ( game.users.get(assignment.userId)?.active ) {
     await ensureFramedBackgroundDelivered(prompt);
-    await emit.openDrawingPrompt(assignment.userId, payloadFor(prompt, assignment));
-    Hooks.callAll("drawing-prompts.assignmentSent", prompt, assignment);
+    await deliverPromptAssignments(prompt, { assignmentIds: [assignment.id] });
   }
   await refreshManager();
 }
@@ -230,8 +297,13 @@ export async function resendAllAssignments(promptId) {
   if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
   assertPromptOwner(prompt);
   for ( const assignment of Object.values(prompt.assignments) ) {
-    if ( [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(assignment.status) ) await resendAssignment(assignment.id);
+    if ( assignment.delivery.status !== "withdrawn" && assignment.status === STATUS.CANCELLED ) {
+      assignment.markResent();
+      await savePrompt(prompt, { assignmentOnly: assignment.id });
+    }
   }
+  await deliverPromptAssignments(prompt);
+  await refreshManager();
 }
 
 /**

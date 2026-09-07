@@ -1,4 +1,20 @@
 <div class="dp-manager-shell is-{{mode}}">
+  {{#if isSending}}
+  <p class="dp-delivery-feedback" role="status"><i class="fa-solid fa-spinner fa-spin" inert></i> {{localize "DRAWING-PROMPTS.manager.delivery.sending"}}</p>
+  {{/if}}
+  {{#if deliveryFeedback}}
+  <div class="dp-delivery-feedback" role="status">
+    <p>{{deliveryFeedback.message}}</p>
+    {{#if deliveryFeedback.needsResolution}}
+    <p>{{deliveryFeedback.warning}}</p>
+    {{#if deliveryFeedback.noRecipients}}<p>{{localize "DRAWING-PROMPTS.manager.delivery.noRecipients"}}</p>{{/if}}
+    <div class="dp-delivery-actions">
+      <button type="button" data-action="retryDeliveries" {{#if deliveryFeedback.disabled}}disabled{{/if}}>{{localize "DRAWING-PROMPTS.manager.delivery.retry"}}</button>
+      <button type="button" data-action="continueDeliveries" {{#if deliveryFeedback.disabled}}disabled{{/if}}>{{localize "DRAWING-PROMPTS.manager.delivery.continue"}}</button>
+    </div>
+    {{/if}}
+  </div>
+  {{/if}}
   {{#if hasActivePrompt}}
   <div class="dp-review-mode">
     {{#if promptQueue}}
@@ -225,7 +241,7 @@
   {{else}}
   <div class="dp-manager-grid">
     <div class="dp-manager-main">
-      <fieldset>
+      <fieldset {{#if setupLocked}}disabled{{/if}}>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.prompt"}}</legend>
 
         <div class="form-group stacked">
@@ -260,7 +276,7 @@
         </div>
       </fieldset>
 
-      <fieldset>
+      <fieldset {{#if setupLocked}}disabled{{/if}}>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.background"}}</legend>
 
         <div class="form-group">
@@ -302,7 +318,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="dp-players-fieldset">
+      <fieldset class="dp-players-fieldset" {{#if setupLocked}}disabled{{/if}}>
         <legend>
           {{localize "DRAWING-PROMPTS.manager.sections.players"}}
           <span class="dp-muted"><span class="dp-selected-count">{{draft.selectedCount}}</span> {{localize "DRAWING-PROMPTS.manager.selected"}}</span>
@@ -312,7 +328,7 @@
           {{#each rows}}
           <label class="dp-user-row {{this.classes}}">
             <span class="dp-row-control">
-              <input type="checkbox" name="selectedUserIds" value="{{this.userId}}" {{#if this.selected}}checked{{/if}}>
+              <input type="checkbox" name="selectedUserIds" value="{{this.userId}}" {{#if this.selected}}checked{{/if}} {{#if this.isOffline}}disabled{{/if}}>
             </span>
 
             <span class="dp-user-name">
@@ -333,7 +349,7 @@
     </div>
 
     <aside class="dp-preview-panel">
-      <fieldset>
+      <fieldset {{#if setupLocked}}disabled{{/if}}>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.framing"}}</legend>
         <p class="hint">{{localize "DRAWING-PROMPTS.manager.framing.hint"}}</p>
         <div class="dp-framing-editor" data-dp-framing-editor>
@@ -360,7 +376,7 @@
   </div>
 
   <footer class="dp-action-bar form-footer">
-    <button type="button" data-action="showPreview">
+      <button type="button" data-action="showPreview" {{#if setupLocked}}disabled{{/if}}>
       <i class="fa-solid fa-eye" inert></i>
       <span>{{localize "DRAWING-PROMPTS.manager.actions.showPreview"}}</span>
     </button>

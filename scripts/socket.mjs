@@ -3,6 +3,7 @@ import { assertGmInitiator } from "./prompts/socket-auth.mjs";
 
 export const CALLS = Object.freeze({
   OPEN: "openDrawingPrompt",
+  RECEIVED: "assignmentReceived",
   REOPEN: "reopenDrawingPrompt",
   TIMER_UPDATED: "timerUpdated",
   CANCEL: "cancelDrawingPrompt",
@@ -85,6 +86,10 @@ function requireSocket() {
 }
 
 export const emit = {
+  /** Request an authenticated receipt decision from the prompt-owning GM. */
+  assignmentReceived(gmUserId, assignmentId, userId) {
+    return requireSocket().executeAsUser(CALLS.RECEIVED, gmUserId, assignmentId, userId);
+  },
   /**
    * Ask a player client to open a drawing prompt.
    * @param {string} userId Target user id.

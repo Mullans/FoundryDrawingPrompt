@@ -4,9 +4,9 @@
 
 import { MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
-import { CALLS } from "../socket.mjs";
+import { CALLS, emit } from "../socket.mjs";
 import { isStagedSubmission } from "./assignment-save.mjs";
-import { updateStatus, updateTimerState, upsertAssignment } from "./client-store.mjs";
+import { getAssignment as getClientAssignment, updateStatus, updateTimerState, upsertAssignment } from "./client-store.mjs";
 import { clearFramingViewAssets, hasSavedFramingViewAssets } from "./dual-save.mjs";
 import {
   persistSocketSubmission,
@@ -17,6 +17,7 @@ import {
 import { savePrompt } from "./persistence-service.mjs";
 import {
   notifyPlayer,
+  acknowledgePromptDelivery,
   refreshPromptList,
   validateKnownActivePlayerAssignment,
   validateKnownPlayerAssignment,
@@ -36,6 +37,9 @@ import { isValidSnapshotPayload } from "./wire-validation.mjs";
 export function getSocketHandlers() {
   return {
     [CALLS.OPEN]: handleOpenPrompt,
+    [CALLS.RECEIVED]: function(assignmentId, userId) {
+      return acknowledgePromptDelivery(getSocketInitiatorId(this), assignmentId, userId);
+    },
     [CALLS.REOPEN]: handleReopenPrompt,
     [CALLS.TIMER_UPDATED]: handleTimerUpdated,
     [CALLS.CANCEL]: handleCancelPrompt,
@@ -62,11 +66,30 @@ async function handleOpenPrompt(payload) {
     console.debug("drawing-prompts | ignored open prompt", err);
     return;
   }
-  upsertAssignment(payload);
+  // Register before awaiting the GM so a cancellation racing the receipt has a target.
+  const existing = getClientAssignment(payload.assignment.id);
+  if ( !existing ) upsertAssignment(payload);
+  const receipt = await emit.assignmentReceived(payload.prompt.gmUserId, payload.assignment.id, game.user.id);
+  if ( !receipt?.accepted ) {
+    updateStatus(payload.assignment.id, STATUS.CANCELLED);
+    await PlayerDrawingApp.closeAssignment(payload.assignment.id, { silent: true });
+    ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidInvitation"));
+    return { accepted: false, reason: "invalid-invitation" };
+  }
+  payload = getClientAssignment(payload.assignment.id);
+  if ( !payload || ![STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) return;
+  Object.assign(payload.prompt, receipt.timerState);
+  payload.assignment.delivery = { ...payload.assignment.delivery, status: "received" };
   notifyPlayer("DRAWING-PROMPTS.player.notifications.received");
   await refreshPromptList();
+  if ( ![STATUS.PENDING, STATUS.OPENED].includes(getClientAssignment(payload.assignment.id)?.assignment.status) ) return;
   if ( game.settings.get(MODULE_ID, SETTINGS.AUTO_OPEN_PLAYER_WINDOW) ) {
+    const openStarted = performance.now();
     await PlayerDrawingApp.open(payload, { mode: "live" });
+    if ( ![STATUS.PENDING, STATUS.OPENED].includes(getClientAssignment(payload.assignment.id)?.assignment.status) ) {
+      await PlayerDrawingApp.closeAssignment(payload.assignment.id, { silent: true });
+    }
+    Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: payload.prompt.id, assignmentId: payload.assignment.id, stage: "client-render", elapsedMs: performance.now() - openStarted });
   }
 }
 

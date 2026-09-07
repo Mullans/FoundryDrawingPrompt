@@ -114,7 +114,7 @@ export async function createPromptEntry(prompt) {
  * @param {string|null} [options.assignmentOnly=null] Persist only this assignment and the asset folder name.
  * @returns {Promise<JournalEntry>}
  */
-export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = null } = {}) {
+export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = null, deliveryOnly = null } = {}) {
   assertGM();
   return promptSaveQueue.enqueue(prompt.id, async () => {
     const entry = game.journal.get(prompt.id);
@@ -122,7 +122,20 @@ export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = n
     const persisted = entry.getFlag(MODULE_ID, FLAG_PROMPT);
     const latest = persisted ? DrawingPrompt.fromObject(persisted) : null;
     let savedPrompt = prompt;
-    if ( latest && timerOnly ) {
+    if ( latest && deliveryOnly ) {
+      const current = latest.getAssignment(deliveryOnly);
+      const requested = prompt.getAssignment(deliveryOnly);
+      if ( !current || !requested ) throw new Error(`Assignment not found: ${deliveryOnly}`);
+      // Withdrawal wins over late receipt; confirmed recipients cannot be withdrawn or failed.
+      if ( current.delivery.status !== "withdrawn" && (requested.delivery.status !== "received" || current.isActive)
+        && (current.delivery.status !== "received" || requested.delivery.status === "received") ) {
+        current.delivery = { ...requested.delivery };
+        if ( current.delivery.status === "withdrawn" ) current.status = "cancelled";
+      }
+      savedPrompt = latest;
+      prompt.assignments = latest.assignments;
+      prompt.timerState = latest.timerState;
+    } else if ( latest && timerOnly ) {
       latest.timerState = prompt.timerState;
       savedPrompt = latest;
       prompt.assignments = latest.assignments;
@@ -130,6 +143,11 @@ export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = n
     } else if ( latest && assignmentOnly ) {
       const assignment = prompt.getAssignment(assignmentOnly);
       if ( !assignment ) throw new Error(`Assignment not found: ${assignmentOnly}`);
+      // Lifecycle updates may have been loaded before a receipt/withdrawal completed.
+      if ( latest.assignments[assignmentOnly] ) {
+        assignment.delivery = { ...latest.assignments[assignmentOnly].delivery };
+        if ( assignment.delivery.status === "withdrawn" ) assignment.status = "cancelled";
+      }
       latest.assignments[assignmentOnly] = assignment;
       latest.assetFolderName = prompt.assetFolderName ?? latest.assetFolderName;
       savedPrompt = latest;

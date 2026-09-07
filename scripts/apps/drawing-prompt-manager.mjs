@@ -72,6 +72,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       useSceneBackground: DrawingPromptManager.#onUseSceneBackground,
       clearBackground: DrawingPromptManager.#onClearBackground,
       sendPrompt: DrawingPromptManager.#onSendPrompt,
+      retryDeliveries: DrawingPromptManager.#onRetryDeliveries,
+      continueDeliveries: DrawingPromptManager.#onContinueDeliveries,
       toggleTimer: DrawingPromptManager.#onToggleTimer,
       resetTimer: DrawingPromptManager.#onResetTimer,
       stopTimer: DrawingPromptManager.#onStopTimer,
@@ -182,6 +184,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       background: blankBackground()
     };
     this.activePrompt = null;
+    this.isSending = false;
     this.latestSnapshots = new Map();
     /** @type {Map<string, string>} Latest overlay-only (ink) live snapshots for Full Framing remaps. */
     this.latestOverlaySnapshots = new Map();
@@ -362,7 +365,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       review: selectedPreview,
       lastPaintedSrc: this.#lastPaintedSrcForSelection()
     });
-    const hasActivePrompt = Boolean(this.activePrompt);
+    const delivery = this.activePrompt?.deliverySummary;
+    const hasActivePrompt = Boolean(this.activePrompt && (!delivery || delivery.hasRecipients));
     const viewAssetPath = resolveFramingViewAssetPath(selectedAssignment, framingView);
     const savedAndGateOpen = isSaveGateOpen(selectedAssignment);
     return {
@@ -377,7 +381,19 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       selectedSnapshot: reviewContext.src,
       selectedPreviewHeading: reviewContext.heading,
       selectedAssignmentId: this.selectedAssignmentId,
-      canSend: !this.activePrompt,
+      canSend: !this.activePrompt && !this.isSending,
+      isSending: this.isSending || Boolean(delivery?.isSending),
+      setupLocked: this.isSending || Boolean(this.activePrompt),
+      setupLocked: this.isSending || Boolean(this.activePrompt),
+      deliveryFeedback: delivery ? {
+        message: game.i18n.format("DRAWING-PROMPTS.manager.delivery.received", { count: delivery.received.length }),
+        warning: delivery.needsResolution ? game.i18n.format("DRAWING-PROMPTS.manager.delivery.failed", {
+          names: delivery.failed.map(recipient => recipient.userName).join(", ")
+        }) : "",
+        needsResolution: delivery.needsResolution,
+        noRecipients: !delivery.hasRecipients,
+        disabled: this.isSending || delivery.isSending
+      } : null,
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
       canCancelAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.isActive)),
       canResendAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
@@ -1263,13 +1279,51 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onSendPrompt() {
+    if ( this.isSending || this.activePrompt ) return;
     const draft = this.#serviceDraft();
     if ( !this.#validateDraft(draft) ) return;
     this.#warnSelectedUsersWithoutFileUpload(draft.selectedUserIds);
-    const service = await import("../prompts/prompt-service.mjs");
-    this.activePrompt = await service.createAndSendPrompt(draft);
-    this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
-    await this.render({ parts: ["body"] });
+    await this.#runDeliveryAttempt(async () => {
+      const service = await import("../prompts/prompt-lifecycle.mjs");
+      return service.createAndSendPrompt({ ...draft, awaitDeliveries: true });
+    });
+  }
+
+  /** Render receipt feedback before storage/framing, and release controls on every exit. */
+  async #runDeliveryAttempt(work) {
+    if ( this.isSending ) return;
+    this.isSending = true;
+    try {
+      await this.render({ parts: ["body"] });
+      this.activePrompt = await work();
+      this.selectedAssignmentId = this.activePrompt?.deliverySummary?.received[0]?.assignmentId ?? null;
+    } catch (error) {
+      ui.notifications.error(error.message);
+    } finally {
+      this.isSending = false;
+      await this.render({ parts: ["body"] });
+    }
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onRetryDeliveries() {
+    if ( !this.activePrompt || this.isSending ) return;
+    const promptId = this.activePrompt.id;
+    await this.#runDeliveryAttempt(async () => {
+      const { retryPromptDeliveries } = await import("../prompts/prompt-lifecycle.mjs");
+      return retryPromptDeliveries(promptId);
+    });
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onContinueDeliveries() {
+    if ( !this.activePrompt || this.isSending ) return;
+    const promptId = this.activePrompt.id;
+    await this.#runDeliveryAttempt(async () => {
+      const { continuePromptDeliveries } = await import("../prompts/prompt-lifecycle.mjs");
+      const prompt = await continuePromptDeliveries(promptId);
+      return prompt.deliverySummary.hasRecipients ? prompt : null;
+    });
   }
 
   /** @this {DrawingPromptManager} */
