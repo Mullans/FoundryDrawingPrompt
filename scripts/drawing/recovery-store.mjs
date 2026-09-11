@@ -15,6 +15,13 @@ export function createRecoveryStore({ adapter = createIndexedDbRecoveryAdapter()
   const promptRevisions = new Map();
 
   return {
+    supersede(identity) {
+      const normalized = normalizeIdentity(identity);
+      const identityKey = keyForIdentity(normalized);
+      identityRevisions.set(identityKey, (identityRevisions.get(identityKey) ?? 0) + 1);
+      latest.delete(identityKey);
+    },
+
     async save(identity, snapshot, { artworkOnly = false } = {}) {
       const normalized = normalizeIdentity(identity); validateSnapshot(snapshot, normalized);
       const generationId = `${writerId}:${now()}:${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
@@ -30,21 +37,32 @@ export function createRecoveryStore({ adapter = createIndexedDbRecoveryAdapter()
       let tilesWritten = 0;
       let record = { schema: RECORD_SCHEMA, generationId, writerId, savedAt: now(), identity: normalized,
         artwork: withoutVersions(artwork), history: null, stagingIds: [...artworkIds], complete: false };
-      await adapter.putGeneration(record);
-      tilesWritten += await writeMissingTiles(adapter, artworkIds, versions, yieldTask);
-      if ( !isCurrent() ) { await garbageCollectTiles(adapter); return { generationId, historySaved: false, tilesWritten, stale: true }; }
-      record = { ...record, stagingIds: [], complete: true };
-      await adapter.putGeneration(record);
+      try {
+        await adapter.putGeneration(record);
+        tilesWritten += await writeMissingTiles(adapter, artworkIds, versions, yieldTask, isCurrent);
+        if ( !isCurrent() ) {
+          await discardGeneration(adapter, generationId);
+          return { generationId, historySaved: false, tilesWritten, stale: true };
+        }
+        record = { ...record, stagingIds: [], complete: true };
+        await adapter.putGeneration(record);
+      } catch (error) {
+        await discardGeneration(adapter, generationId);
+        throw error;
+      }
 
       let historySaved = false;
       if ( !artworkOnly && snapshot.entries.length ) {
         const historyIds = referencedIds(snapshot);
         try {
           await adapter.putGeneration({ ...record, stagingIds: [...historyIds] });
-          tilesWritten += await writeMissingTiles(adapter, historyIds, versions, yieldTask);
+          tilesWritten += await writeMissingTiles(adapter, historyIds, versions, yieldTask, isCurrent);
           if ( isCurrent() ) {
             record = { ...record, history: withoutVersions(snapshot), stagingIds: [] };
             await adapter.putGeneration(record); historySaved = true;
+          } else {
+            record = { ...record, stagingIds: [] };
+            await adapter.putGeneration(record);
           }
         } catch (_error) {
           await adapter.putGeneration(record);
@@ -161,15 +179,21 @@ export function createIndexedDbRecoveryAdapter(indexedDB = globalThis.indexedDB,
 
 export const recoveryStore = createRecoveryStore();
 
-async function writeMissingTiles(adapter, ids, versions, yieldTask) {
+async function writeMissingTiles(adapter, ids, versions, yieldTask, shouldContinue = () => true) {
   const missing = await adapter.missingTileIds([...ids]); let written = 0;
   for ( let offset = 0; offset < missing.length; offset += TILE_BATCH_SIZE ) {
+    if ( !shouldContinue() ) break;
     const batch = missing.slice(offset, offset + TILE_BATCH_SIZE).map(id => versions.get(id));
     if ( batch.some(value => !value) ) throw new Error("Recovery snapshot references a missing tile");
     await adapter.putTiles(batch); written += batch.length;
     if ( offset + TILE_BATCH_SIZE < missing.length ) await yieldTask();
   }
   return written;
+}
+
+async function discardGeneration(adapter, generationId) {
+  try { await adapter.deleteGeneration(generationId); }
+  finally { await garbageCollectTiles(adapter); }
 }
 
 async function hydrate(adapter, record, identity) {

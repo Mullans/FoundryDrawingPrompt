@@ -26,6 +26,10 @@ export class PixelTileHistory {
   get allocatedBytes() { return this.#measureBytes(); }
   get metadataBytes() { return this.#measureMetadataBytes(); }
 
+  tileRects(tiles) {
+    return [...this.#normalizeTiles(tiles)].map(tile => ({ tile, ...this.#tileRect(tile) }));
+  }
+
   commit({ id, kind, tiles, before, after, color = null } = {}) {
     validateAction(id, kind); const changes = [];
     for ( const tile of this.#normalizeTiles(tiles) ) {

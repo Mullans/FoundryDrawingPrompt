@@ -37,7 +37,6 @@ export class DrawingEngine {
   #strokeRafId = null;
   #pointerId = null;
   #currentStroke = null;
-  #strokeBaseCanvas = null;
   #renderedTailTiles = [];
   #renderedPointCount = 0;
   #handlers = null;
@@ -120,7 +119,6 @@ export class DrawingEngine {
   destroy() {
     this.detach();
     if ( this.#rafId !== null ) globalThis.cancelAnimationFrame?.(this.#rafId);
-    this.#strokeRafId = null;
     this.#rafId = null;
     this.#strokeRafId = null;
     this.#changeCallbacks.clear();
@@ -173,7 +171,6 @@ export class DrawingEngine {
       return;
     }
     if ( !this.#currentStroke ) {
-      this.#strokeBaseCanvas = true;
       this.#currentStroke = {
         type: "stroke",
         color: this.#color,
@@ -204,7 +201,6 @@ export class DrawingEngine {
     this.#cancelScheduledStrokeRender();
     this.#history.cancelEdit(this.#drawCtx);
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
     this.#renderedTailTiles = [];
     this.#renderedPointCount = 0;
     this.#markDirty();
@@ -234,7 +230,6 @@ export class DrawingEngine {
       if ( this.#currentStroke.straight ) op.straight = true;
     }
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
     this.#renderedTailTiles = [];
     this.#renderedPointCount = 0;
     return this.#commitPreparedAction({ id: op.id, kind: op.type, color: op.color });
@@ -461,7 +456,6 @@ export class DrawingEngine {
   /** Install a validated foreground generation and its coherent Undo/Redo history. */
   loadRecoverySnapshot(snapshot) {
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
     this.#history = PixelTileHistory.restore(snapshot, this.#drawCtx);
     this.#emitChange();
   }
@@ -474,7 +468,6 @@ export class DrawingEngine {
   loadOpLog(serialized) {
     const operations = Array.isArray(serialized?.ops) ? serialized.ops : [];
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
     this.#drawCtx.clearRect(0, 0, this.width, this.height);
     for ( const operation of operations.slice(0, Number(serialized?.pointer) || 0) ) this.#applyOperation(operation);
     this.#history.resetFrom(this.#drawCtx);
@@ -489,7 +482,6 @@ export class DrawingEngine {
    */
   loadOpLogOverCurrentDrawing(serialized) {
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
     const operations = Array.isArray(serialized?.ops) ? serialized.ops : [];
     for ( const operation of operations.slice(0, Number(serialized?.pointer) || 0) ) this.#applyOperation(operation);
     this.#history.resetFrom(this.#drawCtx);
@@ -514,7 +506,6 @@ export class DrawingEngine {
     }
     this.#history.resetFrom(this.#drawCtx);
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
     this.#markDirty();
     this.#emitChange();
   }
@@ -526,7 +517,6 @@ export class DrawingEngine {
    * @returns {void}
    */
   beginStroke(type, pt) {
-    this.#strokeBaseCanvas = true;
     this.#currentStroke = {
       type,
       color: this.#color,
@@ -574,7 +564,6 @@ export class DrawingEngine {
       op.opacity = this.#currentStroke.opacity;
     }
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
     this.#renderedTailTiles = [];
     this.#renderedPointCount = 0;
     this.#commitPreparedAction({ id: op.id, kind: op.type, color: op.color });
@@ -585,7 +574,7 @@ export class DrawingEngine {
    * @returns {void}
    */
   #renderCurrentStroke() {
-    if ( !this.#currentStroke || !this.#strokeBaseCanvas ) return;
+    if ( !this.#currentStroke ) return;
     const points = this.#currentStroke.points;
     const tail = this.#currentStroke.straight
       ? points.slice(-2)
@@ -596,8 +585,7 @@ export class DrawingEngine {
     this.#history.restoreEditTiles(this.#drawCtx, invalidated);
     this.#drawCtx.save();
     this.#drawCtx.beginPath();
-    for ( const tile of invalidated ) {
-      const rect = tileRect(tile, this.width, this.height);
+    for ( const rect of this.#history.tileRects(invalidated) ) {
       this.#drawCtx.rect?.(rect.x, rect.y, rect.width, rect.height);
     }
     this.#drawCtx.clip?.();
@@ -995,15 +983,6 @@ function tilesForMask(mask, width, height, tileSize = 128) {
 
 function uniqueTiles(tiles) {
   return [...new Set(tiles)];
-}
-
-function tileRect(tile, width, height, tileSize = 128) {
-  const columns = Math.ceil(width / tileSize);
-  const tx = tile % columns;
-  const ty = Math.floor(tile / columns);
-  const x = tx * tileSize;
-  const y = ty * tileSize;
-  return { x, y, width: Math.min(tileSize, width - x), height: Math.min(tileSize, height - y) };
 }
 
 /**

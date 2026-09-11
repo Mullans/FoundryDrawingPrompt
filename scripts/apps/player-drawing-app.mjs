@@ -535,6 +535,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     const now = Date.now();
     this.#recoveryDirtySince ??= now;
     if ( this.#recoverySaveInFlight ) {
+      recoveryStore.supersede(this.#recoveryIdentity());
       this.#recoverySaveQueued = true;
       return;
     }
@@ -594,21 +595,6 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       close: () => "ok",
       modal: true
     });
-  }
-
-  /**
-   * Destroy the current engine and subscriptions.
-   * @returns {void}
-   */
-  #destroyEngine() {
-    if ( this.#recoverySaveTimer ) globalThis.window?.clearTimeout?.(this.#recoverySaveTimer);
-    this.#recoverySaveTimer = null;
-    this.#snapshotThrottle?.cancel();
-    this.#snapshotThrottle = null;
-    for ( const unsubscribe of this.#unsubscribers ) unsubscribe();
-    this.#unsubscribers = [];
-    this.#engine?.destroy();
-    this.#engine = null;
   }
 
   #releaseEngine() {

@@ -37,6 +37,38 @@ test("Interrupted optional history publication leaves recoverable artwork withou
   assert.equal(loaded.snapshot.current.length, 1);
 });
 
+test("failed artwork staging removes its incomplete generation and orphan tiles", async () => {
+  const base = createMapRecoveryAdapter();
+  const adapter = { ...base, async putTiles() { throw new Error("primary batch interrupted"); } };
+  const store = createRecoveryStore({ adapter, writerId: "tab-a", now: () => 10 });
+
+  await assert.rejects(store.save(identity, generationSnapshot()), /primary batch interrupted/);
+  assert.equal((await adapter.getGenerations()).length, 0);
+  assert.equal((await adapter.getAllTiles()).length, 0);
+});
+
+test("a newer edit preempts optional history while preserving published artwork", async () => {
+  const adapter = createMapRecoveryAdapter();
+  let release;
+  let yielded;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const atHistoryYield = new Promise(resolve => { yielded = resolve; });
+  const store = createRecoveryStore({ adapter, writerId: "tab-a", now: () => 10,
+    yieldTask: async () => { yielded(); await blocked; } });
+  const wideIdentity = { ...identity, width: 4352 };
+  const snapshot = largeHistorySnapshot();
+
+  const saving = store.save(wideIdentity, snapshot);
+  await atHistoryYield;
+  store.supersede(wideIdentity);
+  release();
+
+  assert.equal((await saving).stale, true);
+  const loaded = await store.load(wideIdentity);
+  assert.equal(loaded.kind, "artwork");
+  assert.equal(loaded.snapshot.entries.length, 0);
+});
+
 test("Recovery records are isolated by complete identity and dimensions", async () => {
   const adapter = createMapRecoveryAdapter();
   const store = createRecoveryStore({ adapter, writerId: "tab-a" });
@@ -127,5 +159,16 @@ function generationSnapshot(value = 7, writerId = "history-a") {
     schema: 2, width: 1, height: 1, tileSize: 128, actionLimit: 25, writerId, cursor: 1,
     current: [[0, version.id]], versions: [version],
     entries: [{ id: "action", kind: "stroke", color: "#070707", changes: [[0, "transparent"]] }]
+  };
+}
+
+function largeHistorySnapshot() {
+  const versions = Array.from({ length: 34 }, (_, index) => ({
+    id: `history-a:${index + 1}`, kind: "uniform", rgba: [index, index, index, 255]
+  }));
+  return {
+    schema: 2, width: 4352, height: 1, tileSize: 128, actionLimit: 25, writerId: "history-a", cursor: 1,
+    current: [[0, versions[0].id]], versions,
+    entries: [{ id: "action", kind: "stroke", changes: versions.slice(1).map((version, index) => [index + 1, version.id]) }]
   };
 }

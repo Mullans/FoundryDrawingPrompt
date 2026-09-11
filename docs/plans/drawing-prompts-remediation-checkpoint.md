@@ -23,7 +23,7 @@ The branch absorbs the work represented by PRs #6 and #7 and is ready to be prop
   - `e2e-reliability.mjs`: passed.
   - `e2e-settings-migration.mjs`: passed.
   - `e2e-delivery.mjs`: all functional cases passed. The deliberate hard GM reload produces two classified socketlib transport-disconnect diagnostics; no unexpected module/browser errors remain.
-- Independent final Standards and Spec reviews over `origin/dev...HEAD` found no unresolved code defects after verified fixes.
+- The lifecycle/delivery final reviews found no unresolved defects after their verified fixes. The later bounded-history review pair is recorded in its follow-up evidence below.
 
 ## Evidence still requiring a human or unavailable integration
 
@@ -37,8 +37,9 @@ The branch absorbs the work represented by PRs #6 and #7 and is ready to be prop
 
 The earlier operation-log/checkpoint recovery design has been superseded on this branch. The player engine now retains at most 25 pixel-tile actions, uses one directional reference per changed tile with direct pixel Undo/Redo, keeps exact-identity sessions across window close/reopen, and publishes artwork-first local IndexedDB generations with optional coherent history. Stable writer-scoped versions are shared across consecutive generations and written only when missing. New submissions, retained captures, and saved GM assets do not carry or write the local history.
 
-- Full unit suite: 442 tests passed.
+- Full unit suite: 444 tests passed.
 - Foundry 14.364 `e2e-smoke.mjs`: passed with clean GM/player consoles and fixture cleanup.
-- Foundry 14.364 `e2e-history-runtime.mjs`: passed at 2048² and 4096², including IndexedDB history recovery across a real player-page reload. Recorded maxima were 1.4 ms pointer-up history work, 0.2 ms next-stroke notification, and 11.6 ms gesture-render work; retained 4096² pixel bytes were 67,174,400.
+- Foundry 14.364 `e2e-history-runtime.mjs`: passed at 2048² and 4096², including IndexedDB history recovery across a real player-page reload. Recorded maxima were 1.6 ms pointer-up history work, 0.2 ms next-stroke notification, and 11.4 ms gesture-render work; retained 4096² pixel bytes were 67,174,400.
+- The final review pair identified and the follow-up fixed interrupted artwork-staging cleanup, optional-history preemption, duplicated tile geometry, and stale engine lifecycle fields. Focused tests now cover both primary-batch failure and a newer edit interrupting optional history while retaining published artwork.
 
 The human and Forge limitations above remain unchanged.
