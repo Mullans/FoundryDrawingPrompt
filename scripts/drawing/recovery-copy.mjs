@@ -20,6 +20,7 @@ export function createRecoveryCopyModule({
   restoreSubmission = restoreEngineFromSubmission
 } = {}) {
   let storageWarned = false;
+  const restoredBases = new Map();
 
   function storageFailure(error) {
     if ( storageWarned ) return;
@@ -34,7 +35,8 @@ export function createRecoveryCopyModule({
       schema: 1,
       ...normalizedIdentity,
       savedAt: now(),
-      opLog: cloneJson(opLog)
+      opLog: cloneJson(opLog),
+      baseSubmission: cloneJson(restoredBases.get(storageKey(normalizedIdentity)) ?? null)
     };
     try {
       storage.setItem(storageKey(normalizedIdentity), JSON.stringify(record));
@@ -58,19 +60,34 @@ export function createRecoveryCopyModule({
       try {
         const record = JSON.parse(serialized);
         if ( !isRecoveryRecord(record, normalizedIdentity) ) throw new Error("Invalid Recovery copy");
-        return { kind: "local", opLog: cloneJson(record.opLog), historyMissing: false };
+        const resolution = {
+          kind: "local",
+          opLog: cloneJson(record.opLog),
+          historyMissing: false
+        };
+        if ( record.baseSubmission ) resolution.baseSubmission = cloneJson(record.baseSubmission);
+        return resolution;
       } catch (_error) {
         try { storage.removeItem(key); } catch (error) { storageFailure(error); }
       }
     }
 
     const fallback = newestEligibleFallback(gmFallback, normalizedIdentity);
-    if ( fallback ) return { kind: "full-submission", submission: fallback, historyMissing: true };
+    if ( fallback ) {
+      restoredBases.set(key, cloneJson(fallback));
+      return { kind: "full-submission", submission: fallback, historyMissing: true };
+    }
     return { kind: "blank", historyMissing: Boolean(identity?.existingAssignment) };
   }
 
   async function restoreResolvedRecovery(engine, resolution, prompt) {
     if ( resolution?.kind === "local" ) {
+      if ( resolution.baseSubmission ) {
+        const restored = await restoreSubmission(engine, resolution.baseSubmission, prompt);
+        if ( !restored ) return false;
+        engine.loadOpLogOverCurrentDrawing(cloneJson(resolution.opLog));
+        return true;
+      }
       engine.loadOpLog(cloneJson(resolution.opLog));
       return true;
     }
@@ -151,7 +168,8 @@ function isRecoveryRecord(record, identity) {
     && Number.isFinite(record.savedAt)
     && ["worldId", "userId", "assignmentId", "promptId", "width", "height"]
       .every(field => record[field] === identity[field])
-    && isOperationLog(record.opLog);
+    && isOperationLog(record.opLog)
+    && (record.baseSubmission == null || isEligibleFallback(record.baseSubmission, identity));
 }
 
 function isOperationLog(log) {
@@ -184,12 +202,16 @@ function isPlainObject(value) {
 function newestEligibleFallback(value, identity) {
   const candidates = Array.isArray(value) ? value : value ? [value] : [];
   return candidates
-    .filter(candidate => candidate?.recoveryKind === "full-submission"
-      && candidate.assignmentId === identity.assignmentId
-      && Number(candidate.width) === identity.width
-      && Number(candidate.height) === identity.height
-      && hasUsableOverlay(candidate))
+    .filter(candidate => isEligibleFallback(candidate, identity))
     .sort((a, b) => Number(b.receiptTs ?? b.submittedAt ?? 0) - Number(a.receiptTs ?? a.submittedAt ?? 0))[0] ?? null;
+}
+
+function isEligibleFallback(candidate, identity) {
+  return candidate?.recoveryKind === "full-submission"
+    && candidate.assignmentId === identity.assignmentId
+    && Number(candidate.width) === identity.width
+    && Number(candidate.height) === identity.height
+    && hasUsableOverlay(candidate);
 }
 
 function hasUsableOverlay(candidate) {
@@ -205,4 +227,3 @@ export const saveRecoveryCopy = defaultModule.saveRecoveryCopy;
 export const resolveRecovery = defaultModule.resolveRecovery;
 export const restoreResolvedRecovery = defaultModule.restoreResolvedRecovery;
 export const clearRecoveryCopy = defaultModule.clearRecoveryCopy;
-

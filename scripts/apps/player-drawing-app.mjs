@@ -143,6 +143,18 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     await app.#sendSnapshot();
   }
 
+  /** Export a full-quality drawing without submitting or closing the player window. */
+  static async captureRetainedForAssignment(assignmentId, requestId) {
+    const app = this.#registry.get(assignmentId);
+    if ( !app?.#engine || app.mode !== "live" ) return null;
+    const format = game.settings.get(MODULE_ID, SETTINGS.EXPORT_FORMAT) || "webp";
+    const quality = Number(game.settings.get(MODULE_ID, SETTINGS.WEBP_QUALITY) ?? 0.9);
+    const submission = canStageUploads()
+      ? await app.#buildStagedSubmissionPayload({ format, quality })
+      : await buildFullSubmission(app.#engine, { format, quality });
+    return { requestId, assignmentId, submission };
+  }
+
   /**
    * @param {object} options Constructor options.
    * @param {object} options.assignmentPayload Assignment payload.

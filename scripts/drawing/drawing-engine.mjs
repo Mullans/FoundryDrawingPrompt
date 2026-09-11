@@ -455,6 +455,24 @@ export class DrawingEngine {
   }
 
   /**
+   * Replay editable operations over the current flat drawing and retain that drawing
+   * as the non-undoable recovery base.
+   * @param {{ops?: object[], pointer?: number}} serialized Serialized log.
+   * @returns {void}
+   */
+  loadOpLogOverCurrentDrawing(serialized) {
+    this.#opLog = OperationLog.fromSerialized(serialized);
+    this.#checkpoints = [];
+    this.#currentStroke = null;
+    this.#strokeBaseCanvas = null;
+    const base = createCanvas(this.width, this.height);
+    base.getContext("2d").drawImage(this.#drawCanvas, 0, 0);
+    this.#checkpoints.push({ opCount: 0, canvas: base });
+    this.#restoreToPointer(this.#opLog.pointer);
+    this.#emitChange();
+  }
+
+  /**
    * Replace the draw layer from raw RGBA pixels (overlay-only restore).
    * @param {{width: number, height: number, data: Uint8ClampedArray|Uint8Array}} rgba Pixel buffer.
    * @returns {void}

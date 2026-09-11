@@ -72,19 +72,36 @@ export function clearPendingSubmission(assignmentId) {
 export async function resolveRestorationSubmission(assignment, prompt) {
   const pending = getPendingSubmission(assignment.id);
   const saved = await buildRestorationSubmissionFromSavedAssets(assignment, prompt);
+  const retained = buildRestorationSubmissionFromRetainedCapture(assignment, prompt);
   const pendingCandidate = pending ? {
     ...withoutOperationLog(pending),
     recoveryKind: "full-submission",
     assignmentId: assignment.id,
     receiptTs: pending.receiptTs ?? assignment.submittedAt ?? Date.now()
   } : null;
-  return [pendingCandidate, saved]
+  return [pendingCandidate, retained, saved]
     .filter(candidate => candidate
       && Number(candidate.width) === Number(prompt.canvasWidth)
       && Number(candidate.height) === Number(prompt.canvasHeight)
       && !candidate.wireScaled
       && (candidate.overlay?.dataUrl || candidate.staged?.overlayPath))
     .sort((a, b) => Number(b.receiptTs ?? 0) - Number(a.receiptTs ?? 0))[0] ?? null;
+}
+
+/** Build a recovery candidate only from a retained full submission, never a Saved preview. */
+export function buildRestorationSubmissionFromRetainedCapture(assignment, prompt) {
+  const capture = assignment.retainedCapture;
+  if ( capture?.kind !== "full-submission" || !capture.overlayPath ) return null;
+  return {
+    recoveryKind: "full-submission",
+    assignmentId: assignment.id,
+    mode: "staged",
+    staged: { overlayPath: capture.overlayPath, mergedPath: capture.mergedPath ?? null },
+    formats: { overlay: formatFromAssetPath(capture.overlayPath), merged: capture.mergedPath ? formatFromAssetPath(capture.mergedPath) : null },
+    width: Number(capture.width ?? prompt.canvasWidth),
+    height: Number(capture.height ?? prompt.canvasHeight),
+    receiptTs: capture.receiptTs ?? 0
+  };
 }
 
 /**

@@ -29,7 +29,10 @@ Hooks.once("ready", async () => {
 
 Hooks.on("userConnected", (user, connected) => {
   if ( connected && game.user.isGM ) {
-    import("./prompts/prompt-service.mjs").then(s => s.redeliverAssignmentsForUser(user.id));
+    import("./prompts/prompt-service.mjs").then(async s => {
+      await s.processRecoveryTombstonesForUser(user.id);
+      await s.redeliverAssignmentsForUser(user.id);
+    });
   }
   void refreshOpenApplications();
 });
@@ -55,10 +58,12 @@ Hooks.on("renderTokenHUD", renderTokenTransformHUD);
  * @returns {Promise<void>}
  */
 async function refreshOpenApplications() {
-  const [{ DrawingPromptManager }, { PlayerPromptList }] = await Promise.all([
+  const [{ DrawingPromptManager }, { PlayerPromptList }, { PromptLibrary }] = await Promise.all([
     import("./apps/drawing-prompt-manager.mjs"),
-    import("./apps/player-prompt-list.mjs")
+    import("./apps/player-prompt-list.mjs"),
+    import("./apps/prompt-library.mjs")
   ]);
   DrawingPromptManager.refreshOpen();
   PlayerPromptList.refreshOpen();
+  PromptLibrary.refreshOpen();
 }

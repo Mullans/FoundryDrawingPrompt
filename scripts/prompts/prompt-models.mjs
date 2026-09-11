@@ -1,4 +1,4 @@
-import { BG_SOURCE, FIT_MODE, STATUS } from "../constants.mjs";
+import { BG_SOURCE, FIT_MODE, PROMPT_STATUS, STATUS } from "../constants.mjs";
 import { normalizeStoredFraming } from "../drawing/prompt-framing.mjs";
 import { assertBackgroundUnlocked } from "./framing-delivery.mjs";
 import { normalizeTimerState } from "./timer-service.mjs";
@@ -58,6 +58,7 @@ export class DrawingAssignment {
       placedAt: placement?.placedAt ?? null
     })) : [];
     this.pendingSubmission = data.pendingSubmission ?? null;
+    this.retainedCapture = normalizeRetainedCapture(data.retainedCapture);
   }
 
   /**
@@ -109,7 +110,8 @@ export class DrawingAssignment {
       savedSubmissionTs: this.savedSubmissionTs,
       assets: { ...this.assets },
       placements: this.placements.map(placement => ({ ...placement })),
-      pendingSubmission: this.pendingSubmission ? JSON.parse(JSON.stringify(this.pendingSubmission)) : null
+      pendingSubmission: this.pendingSubmission ? JSON.parse(JSON.stringify(this.pendingSubmission)) : null,
+      retainedCapture: this.retainedCapture ? JSON.parse(JSON.stringify(this.retainedCapture)) : null
     };
   }
 
@@ -227,6 +229,18 @@ export class DrawingAssignment {
   }
 }
 
+function normalizeRetainedCapture(value) {
+  if ( !value || !["full-submission", "saved-preview"].includes(value.kind) ) return null;
+  return {
+    kind: value.kind,
+    receiptTs: Number.isFinite(Number(value.receiptTs)) ? Number(value.receiptTs) : null,
+    width: Number.isFinite(Number(value.width)) ? Number(value.width) : null,
+    height: Number.isFinite(Number(value.height)) ? Number(value.height) : null,
+    overlayPath: value.overlayPath ?? null,
+    mergedPath: value.mergedPath ?? null
+  };
+}
+
 /**
  * Serializable drawing prompt state containing per-user assignments.
  */
@@ -255,6 +269,10 @@ export class DrawingPrompt {
     this.timerSeconds = data.timerSeconds ?? null;
     this.createdAt = data.createdAt ?? Date.now();
     this.sentAt = data.sentAt ?? null;
+    this.lifecycleStatus = Object.values(PROMPT_STATUS).includes(data.lifecycleStatus)
+      ? data.lifecycleStatus : PROMPT_STATUS.OPEN;
+    this.closedAt = data.closedAt ?? null;
+    this.archivedAt = data.archivedAt ?? null;
     this.timerState = data;
     this.assignments = {};
 
@@ -318,6 +336,9 @@ export class DrawingPrompt {
       timerSeconds: this.timerSeconds,
       createdAt: this.createdAt,
       sentAt: this.sentAt,
+      lifecycleStatus: this.lifecycleStatus,
+      closedAt: this.closedAt,
+      archivedAt: this.archivedAt,
       timerStatus: this.timerStatus,
       deadlineAt: this.deadlineAt,
       remainingMs: this.remainingMs,
@@ -371,7 +392,8 @@ export class DrawingPrompt {
    * @returns {boolean}
    */
   get isActive() {
-    return Object.values(this.assignments).some(assignment => assignment.isActive);
+    return this.lifecycleStatus === PROMPT_STATUS.OPEN
+      && Object.values(this.assignments).some(assignment => assignment.isActive);
   }
 
   /**
@@ -380,7 +402,44 @@ export class DrawingPrompt {
    * @returns {boolean}
    */
   get needsAttention() {
-    return this.isActive || Object.values(this.assignments).some(assignment => assignment.isSubmittedUnsaved);
+    return this.lifecycleStatus === PROMPT_STATUS.OPEN
+      && (this.isActive || Object.values(this.assignments).some(assignment => assignment.isSubmittedUnsaved));
+  }
+
+  /** Mark an Open Prompt Closed and retained. */
+  markClosed(ts) {
+    this.#assertLifecycle([PROMPT_STATUS.OPEN], PROMPT_STATUS.CLOSED);
+    this.lifecycleStatus = PROMPT_STATUS.CLOSED;
+    this.closedAt = ts;
+    this.archivedAt = null;
+  }
+
+  /** Archive a Closed Prompt. */
+  markArchived(ts) {
+    this.#assertLifecycle([PROMPT_STATUS.CLOSED], PROMPT_STATUS.ARCHIVED);
+    this.lifecycleStatus = PROMPT_STATUS.ARCHIVED;
+    this.archivedAt = ts;
+  }
+
+  /** Restore an Archived Prompt to the Closed library. */
+  markRestored() {
+    this.#assertLifecycle([PROMPT_STATUS.ARCHIVED], PROMPT_STATUS.CLOSED);
+    this.lifecycleStatus = PROMPT_STATUS.CLOSED;
+    this.archivedAt = null;
+  }
+
+  /** Reopen a Closed Prompt without resuming its timer. */
+  markReopened() {
+    this.#assertLifecycle([PROMPT_STATUS.CLOSED], PROMPT_STATUS.OPEN);
+    this.lifecycleStatus = PROMPT_STATUS.OPEN;
+    this.closedAt = null;
+    this.archivedAt = null;
+  }
+
+  #assertLifecycle(allowed, target) {
+    if ( !allowed.includes(this.lifecycleStatus) ) {
+      throw new Error(`Illegal transition from ${this.lifecycleStatus} to ${target}`);
+    }
   }
 
   /**

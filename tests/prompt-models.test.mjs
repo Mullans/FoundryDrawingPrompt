@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
-import { BG_SOURCE, FIT_MODE, STATUS } from "../scripts/constants.mjs";
+import { BG_SOURCE, FIT_MODE, PROMPT_STATUS, STATUS } from "../scripts/constants.mjs";
 import { DrawingAssignment, DrawingPrompt } from "../scripts/prompts/prompt-models.mjs";
 
 beforeEach(() => {
@@ -76,6 +76,23 @@ test("DrawingAssignment round-trips savedSubmissionTs", () => {
 
   const legacy = DrawingAssignment.fromObject({ id: "a2", promptId: "p1", userId: "u1", status: STATUS.SUBMITTED });
   assert.equal(legacy.savedSubmissionTs, null);
+});
+
+test("DrawingAssignment keeps retained captures distinct and validates their recovery kind", () => {
+  const full = DrawingAssignment.fromObject({
+    id: "a1", promptId: "p1", userId: "u1",
+    retainedCapture: { kind: "full-submission", receiptTs: 10, width: 640, height: 480, overlayPath: "full.webp" }
+  });
+  assert.deepEqual(full.toObject().retainedCapture, {
+    kind: "full-submission", receiptTs: 10, width: 640, height: 480,
+    overlayPath: "full.webp", mergedPath: null
+  });
+  const preview = DrawingAssignment.fromObject({
+    id: "a2", promptId: "p1", userId: "u2",
+    retainedCapture: { kind: "saved-preview", receiptTs: 11, overlayPath: "preview.webp" }
+  });
+  assert.equal(preview.retainedCapture.kind, "saved-preview");
+  assert.equal(DrawingAssignment.fromObject({ retainedCapture: { kind: "quick-preview" } }).retainedCapture, null);
 });
 
 test("DrawingAssignment preserves tile and token placement identities", () => {
@@ -160,6 +177,35 @@ test("DrawingPrompt creates per-user assignments and round-trips JSON data", () 
     deadlineAt: 61000,
     remainingMs: null
   });
+});
+
+test("DrawingPrompt migrates legacy lifecycle state and enforces retained transitions", () => {
+  const legacy = DrawingPrompt.fromObject({ id: "p1", assignments: {
+    a1: { id: "a1", promptId: "p1", userId: "u1" }
+  } });
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.OPEN);
+  assert.equal(legacy.needsAttention, true);
+
+  legacy.markClosed(100);
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.CLOSED);
+  assert.equal(legacy.closedAt, 100);
+  assert.equal(legacy.needsAttention, false);
+  assert.throws(() => legacy.markClosed(101), /Illegal transition/);
+
+  legacy.markArchived(200);
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.ARCHIVED);
+  assert.equal(legacy.archivedAt, 200);
+  assert.throws(() => legacy.markReopened(), /Illegal transition/);
+
+  legacy.markRestored();
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.CLOSED);
+  assert.equal(legacy.archivedAt, null);
+  legacy.markReopened();
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.OPEN);
+  assert.equal(legacy.closedAt, null);
+
+  const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(legacy.toObject())));
+  assert.equal(roundTrip.lifecycleStatus, PROMPT_STATUS.OPEN);
 });
 
 test("DrawingPrompt round-trips paused overtime timer state", () => {

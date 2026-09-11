@@ -114,7 +114,13 @@ export async function createPromptEntry(prompt) {
  * @param {string|null} [options.assignmentOnly=null] Persist only this assignment and the asset folder name.
  * @returns {Promise<JournalEntry>}
  */
-export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = null, deliveryOnly = null, restartInvitation = false } = {}) {
+export async function savePrompt(prompt, {
+  timerOnly = false,
+  lifecycleOnly = false,
+  assignmentOnly = null,
+  deliveryOnly = null,
+  restartInvitation = false
+} = {}) {
   assertGM();
   return promptSaveQueue.enqueue(prompt.id, async () => {
     const entry = game.journal.get(prompt.id);
@@ -136,6 +142,14 @@ export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = n
       savedPrompt = latest;
       prompt.assignments = latest.assignments;
       prompt.timerState = latest.timerState;
+    } else if ( latest && lifecycleOnly ) {
+      latest.lifecycleStatus = prompt.lifecycleStatus;
+      latest.closedAt = prompt.closedAt;
+      latest.archivedAt = prompt.archivedAt;
+      latest.timerState = prompt.timerState;
+      savedPrompt = latest;
+      prompt.assignments = latest.assignments;
+      prompt.assetFolderName = latest.assetFolderName;
     } else if ( latest && timerOnly ) {
       latest.timerState = prompt.timerState;
       savedPrompt = latest;

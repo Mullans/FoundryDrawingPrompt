@@ -38,6 +38,7 @@ export {
 } from "./assignment-placement.mjs";
 export {
   buildRestorationSubmissionFromSavedAssets,
+  buildRestorationSubmissionFromRetainedCapture,
   getPendingSubmission
 } from "./pending-submission.mjs";
 export { getAssignment, getPrompt } from "./prompt-context.mjs";
@@ -49,6 +50,12 @@ export {
   retryPromptDeliveries,
   continuePromptDeliveries,
   invitePromptRecipients,
+  processRecoveryTombstonesForUser,
+  closePrompt,
+  reopenPrompt,
+  archivePrompt,
+  restorePrompt,
+  deletePrompt,
   finishPrompt,
   redeliverAssignmentsForUser,
   reopenAssignment,
@@ -76,6 +83,16 @@ export async function openPromptManager() {
   }
   const { DrawingPromptManager } = await import("../apps/drawing-prompt-manager.mjs");
   await DrawingPromptManager.open();
+}
+
+/** Open the singleton Closed/Archived Prompt library. */
+export async function openPromptLibrary() {
+  if ( !game.user.isGM ) {
+    ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
+    return;
+  }
+  const { PromptLibrary } = await import("../apps/prompt-library.mjs");
+  await PromptLibrary.open();
 }
 
 /**

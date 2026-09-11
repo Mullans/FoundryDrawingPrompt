@@ -91,6 +91,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       openPlaceDialog: DrawingPromptManager.#onOpenPlaceDialog,
       applyTransform: DrawingPromptManager.#onApplyTransform,
       finishPrompt: DrawingPromptManager.#onFinishPrompt,
+      openPromptLibrary: DrawingPromptManager.#onOpenPromptLibrary,
       switchPrompt: DrawingPromptManager.#onSwitchPrompt,
       setFramingView: DrawingPromptManager.#onSetFramingView,
       framingZoomIn: DrawingPromptManager.#onFramingZoomIn,
@@ -119,6 +120,14 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.unfinishedPrompts", { count: adoption.total }));
     }
     void app.showDeliveryWarning();
+    return app;
+  }
+
+  /** Open the singleton manager and select an exact retained Prompt. */
+  static async openPrompt(promptId) {
+    const app = await this.open();
+    await app.#switchToPrompt(promptId);
+    app.bringToFront();
     return app;
   }
 
@@ -1630,42 +1639,59 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /** @this {DrawingPromptManager} */
   static async #onFinishPrompt() {
     if ( !this.activePrompt ) return;
-    const affected = Object.values(this.activePrompt.assignments)
-      .filter(assignment => assignment.isActive || (assignment.status === STATUS.SUBMITTED && !assignment.primaryImagePath));
-    if ( affected.length ) {
-      const names = affected.map(assignment => assignment.userName).join(", ");
-      const confirmed = await DialogV2.confirm({
-        window: { title: "DRAWING-PROMPTS.manager.finishDialog.title", icon: "fa-solid fa-flag-checkered" },
-        content: `
-          <p>${game.i18n.format("DRAWING-PROMPTS.manager.finishDialog.confirm", { count: affected.length })}</p>
-          <p class="hint">${escapeHtml(names)}</p>`,
-        yes: {
-          label: "DRAWING-PROMPTS.manager.finishDialog.confirmButton",
-          icon: "fa-solid fa-trash",
-          class: "dp-danger"
-        },
-        rejectClose: false,
-        modal: true
-      });
-      if ( !confirmed ) return;
-    }
     const assignmentIds = Object.keys(this.activePrompt.assignments);
     const service = await import("../prompts/prompt-service.mjs");
     try {
-      await service.finishPrompt(this.activePrompt.id);
-      for ( const assignmentId of assignmentIds ) this.#clearCachedSnapshot(assignmentId);
-      this.activePrompt = null;
-      this.selectedAssignmentId = null;
-      this.latestSnapshots.clear();
-      this.latestOverlaySnapshots.clear();
-      const adoption = await this.adoptMostRecentActivePrompt();
-      await this.render({ parts: ["body"] });
-      if ( adoption.adopted ) {
-        ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.adoptedNext", { count: adoption.remaining }));
-      }
+      await service.closePrompt(this.activePrompt.id);
+      await this.#completePromptClose(assignmentIds);
     } catch (err) {
+      if ( err.code === "RETAINED_CAPTURE_FAILED" ) {
+        const choice = await DialogV2.wait({
+          window: { title: "DRAWING-PROMPTS.manager.closeDialog.title" },
+          content: `<p>${escapeHtml(err.message)}</p>`,
+          buttons: [
+            { action: "retry", label: "DRAWING-PROMPTS.manager.closeDialog.retry", default: true },
+            { action: "previews", label: "DRAWING-PROMPTS.manager.closeDialog.savePreviews" },
+            { action: "close", label: "DRAWING-PROMPTS.manager.closeDialog.closeWithout" }
+          ],
+          close: () => null,
+          modal: true
+        });
+        if ( choice === "retry" ) return DrawingPromptManager.#onFinishPrompt.call(this);
+        if ( choice === "previews" ) {
+          await service.closePrompt(this.activePrompt.id, {
+            closeWithoutCaptures: true,
+            availablePreviews: Object.fromEntries(this.latestSnapshots)
+          });
+          return this.#completePromptClose(assignmentIds);
+        }
+        if ( choice === "close" ) {
+          await service.closePrompt(this.activePrompt.id, { closeWithoutCaptures: true });
+          return this.#completePromptClose(assignmentIds);
+        }
+        return;
+      }
       ui.notifications.warn(err.message);
     }
+  }
+
+  async #completePromptClose(assignmentIds) {
+    for ( const assignmentId of assignmentIds ) this.#clearCachedSnapshot(assignmentId);
+    this.activePrompt = null;
+    this.selectedAssignmentId = null;
+    this.latestSnapshots.clear();
+    this.latestOverlaySnapshots.clear();
+    const adoption = await this.adoptMostRecentActivePrompt();
+    await this.render({ parts: ["body"] });
+    if ( adoption.adopted ) {
+      ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.adoptedNext", { count: adoption.remaining }));
+    }
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onOpenPromptLibrary() {
+    const service = await import("../prompts/prompt-service.mjs");
+    await service.openPromptLibrary();
   }
 
   /**

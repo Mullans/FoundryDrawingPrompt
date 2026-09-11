@@ -2,10 +2,17 @@ import { MODULE_ID } from "./constants.mjs";
 import {
   applyAssignmentTransform,
   cancelAssignment,
+  closePrompt,
+  reopenPrompt,
+  archivePrompt,
+  restorePrompt,
+  deletePrompt,
+  finishPrompt,
   createPrompt,
   getAssignment,
   getPrompt,
   openPromptManager,
+  openPromptLibrary,
   placeAssignmentAsTile,
   placeAssignmentAsToken,
   reopenAssignment,
@@ -27,6 +34,13 @@ export function registerAPI() {
     placeAssignmentAsTile,
     placeAssignmentAsToken,
     reopenAssignment,
-    cancelAssignment
+    cancelAssignment,
+    closePrompt,
+    reopenPrompt,
+    archivePrompt,
+    restorePrompt,
+    deletePrompt,
+    finishPrompt,
+    openPromptLibrary
   };
 }

@@ -32,7 +32,8 @@ test("ApplicationV2 template part paths exist", () => {
     "modules/drawing-prompts/templates/drawing-prompt-manager.hbs",
     "modules/drawing-prompts/templates/place-dialog.hbs",
     "modules/drawing-prompts/templates/player-drawing-app.hbs",
-    "modules/drawing-prompts/templates/player-prompt-list.hbs"
+    "modules/drawing-prompts/templates/player-prompt-list.hbs",
+    "modules/drawing-prompts/templates/prompt-library.hbs"
   ]);
 
   for ( const templatePath of templatePaths ) {

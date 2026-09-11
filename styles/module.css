@@ -1284,6 +1284,57 @@
   background: color-mix(in srgb, var(--dp-status-rejected) 20%, var(--dp-control-bg));
 }
 
+.drawing-prompts .dp-library-shell {
+  display: grid;
+  gap: 18px;
+  padding: 12px;
+}
+
+.drawing-prompts .dp-library-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.drawing-prompts .dp-library-section h2 {
+  margin: 0;
+}
+
+.drawing-prompts .dp-library-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-radius: 4px;
+  padding: 8px;
+  background: var(--dp-panel-bg-raised);
+}
+
+.drawing-prompts .dp-library-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-prompts .dp-library-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 560px) {
+  .drawing-prompts .dp-library-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .drawing-prompts .dp-library-actions {
+    justify-content: flex-start;
+  }
+}
+
 .drawing-prompts .dp-place-shell,
 .drawing-prompts .dp-clone-source-shell {
   display: flex;

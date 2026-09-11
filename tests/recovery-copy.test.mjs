@@ -105,6 +105,7 @@ test("Restoration uses editable history locally and a flat image for GM fallback
   const { recovery } = moduleWith();
   const engine = {
     loadOpLog: value => calls.push(["oplog", value]),
+    loadOpLogOverCurrentDrawing: value => calls.push(["oplog-over-base", value]),
     loadOverlayRgba: value => calls.push(["rgba", value])
   };
   await recovery.restoreResolvedRecovery(engine, { kind: "local", opLog: { ops: [stroke], pointer: 1 } }, {});
@@ -122,6 +123,65 @@ test("Restoration uses editable history locally and a flat image for GM fallback
   await fallbackModule.restoreResolvedRecovery(engine, { kind: "full-submission", submission }, {});
   assert.equal(calls.at(-2)[0], "fallback");
   assert.equal(calls.at(-1)[0], "rgba");
+});
+
+test("A persisted flat fallback is restored before local edits are replayed", async () => {
+  const map = new Map();
+  const restored = [];
+  const moduleA = createRecoveryCopyModule({
+    storage: createMapStorageAdapter(map),
+    restoreSubmission: async (_engine, submission) => { restored.push(submission.staged.overlayPath); return true; }
+  });
+  const fallback = { recoveryKind: "full-submission", assignmentId: identity.assignmentId,
+    width: identity.width, height: identity.height, receiptTs: 50,
+    staged: { overlayPath: "pending/base.webp" } };
+  const first = moduleA.resolveRecovery(identity, fallback);
+  await moduleA.restoreResolvedRecovery({ loadOpLog() {} }, first, {});
+  moduleA.saveRecoveryCopy(identity, { ops: [stroke], pointer: 1 });
+
+  const calls = [];
+  const moduleB = createRecoveryCopyModule({
+    storage: createMapStorageAdapter(map),
+    restoreSubmission: async (_engine, submission) => { restored.push(submission.staged.overlayPath); return true; }
+  });
+  const second = moduleB.resolveRecovery(identity, null);
+  await moduleB.restoreResolvedRecovery({
+    loadOpLogOverCurrentDrawing: log => calls.push(log),
+    loadOpLog: () => assert.fail("base recovery must preserve the restored flat drawing")
+  }, second, {});
+
+  assert.deepEqual(restored, ["pending/base.webp", "pending/base.webp"]);
+  assert.deepEqual(calls, [{ ops: [stroke], pointer: 1 }]);
+});
+
+test("A restored GM fallback becomes the durable flat base for later local recovery", async () => {
+  const map = new Map();
+  const restoreCalls = [];
+  const module = createRecoveryCopyModule({
+    storage: createMapStorageAdapter(map),
+    restoreSubmission: async (_engine, submission) => {
+      restoreCalls.push(submission.overlay.dataUrl);
+      return true;
+    }
+  });
+  const fallback = {
+    recoveryKind: "full-submission",
+    assignmentId: identity.assignmentId,
+    width: identity.width,
+    height: identity.height,
+    receiptTs: 500,
+    overlay: { dataUrl: "data:image/webp;base64,flat" }
+  };
+
+  const initial = module.resolveRecovery(identity, fallback);
+  await module.restoreResolvedRecovery({}, initial, {});
+  module.saveRecoveryCopy(identity, { ops: [stroke], pointer: 1 });
+
+  const reloaded = module.resolveRecovery(identity, null);
+  assert.equal(reloaded.kind, "local");
+  assert.equal(reloaded.baseSubmission.overlay.dataUrl, fallback.overlay.dataUrl);
+  await module.restoreResolvedRecovery({ loadOpLogOverCurrentDrawing() {} }, reloaded, {});
+  assert.deepEqual(restoreCalls, [fallback.overlay.dataUrl, fallback.overlay.dataUrl]);
 });
 
 test("Storage failures are non-fatal and warned once per module instance", () => {

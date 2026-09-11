@@ -212,6 +212,10 @@
   </div>
 
   <footer class="dp-action-bar form-footer">
+    <button type="button" data-action="openPromptLibrary">
+      <i class="fa-solid fa-box-archive" inert></i>
+      <span>{{localize "DRAWING-PROMPTS.library.title"}}</span>
+    </button>
     <button class="primary" type="button" data-action="finishPrompt" {{#unless canFinishPrompt}}disabled{{/unless}}>
       <i class="fa-solid fa-flag-checkered" inert></i>
       <span>{{localize "DRAWING-PROMPTS.manager.actions.finishPrompt"}}</span>

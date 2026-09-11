@@ -14,6 +14,7 @@ import {
   submissionPreviewSrc,
   submissionValidationContext
 } from "./pending-submission.mjs";
+import { clearRecoveryCopy } from "../drawing/recovery-copy.mjs";
 import { savePrompt } from "./persistence-service.mjs";
 import {
   notifyPlayer,
@@ -45,12 +46,36 @@ export function getSocketHandlers() {
     [CALLS.CANCEL]: handleCancelPrompt,
     [CALLS.SHOW]: handleShowPrompt,
     [CALLS.REQUEST_SNAPSHOT]: handleRequestSnapshot,
+    [CALLS.REQUEST_RETAINED_CAPTURE]: handleRequestRetainedCapture,
+    [CALLS.CLEAR_RECOVERY]: handleClearRecovery,
     [CALLS.OPENED]: handleAssignmentOpened,
     [CALLS.SNAPSHOT]: handleDrawingSnapshot,
     [CALLS.SUBMITTED]: handleDrawingSubmitted,
     [CALLS.REJECTED]: handleDrawingRejected,
     [CALLS.WINDOW_CLOSED]: handlePlayerWindowClosed
   };
+}
+
+function handleClearRecovery(identity) {
+  if ( identity?.userId !== game.user.id ) return false;
+  try {
+    return clearRecoveryCopy(identity);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored invalid Recovery cleanup", err);
+    return false;
+  }
+}
+
+async function handleRequestRetainedCapture(assignmentId, requestId) {
+  const payload = validateKnownActivePlayerAssignment(assignmentId, "request-retained-capture");
+  if ( !payload ) return null;
+  try {
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored retained capture request", err);
+    return null;
+  }
+  return PlayerDrawingApp.captureRetainedForAssignment(assignmentId, requestId);
 }
 
 /**
