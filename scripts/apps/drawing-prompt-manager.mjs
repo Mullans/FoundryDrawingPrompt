@@ -111,22 +111,23 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    */
   static async open() {
     if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
-    this.#instance ??= new this();
-    const adoption = await this.#instance.adoptMostRecentActivePrompt();
-    await this.#instance.render({ force: true });
-    this.#instance.bringToFront();
+    const app = this.#instance ??= new this();
+    const adoption = await app.adoptMostRecentActivePrompt();
+    await app.render({ force: true });
+    app.bringToFront();
     if ( adoption.total > 1 ) {
       ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.unfinishedPrompts", { count: adoption.total }));
     }
-    return this.#instance;
+    void app.showDeliveryWarning();
+    return app;
   }
 
   /**
    * Refresh the open manager, if any.
-   * @returns {void}
+   * @returns {Promise<void>|undefined}
    */
   static refreshOpen() {
-    this.#instance?.refreshFromService();
+    return this.#instance?.refreshFromService();
   }
 
   /**
@@ -198,10 +199,18 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#sourceFramingPreviewCache = new Map();
     this.#expiryTimerId = null;
     this.#expiryStateSignature = "";
+    this.#deliveryWarningPromptId = null;
+    this.#presentedDeliveryWarningKey = null;
+    this.#refreshPromise = null;
+    this.#refreshRequested = false;
   }
 
   #expiryTimerId;
   #expiryStateSignature;
+  #deliveryWarningPromptId;
+  #presentedDeliveryWarningKey;
+  #refreshPromise;
+  #refreshRequested;
   #closed;
   #formListenersAttached = false;
   #sourceFramingPreviewCache;
@@ -270,11 +279,29 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /**
    * Reload the active prompt and rerender.
-   * @returns {void}
+   * @returns {Promise<void>}
    */
-  refreshFromService() {
-    if ( this.activePrompt?.id ) this.activePrompt = loadPrompt(this.activePrompt.id) ?? this.activePrompt;
-    this.render({ parts: ["body"] });
+  async refreshFromService() {
+    if ( this.#closed ) return;
+    this.#refreshRequested = true;
+    if ( this.#refreshPromise ) return this.#refreshPromise;
+    this.#refreshPromise = (async () => {
+      do {
+        this.#refreshRequested = false;
+        if ( this.#closed ) return;
+        if ( this.activePrompt?.id ) this.activePrompt = loadPrompt(this.activePrompt.id) ?? this.activePrompt;
+        else if ( !this.isSending ) await this.adoptMostRecentActivePrompt();
+        if ( this.#closed ) return;
+        await this.render({ parts: ["body"] });
+      } while ( this.#refreshRequested && !this.#closed );
+      if ( !this.isSending ) void this.showDeliveryWarning();
+    })();
+    try {
+      await this.#refreshPromise;
+    } finally {
+      this.#refreshPromise = null;
+      if ( this.#refreshRequested && !this.#closed ) return this.refreshFromService();
+    }
   }
 
   /**
@@ -475,6 +502,9 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /** @override */
   _onClose(options) {
     this.#closed = true;
+    this.#refreshRequested = false;
+    this.#deliveryWarningPromptId = null;
+    this.#presentedDeliveryWarningKey = null;
     super._onClose(options);
     this.#destroyFramingEditor();
     this.#destroyReviewPlateStage();
@@ -1312,41 +1342,67 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   async showDeliveryWarning() {
     const promptId = this.activePrompt?.id;
     const delivery = this.activePrompt?.deliverySummary;
-    if ( !promptId || !delivery?.needsResolution ) return;
+    const warningKey = this.#deliveryWarningKey();
+    if ( !promptId || !delivery?.needsResolution || delivery.pending.length || !warningKey
+      || this.#deliveryWarningPromptId === promptId || this.#presentedDeliveryWarningKey === warningKey ) return;
+    this.#deliveryWarningPromptId = promptId;
+    this.#presentedDeliveryWarningKey = warningKey;
     const noRecipients = !delivery.hasRecipients;
     const names = escapeHtml(delivery.failed.map(recipient => recipient.userName).join(", "));
     const explanation = game.i18n.localize(noRecipients
       ? "DRAWING-PROMPTS.manager.delivery.notEnoughPlayers"
       : "DRAWING-PROMPTS.manager.delivery.continueWithoutPlayers");
-    do {
-      const choice = await DialogV2.wait({
-        window: {
-          title: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.title"),
-          icon: "fa-solid fa-triangle-exclamation"
-        },
-        classes: ["drawing-prompts", "dp-delivery-warning-dialog"],
-        content: `<div class="dp-delivery-warning">
-          <p><strong>${game.i18n.localize("DRAWING-PROMPTS.manager.delivery.noResponse")}</strong> ${names}</p>
-          <p>${explanation}</p>
-        </div>`,
-        buttons: [
-          { action: "retry", label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.retry"),
-            icon: "fa-solid fa-arrows-rotate", callback: () => "retry" },
-          { action: "continue", label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.continue"),
-            icon: "fa-solid fa-play", disabled: noRecipients, callback: () => "continue" },
-          ...(noRecipients ? [{ action: "back",
-            label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.backToSetup"),
-            icon: "fa-solid fa-arrow-left", callback: () => "back" }] : [])
-        ],
-        rejectClose: false,
-        modal: true
-      });
-      if ( this.#closed || this.activePrompt?.id !== promptId ) return;
-      if ( choice === "retry" ) return DrawingPromptManager.#onRetryDeliveries.call(this);
-      if ( choice === "continue" && !noRecipients ) return DrawingPromptManager.#onContinueDeliveries.call(this);
-      if ( choice === "back" && noRecipients ) return DrawingPromptManager.#onBackToSetup.call(this);
-      if ( !noRecipients ) return;
-    } while ( true );
+    try {
+      do {
+        const choice = await DialogV2.wait({
+          window: {
+            title: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.title"),
+            icon: "fa-solid fa-triangle-exclamation"
+          },
+          classes: ["drawing-prompts", "dp-delivery-warning-dialog"],
+          content: `<div class="dp-delivery-warning">
+            <p><strong>${game.i18n.localize("DRAWING-PROMPTS.manager.delivery.noResponse")}</strong> ${names}</p>
+            <p>${explanation}</p>
+          </div>`,
+          buttons: [
+            { action: "retry", label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.retry"),
+              icon: "fa-solid fa-arrows-rotate", callback: () => "retry" },
+            { action: "continue", label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.continue"),
+              icon: "fa-solid fa-play", disabled: noRecipients, callback: () => "continue" },
+            ...(noRecipients ? [{ action: "back",
+              label: game.i18n.localize("DRAWING-PROMPTS.manager.delivery.backToSetup"),
+              icon: "fa-solid fa-arrow-left", callback: () => "back" }] : [])
+          ],
+          rejectClose: false,
+          modal: true
+        });
+        if ( this.#closed || this.activePrompt?.id !== promptId ) return;
+        if ( choice === "retry" ) {
+          this.#presentedDeliveryWarningKey = null;
+          return DrawingPromptManager.#onRetryDeliveries.call(this);
+        }
+        if ( choice === "continue" && !noRecipients ) {
+          this.#deliveryWarningPromptId = null;
+          return DrawingPromptManager.#onContinueDeliveries.call(this);
+        }
+        if ( choice === "back" && noRecipients ) {
+          this.#deliveryWarningPromptId = null;
+          return DrawingPromptManager.#onBackToSetup.call(this);
+        }
+        if ( !noRecipients ) return;
+      } while ( true );
+    } finally {
+      if ( this.#deliveryWarningPromptId === promptId ) this.#deliveryWarningPromptId = null;
+    }
+  }
+
+  /** Stable identity for one settled unresolved delivery episode. */
+  #deliveryWarningKey() {
+    if ( !this.activePrompt?.deliverySummary?.needsResolution ) return null;
+    const assignments = Object.values(this.activePrompt.assignments ?? {})
+      .map(assignment => `${assignment.id}:${assignment.delivery?.status ?? ""}:${assignment.delivery?.generation ?? 0}`)
+      .sort();
+    return `${this.activePrompt.id}|${assignments.join("|")}`;
   }
 
   /** @this {DrawingPromptManager} */
@@ -1791,6 +1847,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( !promptId || promptId === this.activePrompt?.id ) return;
     this.activePrompt = loadPrompt(promptId);
     if ( !this.activePrompt ) return;
+    this.#deliveryWarningPromptId = null;
+    this.#presentedDeliveryWarningKey = null;
     this.#adoptDraftFromPrompt();
     this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
     this.latestSnapshots.clear();

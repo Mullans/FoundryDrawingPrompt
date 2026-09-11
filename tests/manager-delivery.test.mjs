@@ -12,16 +12,33 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function journalCollection(entries) {
+  return {
+    get: id => entries.get(id),
+    delete: id => entries.delete(id),
+    [Symbol.iterator]: function* () { yield* entries.values(); }
+  };
+}
+
 class TestDialogV2 {
   static calls = [];
   static results = [];
+  static started = null;
   static async wait(options) {
     this.calls.push(options);
+    this.started?.resolve();
     return this.results.length ? this.results.shift() : "dismissed-test-dialog";
   }
 }
 globalThis.foundry = { applications: { api: {
-  ApplicationV2: class { _onClose() {} }, DialogV2: TestDialogV2, HandlebarsApplicationMixin: Base => Base
+  ApplicationV2: class {
+    constructor() { this.renderCalls = 0; }
+    async render() { this.renderCalls++; return this; }
+    bringToFront() {}
+    _onClose() {}
+  },
+  DialogV2: TestDialogV2,
+  HandlebarsApplicationMixin: Base => Base
 } }, utils: { randomID: () => `id${++sequence}` } };
 globalThis.CONST = { DOCUMENT_OWNERSHIP_LEVELS: { NONE: 0 } };
 globalThis.Hooks = { callAll() {} };
@@ -61,20 +78,20 @@ test("Send paints busy feedback before storage, prevents duplicate creation, and
     timerSeconds: 0, selectedUserIds: new Set(["u1"]) });
   const contexts = [];
   manager.render = async () => { contexts.push(await manager._prepareContext({})); return manager; };
-  const storageRejectors = [];
+  const createStarted = deferred();
+  const storageFailure = deferred();
   let creates = 0;
   globalThis.JournalEntry = { create: () => { creates++;
-    return new Promise((_resolve, reject) => { storageRejectors.push(reject); });
+    createStarted.resolve();
+    return storageFailure.promise;
   } };
   const action = DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt;
   const sending = action.call(manager).catch(() => {});
-  for ( let n = 0; n < 20 && !storageRejectors.length; n++ ) await new Promise(resolve => setTimeout(resolve, 5));
+  await createStarted.promise;
   const paintedBeforeStorage = contexts.some(context => context.isSending && !context.canSend);
   const duplicate = action.call(manager).catch(() => {});
-  await new Promise(resolve => setTimeout(resolve, 10));
   const createCount = creates;
-  // Reject every attempt, including an erroneous duplicate on pre-fix code.
-  for ( const reject of storageRejectors ) reject(new Error("storage unavailable"));
+  storageFailure.reject(new Error("storage unavailable"));
   await Promise.all([sending, duplicate]);
   assert.ok(paintedBeforeStorage, "Sending must be rendered before JournalEntry.create can stall");
   assert.equal(contexts.find(context => context.isSending)?.sendLabel, "Sending...");
@@ -204,6 +221,114 @@ test("closing during delivery prevents completion render and warning resurrectio
 
   assert.equal(renders, rendersAtClose, "delivery completion must not render a closed manager");
   assert.equal(TestDialogV2.calls.length, 0, "delivery completion must not open a warning after close");
+});
+
+test("closing and reopening before create resolves makes the registered manager adopt delivery completion", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = ["dismissed-test-dialog"];
+  const createStarted = deferred();
+  const releaseCreate = deferred();
+  const entries = new Map();
+  game.users = new Map([
+    ["u1", { id: "u1", name: "Ada", active: true, can: () => false }],
+    ["u2", { id: "u2", name: "Ben", active: true, can: () => false }]
+  ]);
+  game.journal = { get: id => entries.get(id), [Symbol.iterator]: function* () { yield* entries.values(); } };
+  globalThis.JournalEntry = { create: async data => {
+    createStarted.resolve();
+    await releaseCreate.promise;
+    let stored = structuredClone(data.flags["drawing-prompts"].prompt);
+    const entry = { id: `prompt${++sequence}`, getFlag: () => stored,
+      setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; } };
+    entries.set(entry.id, entry);
+    return entry;
+  } };
+  const { emit } = await import("../scripts/socket.mjs");
+  const { acknowledgePromptDelivery } = await import("../scripts/prompts/prompt-delivery.mjs");
+  emit.openDrawingPrompt = (userId, payload) => userId === "u1"
+    ? acknowledgePromptDelivery(userId, payload.assignment.id, userId)
+    : Promise.reject(new Error("offline"));
+
+  const managerA = await DrawingPromptManager.open();
+  Object.assign(managerA.draft, { promptText: "", drawingName: "Close and reopen", canvasWidth: 512,
+    canvasHeight: 512, timerSeconds: 0, selectedUserIds: new Set(["u1", "u2"]) });
+  const sending = DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(managerA);
+  await createStarted.promise;
+  managerA._onClose({});
+  const managerARendersAtClose = managerA.renderCalls;
+  const managerB = await DrawingPromptManager.open();
+  assert.equal(managerB.activePrompt, null, "the prompt must not be visible before persistence completes");
+
+  releaseCreate.resolve();
+  await sending;
+
+  try {
+    assert.notStrictEqual(managerB, managerA);
+    assert.equal(managerB.activePrompt?.drawingName, "Close and reopen");
+    assert.equal(managerB.activePrompt?.deliverySummary.received.length, 1);
+    assert.equal(managerB.activePrompt?.deliverySummary.failed.length, 1);
+    assert.equal(managerA.renderCalls, managerARendersAtClose, "the closed manager must never render again");
+    assert.equal(TestDialogV2.calls.length, 1, "delivery completion must warn from the registered manager once");
+  } finally {
+    managerB._onClose({});
+  }
+});
+
+test("opening a persisted zero-receipt prompt renders before showing Retry and Back", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = ["back"];
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const prompt = new DrawingPrompt({ id: "persisted-zero", gmUserId: "gm", assignments: {
+    failed: { id: "failed", userId: "u1", userName: "Ada", status: "pending", delivery: { status: "failed" } }
+  } });
+  let stored = prompt.toObject();
+  const entry = { id: prompt.id, getFlag: () => stored,
+    setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; },
+    delete: async () => game.journal.delete(prompt.id) };
+  game.users = new Map([["u1", { id: "u1", name: "Ada", active: true, can: () => false }]]);
+  game.journal = journalCollection(new Map([[prompt.id, entry]]));
+
+  const manager = await DrawingPromptManager.open();
+  try {
+    const dialog = TestDialogV2.calls[0];
+    assert.ok(manager.renderCalls > 0, "the adopted prompt must render before the warning resolves");
+    assert.deepEqual(dialog.buttons.filter(button => !button.disabled).map(button => button.action), ["retry", "back"]);
+    assert.equal(TestDialogV2.calls.length, 1);
+  } finally {
+    manager._onClose({});
+  }
+});
+
+test("opening a persisted partial-delivery prompt renders before showing Retry and Continue once", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = ["dismissed-test-dialog"];
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const prompt = new DrawingPrompt({ id: "persisted-partial", gmUserId: "gm", assignments: {
+    received: { id: "received", userId: "u1", userName: "Ada", status: "pending", delivery: { status: "received" } },
+    failed: { id: "failed", userId: "u2", userName: "Ben", status: "pending", delivery: { status: "failed" } }
+  } });
+  const entry = { id: prompt.id, getFlag: () => prompt.toObject() };
+  game.users = new Map([
+    ["u1", { id: "u1", name: "Ada", active: true, can: () => false }],
+    ["u2", { id: "u2", name: "Ben", active: true, can: () => false }]
+  ]);
+  game.journal = journalCollection(new Map([[prompt.id, entry]]));
+
+  const manager = await DrawingPromptManager.open();
+  try {
+    assert.ok(manager.renderCalls > 0);
+    assert.equal(TestDialogV2.calls.length, 1, "opening must show the unresolved persisted delivery once");
+    const dialog = TestDialogV2.calls[0];
+    assert.deepEqual(dialog.buttons.filter(button => !button.disabled).map(button => button.action), ["retry", "continue"]);
+
+    TestDialogV2.calls.length = 0;
+    await manager.showDeliveryWarning();
+    await DrawingPromptManager.refreshOpen();
+    assert.equal(TestDialogV2.calls.length, 0, "the same settled delivery state must not warn again");
+  } finally {
+    TestDialogV2.started = null;
+    manager._onClose({});
+  }
 });
 
 test("new delivery UI copy is localized with exact English values", () => {
