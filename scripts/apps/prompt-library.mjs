@@ -42,6 +42,12 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
 
   static refreshOpen() { return this.#instance?.render({ parts: ["body"] }); }
 
+  /** @override */
+  _onClose(options) {
+    super._onClose(options);
+    if ( this.constructor.#instance === this ) this.constructor.#instance = null;
+  }
+
   async _prepareContext() {
     const prompts = this.loadPrompts().sort((a, b) => Number(b.closedAt ?? 0) - Number(a.closedAt ?? 0));
     const row = prompt => ({ id: prompt.id, name: prompt.drawingName || prompt.promptText || prompt.id });

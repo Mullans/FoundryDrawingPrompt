@@ -84,7 +84,14 @@ export function createRecoveryCopyModule({
     if ( resolution?.kind === "local" ) {
       if ( resolution.baseSubmission ) {
         const restored = await restoreSubmission(engine, resolution.baseSubmission, prompt);
-        if ( !restored ) return false;
+        if ( !restored ) {
+          // The editable history is still the highest-value recovery material. Replay it
+          // over blank when its optional flat base cannot decode, and surface the degraded
+          // restoration through the existing once-only history notice.
+          engine.loadOpLog(cloneJson(resolution.opLog));
+          resolution.historyMissing = true;
+          return true;
+        }
         engine.loadOpLogOverCurrentDrawing(cloneJson(resolution.opLog));
         return true;
       }

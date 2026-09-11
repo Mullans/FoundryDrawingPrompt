@@ -270,46 +270,47 @@ async function retainAvailablePreviews(prompt, previews) {
 async function retainFullCaptures(prompt) {
   const failures = [];
   for ( const assignment of Object.values(prompt.assignments) ) {
-    if ( assignment.retainedCapture?.kind === "full-submission" && assignment.retainedCapture.overlayPath ) continue;
-    if ( assignment.assets?.overlayPath ) {
-      assignment.retainedCapture = {
-        kind: "full-submission",
-        receiptTs: assignment.submittedAt ?? Date.now(),
-        width: assignment.assets.tileWidth ?? prompt.canvasWidth,
-        height: assignment.assets.tileHeight ?? prompt.canvasHeight,
-        overlayPath: assignment.assets.overlayPath,
-        mergedPath: assignment.assets.mergedPath
-      };
-      await savePrompt(prompt, { assignmentOnly: assignment.id });
-      continue;
-    }
-    let submission = getPendingSubmission(assignment.id);
-    if ( !submission && assignment.isActive && game.users.get(assignment.userId)?.active ) {
-      const requestId = foundry.utils.randomID();
-      try {
+    try {
+      if ( assignment.retainedCapture?.kind === "full-submission" && assignment.retainedCapture.overlayPath ) continue;
+      if ( assignment.assets?.overlayPath ) {
+        assignment.retainedCapture = {
+          kind: "full-submission",
+          receiptTs: assignment.submittedAt ?? Date.now(),
+          width: assignment.assets.tileWidth ?? prompt.canvasWidth,
+          height: assignment.assets.tileHeight ?? prompt.canvasHeight,
+          overlayPath: assignment.assets.overlayPath,
+          mergedPath: assignment.assets.mergedPath
+        };
+        await savePrompt(prompt, { assignmentOnly: assignment.id });
+        continue;
+      }
+      let submission = getPendingSubmission(assignment.id);
+      if ( !submission && assignment.isActive && game.users.get(assignment.userId)?.active ) {
+        const requestId = foundry.utils.randomID();
         const response = await emit.requestRetainedCapture(assignment.userId, assignment.id, requestId);
         if ( response?.requestId !== requestId || response?.assignmentId !== assignment.id ) throw new Error("Stale retained capture response");
         submission = response.submission;
-      } catch (err) {
-        console.warn("drawing-prompts | retained capture failed", assignment.id, err);
       }
-    }
-    if ( !submission || Number(submission.width) !== prompt.canvasWidth || Number(submission.height) !== prompt.canvasHeight || submission.wireScaled ) {
+      if ( !submission || Number(submission.width) !== prompt.canvasWidth || Number(submission.height) !== prompt.canvasHeight || submission.wireScaled ) {
+        if ( assignment.isActive ) failures.push(assignment);
+        continue;
+      }
+      submission = { ...submission, recoveryKind: "full-submission", assignmentId: assignment.id, receiptTs: submission.receiptTs ?? Date.now() };
+      if ( !isStagedSubmission(submission) ) submission = await persistSocketSubmission(assignment.id, submission);
+      setPendingSubmission(assignment.id, submission);
+      assignment.retainedCapture = {
+        kind: "full-submission",
+        receiptTs: submission.receiptTs,
+        width: prompt.canvasWidth,
+        height: prompt.canvasHeight,
+        overlayPath: submission.staged?.overlayPath ?? null,
+        mergedPath: submission.staged?.mergedPath ?? null
+      };
+      await savePrompt(prompt, { assignmentOnly: assignment.id });
+    } catch (err) {
+      console.warn("drawing-prompts | retained capture failed", assignment.id, err);
       if ( assignment.isActive ) failures.push(assignment);
-      continue;
     }
-    submission = { ...submission, recoveryKind: "full-submission", assignmentId: assignment.id, receiptTs: submission.receiptTs ?? Date.now() };
-    if ( !isStagedSubmission(submission) ) submission = await persistSocketSubmission(assignment.id, submission);
-    setPendingSubmission(assignment.id, submission);
-    assignment.retainedCapture = {
-      kind: "full-submission",
-      receiptTs: submission.receiptTs,
-      width: prompt.canvasWidth,
-      height: prompt.canvasHeight,
-      overlayPath: submission.staged?.overlayPath ?? null,
-      mergedPath: submission.staged?.mergedPath ?? null
-    };
-    await savePrompt(prompt, { assignmentOnly: assignment.id });
   }
   return failures;
 }
@@ -361,10 +362,10 @@ export async function deletePrompt(promptId, { confirmed = false } = {}) {
   if ( !confirmed ) return false;
   const prompt = requireOwnedPrompt(promptId);
   const internalPaths = moduleOwnedPromptPaths(prompt);
-  for ( const assignment of Object.values(prompt.assignments) ) clearPendingSubmission(assignment.id);
-  await queueRecoveryTombstones(prompt);
   await Promise.all(internalPaths.map(path => deleteDataFile(path)));
   await deletePromptEntry(promptId);
+  for ( const assignment of Object.values(prompt.assignments) ) clearPendingSubmission(assignment.id);
+  await queueRecoveryTombstones(prompt);
   Hooks.callAll("drawing-prompts.promptDeleted", prompt);
   await refreshManager();
   return true;

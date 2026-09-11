@@ -154,6 +154,27 @@ test("A persisted flat fallback is restored before local edits are replayed", as
   assert.deepEqual(calls, [{ ops: [stroke], pointer: 1 }]);
 });
 
+test("A failed durable-base decode still replays local history over blank and reports degradation", async () => {
+  const calls = [];
+  const recovery = createRecoveryCopyModule({
+    storage: createMapStorageAdapter(new Map()),
+    restoreSubmission: async () => false
+  });
+  const resolution = {
+    kind: "local",
+    baseSubmission: { staged: { overlayPath: "missing.webp" } },
+    opLog: { ops: [stroke], pointer: 1 },
+    historyMissing: false
+  };
+
+  assert.equal(await recovery.restoreResolvedRecovery({
+    loadOpLog: log => calls.push(log),
+    loadOpLogOverCurrentDrawing: () => assert.fail("a failed base cannot be retained")
+  }, resolution, {}), true);
+  assert.deepEqual(calls, [{ ops: [stroke], pointer: 1 }]);
+  assert.equal(resolution.historyMissing, true);
+});
+
 test("A restored GM fallback becomes the durable flat base for later local recovery", async () => {
   const map = new Map();
   const restoreCalls = [];

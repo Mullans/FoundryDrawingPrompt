@@ -16,6 +16,8 @@ class TestApplicationV2 {
   }
 
   bringToFront() { this.focusCalls += 1; }
+
+  _onClose() {}
 }
 
 class TestDialogV2 {
@@ -86,6 +88,16 @@ test("opening the library reuses and focuses its registered singleton", async ()
   assert.strictEqual(second, first);
   assert.equal(first.renderCalls.length, 2);
   assert.equal(first.focusCalls, 2);
+});
+
+test("closing the Prompt Library releases the singleton for a fresh open", async () => {
+  const first = await PromptLibrary.open();
+  first._onClose({});
+  const reopened = await PromptLibrary.open();
+
+  assert.notStrictEqual(reopened, first);
+  assert.equal(reopened.renderCalls.length, 1);
+  assert.equal(reopened.focusCalls, 1);
 });
 
 test("Open reopens the exact Prompt and delegates to DrawingPromptManager.openPrompt", async () => {

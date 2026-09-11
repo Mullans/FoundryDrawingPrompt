@@ -18,6 +18,8 @@ let DrawingPrompt;
 let storedPrompt;
 let emit;
 let deletedFiles;
+let failSetFlagAt;
+let setFlagCalls;
 
 before(async () => {
   class ApplicationV2 {}
@@ -52,6 +54,8 @@ before(async () => {
 
 beforeEach(() => {
   deletedFiles = [];
+  failSetFlagAt = null;
+  setFlagCalls = 0;
   const assignment = new DrawingAssignment({
     id: "a-saved",
     promptId: "p-save",
@@ -78,6 +82,8 @@ beforeEach(() => {
     id: "p-save",
     getFlag: (moduleId, flag) => moduleId === MODULE_ID && flag === FLAG_PROMPT ? storedPrompt : null,
     setFlag: async (_moduleId, _flag, value) => {
+      setFlagCalls++;
+      if ( setFlagCalls === failSetFlagAt ) throw new Error("simulated incremental persistence failure");
       storedPrompt = structuredClone(value);
       return entry;
     },
@@ -182,6 +188,26 @@ test("Close accepts only a correlated full-quality retained capture and persists
   } finally {
     emit.requestRetainedCapture = originalCapture;
     emit.cancelDrawingPrompt = originalCancel;
+  }
+});
+
+test("Close reports incremental retained-capture persistence failure through the resolution gate", async () => {
+  const assignment = storedPrompt.assignments["a-saved"];
+  assignment.status = STATUS.OPENED;
+  assignment.delivery = { status: "received", generation: 0 };
+  assignment.assets = {};
+  game.users.get("u1").active = true;
+  const originalCapture = emit.requestRetainedCapture;
+  emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
+    requestId, assignmentId,
+    submission: { mode: "staged", staged: { overlayPath: "pending/full.webp", mergedPath: null }, width: 512, height: 512 }
+  });
+  failSetFlagAt = 2;
+  try {
+    await assert.rejects(() => closePrompt("p-save"), error =>
+      error.code === "RETAINED_CAPTURE_FAILED" && error.assignmentIds?.includes("a-saved"));
+  } finally {
+    emit.requestRetainedCapture = originalCapture;
   }
 });
 
