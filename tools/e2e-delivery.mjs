@@ -339,17 +339,23 @@ try {
   // A real active attempt is lost with the page, not timed out in the fixture.
   // The other client already received its invitation and must stay a recipient.
   await blockDelivery([userIds[1]]);
+  await player.evaluate(async () => {
+    const { PlayerDrawingApp } = await import("/modules/drawing-prompts/scripts/apps/player-drawing-app.mjs");
+    deliveryPlayer.reloadOriginalOpen = PlayerDrawingApp.open;
+    // This case isolates GM attempt recovery; the earlier case already proves receipt
+    // does not wait for window rendering. Avoid leaving the successful socket handler
+    // in flight when the test deliberately disconnects the GM.
+    PlayerDrawingApp.open = async () => null;
+  });
   await send("reload-sending", userIds);
   const sendingReload = await waitDelivery("reload-sending", ["received", "sending"]);
-  const receivedReloadId = Object.values(sendingReload.assignments).find(a => a.userId === userIds[0]).id;
-  // Receipt deliberately precedes window rendering. Let the successful recipient's
-  // socket handler finish before disconnecting the GM so only the blocked attempt is
-  // interrupted by the navigation.
-  await player.waitForFunction(id => [...foundry.applications.instances.values()].some(app =>
-    app.assignmentPayload?.assignment?.id === id && app.rendered
-  ), receivedReloadId);
   const missingReloadId = Object.values(sendingReload.assignments).find(a => a.userId === userIds[1]).id;
   await reloadGM();
+  await player.evaluate(async () => {
+    const { PlayerDrawingApp } = await import("/modules/drawing-prompts/scripts/apps/player-drawing-app.mjs");
+    PlayerDrawingApp.open = deliveryPlayer.reloadOriginalOpen;
+    delete deliveryPlayer.reloadOriginalOpen;
+  });
   const recoveredSending = await waitDelivery("reload-sending", ["received", "failed"]);
   assert.equal(recoveredSending.assignments[missingReloadId].delivery.error, "interrupted", "startup recovered the attempt before its old timeout");
   assert.equal(recoveredSending.assignments[missingReloadId].delivery.receivedAt, null);
