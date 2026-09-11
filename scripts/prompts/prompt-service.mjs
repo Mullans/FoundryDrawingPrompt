@@ -118,7 +118,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   const resolvedName = resolveDrawingName(prompt, name);
   if ( !resolvedName ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.nameRequired"));
 
-  const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath && assignment.assets?.oplogPath);
+  const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath);
   const submission = peekMemoryOrCachedSubmission(assignment.id);
   if ( !submission && !alreadySaved ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.pendingSubmissionLost"));
 

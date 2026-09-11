@@ -7,6 +7,8 @@ import { LineTool } from "../scripts/drawing/tools/line-tool.mjs";
 test("LineTool accumulates vertices and commits a stroke with N points", () => {
   installFakeCanvas();
   const engine = new DrawingEngine({ width: 32, height: 32 });
+  const actions = [];
+  engine.onCommittedAction(action => actions.push(action));
   engine.setTool("line");
   const tool = new LineTool();
   const ctx = toolContext(engine);
@@ -19,13 +21,8 @@ test("LineTool accumulates vertices and commits a stroke with N points", () => {
   assert.equal(tool.commit(ctx), true);
   assert.equal(tool.isDrafting(), false);
 
-  const ops = engine.getOpLog().ops;
-  assert.equal(ops.length, 1);
-  assert.equal(ops[0].type, "stroke");
-  assert.equal(ops[0].straight, true);
-  assert.equal(ops[0].points.length, 3);
-  assert.deepEqual(ops[0].points[0], { x: 2, y: 2 });
-  assert.deepEqual(ops[0].points[2], { x: 10, y: 20 });
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].kind, "stroke");
 });
 
 test("LineTool cancel drops the draft without committing", () => {
@@ -38,7 +35,7 @@ test("LineTool cancel drops the draft without committing", () => {
   tool.onPointerDown({ x: 8, y: 8 }, ctx);
   tool.cancel(ctx);
   assert.equal(tool.isDrafting(), false);
-  assert.equal(engine.getOpLog().ops.length, 0);
+  assert.equal(engine.canUndo, false);
 });
 
 test("LineTool commit with fewer than two vertices is a no-op", () => {
@@ -49,12 +46,14 @@ test("LineTool commit with fewer than two vertices is a no-op", () => {
 
   tool.onPointerDown({ x: 4, y: 4 }, ctx);
   assert.equal(tool.commit(ctx), false);
-  assert.equal(engine.getOpLog().ops.length, 0);
+  assert.equal(engine.canUndo, false);
 });
 
 test("LineTool onDoubleClick commits after deduping the trailing click", () => {
   installFakeCanvas();
   const engine = new DrawingEngine({ width: 16, height: 16 });
+  const actions = [];
+  engine.onCommittedAction(action => actions.push(action));
   const tool = new LineTool();
   const ctx = toolContext(engine);
 
@@ -63,16 +62,15 @@ test("LineTool onDoubleClick commits after deduping the trailing click", () => {
   // Second click of a double-click near the previous vertex.
   tool.onPointerDown({ x: 12.5, y: 1.2 }, ctx);
   assert.equal(tool.onDoubleClick({ x: 12.5, y: 1.2 }, ctx), true);
-  const ops = engine.getOpLog().ops;
-  assert.equal(ops.length, 1);
-  assert.equal(ops[0].points.length, 2);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].kind, "stroke");
 });
 
 test("DrawingEngine undo discards an in-progress line draft before history restore", () => {
   installFakeCanvas();
   const engine = new DrawingEngine({ width: 16, height: 16 });
   seedCommittedStroke(engine);
-  assert.equal(engine.getOpLog().ops.length, 1);
+  assert.equal(engine.canUndo, true);
 
   beginLineDraft(engine, [
     { x: 1, y: 1 },
@@ -81,36 +79,36 @@ test("DrawingEngine undo discards an in-progress line draft before history resto
   assert.equal(engine.undo(), true);
   // If the draft were still active, commit would succeed and re-pollute history.
   assert.equal(engine.commitLineDraft(), false);
-  assert.equal(engine.getOpLog().pointer, 0);
-  assert.equal(engine.getOpLog().ops.length, 1);
+  assert.equal(engine.canUndo, false);
+  assert.equal(engine.canRedo, true);
 });
 
 test("DrawingEngine clearLayer discards an in-progress line draft", () => {
   installFakeCanvas();
   const engine = new DrawingEngine({ width: 16, height: 16 });
+  seedCommittedStroke(engine);
   beginLineDraft(engine, [
     { x: 2, y: 2 },
     { x: 8, y: 8 }
   ]);
   engine.clearLayer();
   assert.equal(engine.commitLineDraft(), false);
-  assert.equal(engine.getOpLog().ops.at(-1)?.type, "clear");
+  assert.equal(engine.canUndo, true);
 });
 
 test("DrawingEngine commitLineDraft before submit keeps pixels and op log aligned", () => {
   installFakeCanvas();
   const engine = new DrawingEngine({ width: 16, height: 16 });
+  const actions = [];
+  engine.onCommittedAction(action => actions.push(action));
   beginLineDraft(engine, [
     { x: 1, y: 1 },
     { x: 12, y: 4 }
   ]);
   assert.equal(engine.commitLineDraft(), true);
   assert.equal(engine.cancelLineDraft(), false);
-  const ops = engine.getOpLog().ops;
-  assert.equal(ops.length, 1);
-  assert.equal(ops[0].type, "stroke");
-  assert.equal(ops[0].straight, true);
-  assert.equal(ops[0].points.length, 2);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].kind, "stroke");
 });
 
 function toolContext(engine) {
@@ -205,20 +203,21 @@ function installFakeCanvas() {
 }
 
 class FakeContext {
+  marker = 0;
   save() {}
   restore() {}
-  clearRect() {}
-  drawImage() {}
+  clearRect() { this.marker = 0; }
+  drawImage(canvas) { this.marker = canvas?.context?.marker ?? this.marker; }
   beginPath() {}
   arc() {}
-  fill() {}
+  fill() { this.marker += 1; }
   moveTo() {}
   quadraticCurveTo() {}
   lineTo() {}
-  stroke() {}
+  stroke() { this.marker += 1; }
   setTransform() {}
   getImageData(_x, _y, width, height) {
-    return { data: new Uint8ClampedArray(width * height * 4), width, height };
+    return { data: new Uint8ClampedArray(width * height * 4).fill(this.marker), width, height };
   }
-  putImageData() {}
+  putImageData(image) { this.marker = image.data[0] ?? 0; }
 }

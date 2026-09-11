@@ -308,13 +308,11 @@ export async function persistSocketSubmission(assignmentId, submission) {
       overlay: submission.overlay?.format ?? "webp",
       merged: hasMerged ? submission.merged?.format ?? "webp" : null
     },
-    opLog: submission.opLog,
     width: submission.width,
     height: submission.height,
     originalWidth: submission.originalWidth,
     originalHeight: submission.originalHeight,
     wireScaled: submission.wireScaled,
-    opLogTruncated: submission.opLogTruncated,
     receiptTs: submission.receiptTs
   };
 }

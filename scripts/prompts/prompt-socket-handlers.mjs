@@ -56,10 +56,11 @@ export function getSocketHandlers() {
   };
 }
 
-function handleClearRecovery(identity) {
+async function handleClearRecovery(identity) {
   if ( identity?.userId !== game.user.id ) return false;
   try {
     assertPromptGmMatchesInitiator(getSocketInitiatorId(this), identity?.gmUserId);
+    await PlayerDrawingApp.clearRecoveryForIdentity(identity);
     return clearRecoveryCopy(identity);
   } catch (err) {
     console.debug("drawing-prompts | ignored invalid Recovery cleanup", err);

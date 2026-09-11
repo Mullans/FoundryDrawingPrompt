@@ -255,6 +255,7 @@ test("client cancellation during automatic receipt prevents a late OPEN window",
 
 test("Recovery cleanup accepts only the Prompt's owning GM", async () => {
   const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { PlayerDrawingApp } = await import("../scripts/apps/player-drawing-app.mjs");
   const { saveRecoveryCopy } = await import("../scripts/drawing/recovery-copy.mjs");
   const { CALLS } = await import("../scripts/socket.mjs");
   const priorUser = game.user;
@@ -272,13 +273,16 @@ test("Recovery cleanup accepts only the Prompt's owning GM", async () => {
     assignmentId: "assignment", promptId: "prompt", width: 512, height: 512
   };
   try {
+    const originalClear = PlayerDrawingApp.clearRecoveryForIdentity;
+    PlayerDrawingApp.clearRecoveryForIdentity = async () => {};
     saveRecoveryCopy(identity, { ops: [{ type: "clear", id: "clear", ts: 1 }], pointer: 1 });
     const handler = getSocketHandlers()[CALLS.CLEAR_RECOVERY];
     const forged = { ...identity, gmUserId: "gm-other" };
-    assert.equal(handler.call({ socketdata: { userId: "gm-other" } }, forged), false);
+    assert.equal(await handler.call({ socketdata: { userId: "gm-other" } }, forged), false);
     assert.deepEqual(removed, []);
-    assert.equal(handler.call({ socketdata: { userId: "gm-owner" } }, identity), true);
+    assert.equal(await handler.call({ socketdata: { userId: "gm-owner" } }, identity), true);
     assert.equal(removed.length, 1);
+    PlayerDrawingApp.clearRecoveryForIdentity = originalClear;
   } finally {
     game.user = priorUser;
     if ( priorStorage === undefined ) delete globalThis.localStorage;

@@ -16,11 +16,15 @@ Approved product rules for prompt setup, initial delivery, drawing recovery, clo
 
 ## Ongoing drawing recovery
 
-- The player browser keeps the ongoing Recovery copy in local storage. It retains the unfinished draft and its undo/redo history.
+- A live editing session keeps foreground state and bounded Undo/Redo in memory when its window closes. Closed sessions use a 128 MiB player-local LRU cache; reopening the exact world/GM/player/Prompt/Assignment/dimensions identity reattaches that session.
+- Completed brush, erase, line, Fill, and Clear actions use immutable 128×128 foreground tile versions. One completed action is one Undo step. At most 25 actions, including Redo, are retained; pixel and metadata budgets may expire older actions sooner without changing visible artwork.
+- Undo and Redo install saved pixels by swapping one directional version reference per changed integer-addressed tile. They do not replay drawing commands or use rolling full-canvas checkpoints. The sparse current map omits transparent tiles, and one shared transparent sentinel makes Clear undoable without transparent after-image buffers.
+- IndexedDB Recovery stores stable immutable tile versions separately from generations. Consecutive saves write only missing versions; artwork and optional history reference the same records. Artwork publishes first, missing or invalid history cannot prevent artwork restoration, and a reload must not discard valid saved history merely because it is a reload.
 - Do not send periodic full-quality backup copies to the GM. Quick GM previews remain reduced, transient review images and are never recovery material.
 - A local Recovery copy takes precedence over every GM-held capture. Use a GM-held fallback only when the local Recovery copy is missing.
 - A GM-held capture is eligible as fallback only when it belongs to the same Assignment and contains usable full-quality Submission image data. Use the newest available capture that meets both conditions. Quick GM previews and Saved previews are never eligible.
 - When editable history is missing, show a dialog with the exact text `History not found.` and an OK action. Restore the eligible fallback when one is available; otherwise open a blank drawing. A restored image without history is a flat starting image, not reconstructed undo/redo state.
+- Recovery identity includes world, owning GM, player, Prompt, Assignment, and exact dimensions. Storage failures never interrupt drawing, produce at most one warning per page session, and retry on a later idle save. Permanent Prompt deletion clears matching retained sessions and local generations.
 
 ## Closing and reopening a Prompt
 

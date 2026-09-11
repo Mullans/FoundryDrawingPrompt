@@ -253,7 +253,7 @@ async function retainAvailablePreviews(prompt, previews) {
       const format = /^data:image\/png/i.test(dataUrl) ? "png" : "webp";
       const stored = await persistSocketSubmission(assignment.id, {
         overlay: { dataUrl, format }, width: prompt.canvasWidth, height: prompt.canvasHeight,
-        receiptTs: Date.now(), opLog: { ops: [], pointer: 0 }
+        receiptTs: Date.now()
       });
       assignment.retainedCapture = {
         kind: "saved-preview", receiptTs: stored.receiptTs,

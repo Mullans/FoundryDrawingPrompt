@@ -10,11 +10,6 @@ import { decodeImageToRgba, resolveSubmissionOverlaySize } from "../prompts/dual
  */
 export async function restoreEngineFromSubmission(engine, submission, prompt) {
   if ( !submission ) return false;
-  const canUseOpLog = Boolean(submission.opLog?.ops?.length) && !submission.opLogTruncated;
-  if ( canUseOpLog ) {
-    engine.loadOpLog(submission.opLog);
-    return true;
-  }
   const overlaySrc = resolveOverlaySource(submission);
   if ( !overlaySrc ) return false;
   const { width, height } = resolveSubmissionOverlaySize(submission, prompt);
