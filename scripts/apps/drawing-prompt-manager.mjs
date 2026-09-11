@@ -333,7 +333,16 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       do {
         this.#refreshRequested = false;
         if ( this.#closed ) return;
-        if ( this.activePrompt?.id ) this.activePrompt = loadPrompt(this.activePrompt.id) ?? this.activePrompt;
+        if ( this.activePrompt?.id ) {
+          const latest = loadPrompt(this.activePrompt.id);
+          if ( !latest ) {
+            this.#syncDraftFromForm();
+            this.#savedDraftSignature = this.#draftSignature();
+            await this.close();
+            return;
+          }
+          this.activePrompt = latest;
+        }
         else if ( !this.isSending ) await this.adoptMostRecentActivePrompt();
         if ( this.#closed ) return;
         await this.render({ parts: ["body"] });
@@ -460,12 +469,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#syncDraftFromForm();
     if ( this.#draftSignature() === this.#savedDraftSignature ) return true;
     const choice = await DialogV2.wait({
-      window: { title: "Unsaved prompt changes" },
-      content: "<p>Save changes to this Prompt before continuing?</p>",
+      window: { title: "DRAWING-PROMPTS.manager.unsavedDialog.title" },
+      content: `<p>${game.i18n.localize("DRAWING-PROMPTS.manager.unsavedDialog.content")}</p>`,
       buttons: [
         { action: "save", label: game.i18n.localize("DRAWING-PROMPTS.manager.actions.save"), callback: () => "save" },
-        { action: "discard", label: "Discard", callback: () => "discard" },
-        { action: "cancel", label: "Cancel", callback: () => "cancel" }
+        { action: "discard", label: game.i18n.localize("DRAWING-PROMPTS.manager.unsavedDialog.discard"), callback: () => "discard" },
+        { action: "cancel", label: game.i18n.localize("DRAWING-PROMPTS.manager.unsavedDialog.cancel"), callback: () => "cancel" }
       ],
       rejectClose: false,
       modal: true
@@ -496,6 +505,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const hasActivePrompt = Boolean(this.activePrompt && !isDraft && (!delivery || delivery.hasRecipients));
     const viewAssetPath = resolveFramingViewAssetPath(selectedAssignment, framingView);
     const savedAndGateOpen = isSaveGateOpen(selectedAssignment);
+    const archivedReadOnly = this.activePrompt?.lifecycleStatus === PROMPT_STATUS.ARCHIVED;
     return {
       draft: this.#draftContext(),
       rows,
@@ -519,18 +529,18 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
       canCancelAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.isActive)),
       canResendAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
-      canFinishPrompt: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.OPEN,
+      canClosePrompt: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.OPEN,
       canOpenPromptToPlayers: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.CLOSED,
-      archivedReadOnly: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.ARCHIVED,
+      archivedReadOnly,
       promptQueue: this.#promptQueueContext(),
-      selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !savedAndGateOpen,
+      selectedCanSave: !archivedReadOnly && selectedAssignment?.status === STATUS.SUBMITTED && !savedAndGateOpen,
       selectedIsSaved: savedAndGateOpen,
       selectedSavedTooltip: viewAssetPath
         ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: viewAssetPath })
         : selectedAssignment?.primaryImagePath
           ? game.i18n.format("DRAWING-PROMPTS.manager.savedTooltip", { path: selectedAssignment.primaryImagePath })
           : "",
-      selectedCanPlace: canPlaceFramingView(selectedAssignment, framingView),
+      selectedCanPlace: !archivedReadOnly && canPlaceFramingView(selectedAssignment, framingView),
       saveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.manager.actions.saveFirst"),
       transformSaveFirstTooltip: game.i18n.localize("DRAWING-PROMPTS.transform.saveFirst"),
       framingViewToggle: this.#framingViewToggleContext(hasSource, framingView)
@@ -1277,6 +1287,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const isExpired = this.activePrompt?.timerStatus === "running"
       ? assignment?.isExpired(this.activePrompt.deadlineAt, now) ?? false
       : false;
+    const archivedReadOnly = this.activePrompt?.lifecycleStatus === PROMPT_STATUS.ARCHIVED;
     return {
       user,
       userId: user.id,
@@ -1302,10 +1313,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       overtimeLabel: assignment?.overtimeMs ? formatClock(assignment.overtimeMs) : "",
       windowOpen: assignment ? Boolean(this.windowOpenByAssignment.get(assignment.id)) : false,
       canSelectPreview: Boolean(assignment),
-      canResend: Boolean(assignment && assignment.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(assignment.status)),
-      canCancel: Boolean(assignment?.isActive),
-      canReopen: Boolean(assignment && [STATUS.SUBMITTED, STATUS.REJECTED].includes(assignment.status)),
-      canShow: Boolean(assignment?.isActive),
+      canResend: !archivedReadOnly && Boolean(assignment && assignment.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(assignment.status)),
+      canCancel: !archivedReadOnly && Boolean(assignment?.isActive),
+      canReopen: !archivedReadOnly && Boolean(assignment && [STATUS.SUBMITTED, STATUS.REJECTED].includes(assignment.status)),
+      canShow: !archivedReadOnly && Boolean(assignment?.isActive),
       isSubmitted: assignment?.status === STATUS.SUBMITTED,
       isSaved: Boolean(assignment?.primaryImagePath),
       savedTooltip: assignment?.primaryImagePath
@@ -1563,8 +1574,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const promptId = this.activePrompt.id;
     await this.#runDeliveryAttempt(async () => {
       const { continuePromptDeliveries } = await import("../prompts/prompt-lifecycle.mjs");
-      const prompt = await continuePromptDeliveries(promptId);
-      return prompt.deliverySummary.hasRecipients ? prompt : null;
+      return continuePromptDeliveries(promptId);
     });
   }
 
@@ -1575,8 +1585,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const promptId = this.activePrompt.id;
     await this.#runDeliveryAttempt(async () => {
       const { continuePromptDeliveries } = await import("../prompts/prompt-lifecycle.mjs");
-      await continuePromptDeliveries(promptId);
-      return null;
+      return continuePromptDeliveries(promptId);
     });
   }
 

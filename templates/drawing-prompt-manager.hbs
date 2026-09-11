@@ -216,16 +216,16 @@
       <i class="fa-solid fa-box-archive" inert></i>
       <span>{{localize "DRAWING-PROMPTS.library.title"}}</span>
     </button>
-    {{#if canFinishPrompt}}
+    {{#if canClosePrompt}}
     <button class="primary" type="button" data-action="closePrompt">
       <i class="fa-solid fa-flag-checkered" inert></i>
-      <span>{{localize "DRAWING-PROMPTS.manager.actions.finishPrompt"}}</span>
+      <span>{{localize "DRAWING-PROMPTS.manager.actions.closePrompt"}}</span>
     </button>
     {{/if}}
     {{#if canOpenPromptToPlayers}}
     <button class="primary" type="button" data-action="openPromptToPlayers">
       <i class="fa-solid fa-door-open" inert></i>
-      <span>Open to Players</span>
+      <span>{{localize "DRAWING-PROMPTS.manager.actions.openToPlayers"}}</span>
     </button>
     {{/if}}
     <button type="button" data-action="cancelAll" {{#if canCancelAll}}{{else}}disabled{{/if}}>

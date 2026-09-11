@@ -8,7 +8,7 @@
  * - Public re-exports preserving `import … from "./prompt-service.mjs"` and `api.mjs`
  *
  * Carved out:
- * - {@link ./prompt-lifecycle.mjs} — create/send/finish/reopen/resend/cancel/redeliver
+ * - {@link ./prompt-lifecycle.mjs} — create/send/close/reopen/resend/cancel/redeliver
  * - {@link ./assignment-placement.mjs} — Place Tile/Token + Transform
  * - {@link ./pending-submission.mjs} — pending store, cache, restoration payloads
  * - {@link ./prompt-timer-bridge.mjs} — timer wrappers over timer-service
@@ -45,7 +45,6 @@ export { getAssignment, getPrompt } from "./prompt-context.mjs";
 export {
   cancelAllAssignments,
   cancelAssignment,
-  createAndSendPrompt,
   sendPrompt,
   createPrompt,
   updatePrompt,
@@ -106,8 +105,11 @@ export async function openPromptLibrary() {
     ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
     return;
   }
-  const { PromptLibrary } = await import("../apps/prompt-library.mjs");
-  await PromptLibrary.open();
+  const [{ PromptLibrary }, { DrawingPromptManager }] = await Promise.all([
+    import("../apps/prompt-library.mjs"),
+    import("../apps/drawing-prompt-manager.mjs")
+  ]);
+  await PromptLibrary.open({ activePromptId: () => DrawingPromptManager.activePromptId() });
 }
 
 /**

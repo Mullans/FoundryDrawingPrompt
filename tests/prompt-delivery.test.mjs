@@ -44,7 +44,7 @@ const draft = { canvasWidth: 512, canvasHeight: 512, selectedUserIds: ["u1"], ti
 test("awaitDeliveries false returns while the actual OPEN transport is unresolved", async () => {
   let release;
   emit.openDrawingPrompt = () => new Promise(resolve => { release = resolve; });
-  const sending = lifecycle.createAndSendPrompt({ ...draft, awaitDeliveries: false });
+  const sending = lifecycle.sendPrompt({ ...draft, awaitDeliveries: false });
   const result = await Promise.race([sending.then(() => "returned"), new Promise(resolve => setTimeout(() => resolve("blocked"), 30))]);
   const prompt = await sending;
   await new Promise(resolve => setImmediate(resolve));
@@ -58,7 +58,7 @@ test("default awaited delivery resolves on automatic receipt without waiting for
     await delivery.acknowledgePromptDelivery("u1", payload.assignment.id, "u1");
     return new Promise(() => {});
   };
-  const prompt = await lifecycle.createAndSendPrompt(draft);
+  const prompt = await lifecycle.sendPrompt(draft);
   assert.equal(prompt.deliverySummary.received.length, 1);
   assert.equal(prompt.deliverySummary.isSending, false);
   assert.equal(stored.assignments.a1.delivery.status, "received");
@@ -112,7 +112,7 @@ test("initial receipts wait for every delivery to settle and the timer starts at
   };
   Date.now = () => now;
   try {
-    const sending = lifecycle.createAndSendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
+    const sending = lifecycle.sendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
     await bothDispatched.promise;
     await firstTimerCleared.promise;
     assert.equal(firstReceiptResolved, false, "a successful recipient must remain gated while another invitation is unresolved");
@@ -144,7 +144,7 @@ test("unconfirmed dispatch completion is bounded, Retry keeps identity, and repe
   const originalTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn, ms, ...args) => originalTimeout(fn, Math.min(ms, 15), ...args);
   try {
-    const prompt = await lifecycle.createAndSendPrompt(draft);
+    const prompt = await lifecycle.sendPrompt(draft);
     assert.deepEqual(prompt.deliverySummary.failed.map(a => a.userName), ["Ada"]);
     let calls = 0;
     emit.openDrawingPrompt = async (_user, payload) => {
@@ -167,7 +167,7 @@ test("Continue withdraws missing invitation, late authenticated contact fails, r
     else throw new Error("offline transport");
   };
   emit.cancelDrawingPrompt = async () => {};
-  const prompt = await lifecycle.createAndSendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
+  const prompt = await lifecycle.sendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
   const deadline = prompt.deadlineAt;
   const continued = await lifecycle.continuePromptDeliveries(prompt.id);
   assert.equal(continued.deliverySummary.received.length, 1);
@@ -187,7 +187,7 @@ test("Continue withdraws missing invitation, late authenticated contact fails, r
 test("zero-success Continue retains a saved Draft and rejects late receipt", async () => {
   emit.openDrawingPrompt = async () => { throw new Error("transport unavailable"); };
   emit.cancelDrawingPrompt = async () => {};
-  const prompt = await lifecycle.createAndSendPrompt(draft);
+  const prompt = await lifecycle.sendPrompt(draft);
   const continued = await lifecycle.continuePromptDeliveries(prompt.id);
   assert.equal(continued.deliverySummary.hasRecipients, false);
   assert.equal(entries.size, 1);
@@ -198,17 +198,17 @@ test("zero-success Continue retains a saved Draft and rejects late receipt", asy
 
 test("offline invitations enter the standard delivery warning flow while GM recipients remain invalid", async () => {
   game.users.get("u1").active = false;
-  const offline = await lifecycle.createAndSendPrompt(draft);
+  const offline = await lifecycle.sendPrompt(draft);
   assert.equal(offline.deliverySummary.failed[0].status, "failed");
   assert.equal(Object.values(offline.assignments)[0].delivery.error, "offline");
   assert.equal(entries.size, 1);
   entries.clear(); stored = null;
   game.users.get("u1").active = true;
   game.users.get("u1").isGM = true;
-  await assert.rejects(lifecycle.createAndSendPrompt(draft), /onlineRecipientsRequired/);
+  await assert.rejects(lifecycle.sendPrompt(draft), /onlineRecipientsRequired/);
   game.users.get("u1").isGM = false;
   emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
-  const prompt = await lifecycle.createAndSendPrompt(draft);
+  const prompt = await lifecycle.sendPrompt(draft);
   game.users.get("u1").active = false;
   await delivery.deliverPromptAssignments(prompt);
   assert.equal(prompt.deliverySummary.received.length, 1);
@@ -216,7 +216,7 @@ test("offline invitations enter the standard delivery warning flow while GM reci
 
 test("receipt authorization rejects spoofed wire identity and unknown initiator", async () => {
   emit.openDrawingPrompt = async () => { throw new Error("failed"); };
-  const prompt = await lifecycle.createAndSendPrompt(draft);
+  const prompt = await lifecycle.sendPrompt(draft);
   for ( const [initiator, claimed] of [["u2", "u1"], [null, "u1"], ["u1", "u2"]] ) {
     assert.equal((await delivery.acknowledgePromptDelivery(initiator, "a1", claimed)).accepted, false);
   }
@@ -227,7 +227,7 @@ test("framing failure removes the prompt before any invitation is dispatched", a
   let dispatched = false;
   emit.openDrawingPrompt = async () => { dispatched = true; };
   globalThis.Image = class { constructor() { throw new Error("Image unavailable"); } };
-  await assert.rejects(lifecycle.createAndSendPrompt({ ...draft, background: { sourceType: "file", path: "unavailable.webp" } }), /Image unavailable/);
+  await assert.rejects(lifecycle.sendPrompt({ ...draft, background: { sourceType: "file", path: "unavailable.webp" } }), /Image unavailable/);
   assert.equal(entries.size, 0);
   assert.equal(dispatched, false);
 });
@@ -238,7 +238,7 @@ test("inviting another player during an existing attempt dispatches the addition
     if ( userId === "u1" ) { firstPayload = payload; return; }
     await delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
   };
-  const prompt = await lifecycle.createAndSendPrompt({ ...draft, awaitDeliveries: false });
+  const prompt = await lifecycle.sendPrompt({ ...draft, awaitDeliveries: false });
   await new Promise(resolve => setImmediate(resolve));
   const invitation = lifecycle.invitePromptRecipients(prompt.id, ["u2"]);
   await delivery.acknowledgePromptDelivery("u1", firstPayload.assignment.id, "u1");
@@ -321,7 +321,7 @@ test("GM Cancel then Resend advances the invitation and opens the player window 
     await delivery.acknowledgePromptDelivery(userId, wire.assignment.id, userId, wire.assignment.delivery.generation);
   };
   emit.cancelDrawingPrompt = async () => {};
-  const prompt = await lifecycle.createAndSendPrompt(draft);
+  const prompt = await lifecycle.sendPrompt(draft);
   const originalPayload = structuredClone(payload);
   const gm = game.user;
   const originalOpen = PlayerDrawingApp.open;
@@ -386,7 +386,7 @@ test("a delayed duplicate OPEN cannot cancel or close an established submission"
 
 test("receipt distinguishes an inactive established assignment from a withdrawn invitation", async () => {
   emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
-  await lifecycle.createAndSendPrompt(draft);
+  await lifecycle.sendPrompt(draft);
   stored.assignments.a1.status = "submitted";
   assert.deepEqual(await delivery.acknowledgePromptDelivery("u1", "a1", "u1"), { accepted: false, reason: "inactive-assignment" });
   assert.deepEqual(await delivery.acknowledgePromptDelivery("u1", "a1", "u1", 1), { accepted: false, reason: "stale-invitation" });
@@ -401,7 +401,7 @@ test("assignmentSent fires once per confirmed attempt including retry and ignore
     await delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
     await delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
   };
-  const prompt = await lifecycle.createAndSendPrompt(draft);
+  const prompt = await lifecycle.sendPrompt(draft);
   assert.deepEqual(sent, [[prompt.id, "a1"]]);
   await lifecycle.resendAssignment("a1");
   assert.deepEqual(sent, [[prompt.id, "a1"], [prompt.id, "a1"]]);
@@ -414,7 +414,7 @@ test("resendAll restarts every cancelled assignment after persistence replaces t
     await delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId, payload.assignment.delivery.generation);
   };
   emit.cancelDrawingPrompt = async () => {};
-  const prompt = await lifecycle.createAndSendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
+  const prompt = await lifecycle.sendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
   await lifecycle.cancelAllAssignments(prompt.id);
   dispatched.length = 0;
   await lifecycle.resendAllAssignments(prompt.id);
@@ -455,7 +455,7 @@ test("delayed resent OPEN after a second GM cancellation cannot install an activ
 for ( const interruptedStatus of ["pending", "sending"] ) {
   test(`GM reload makes persisted ${interruptedStatus} invitations actionable without inventing receipt`, async () => {
     emit.openDrawingPrompt = async () => { throw new Error("transport unavailable"); };
-    const prompt = await lifecycle.createAndSendPrompt(draft);
+    const prompt = await lifecycle.sendPrompt(draft);
     stored.assignments.a1.delivery.status = interruptedStatus;
     const { loadPrompt } = await import("../scripts/prompts/persistence-service.mjs");
     assert.equal(loadPrompt(prompt.id).deliverySummary.needsResolution, false);
@@ -470,7 +470,7 @@ for ( const interruptedStatus of ["pending", "sending"] ) {
 
 test("rejected receipt authorization is logged without accepting the forged identity", async () => {
   emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
-  await lifecycle.createAndSendPrompt(draft);
+  await lifecycle.sendPrompt(draft);
   const originalDebug = console.debug;
   const logs = [];
   console.debug = (...args) => logs.push(args);
@@ -483,7 +483,7 @@ test("rejected receipt authorization is logged without accepting the forged iden
 test("startup reconciliation leaves live delivery deadlines in control", async () => {
   let wire;
   emit.openDrawingPrompt = async (_userId, payload) => { wire = payload; };
-  const prompt = await lifecycle.createAndSendPrompt({ ...draft, awaitDeliveries: false });
+  const prompt = await lifecycle.sendPrompt({ ...draft, awaitDeliveries: false });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(stored.assignments.a1.delivery.status, "sending");
   await delivery.recoverInterruptedPromptDeliveries();
@@ -495,7 +495,7 @@ test("startup reconciliation leaves live delivery deadlines in control", async (
 
 test("recovery preserves confirmed membership and ignores another GM's unresolved invitations", async () => {
   emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
-  await lifecycle.createAndSendPrompt(draft);
+  await lifecycle.sendPrompt(draft);
   await delivery.recoverInterruptedPromptDeliveries();
   assert.equal(stored.assignments.a1.delivery.status, "received");
   stored.gmUserId = "other-gm";
@@ -506,7 +506,7 @@ test("recovery preserves confirmed membership and ignores another GM's unresolve
 
 test("Retry queues behind startup reconciliation and reuses the interrupted assignment", async () => {
   emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
-  const prompt = await lifecycle.createAndSendPrompt(draft);
+  const prompt = await lifecycle.sendPrompt(draft);
   stored.assignments.a1.delivery.status = "pending";
   const entry = entries.get(prompt.id);
   const originalSave = entry.setFlag;

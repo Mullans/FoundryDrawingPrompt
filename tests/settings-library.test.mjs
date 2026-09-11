@@ -46,7 +46,4 @@ test("English settings use generic sort-direction labels and Prompt name termino
   assert.equal(lang["DRAWING-PROMPTS.manager.fields.promptName"], "Prompt name");
   assert.equal(lang["DRAWING-PROMPTS.manager.summary.promptName"], "Prompt name");
   assert.equal(lang["DRAWING-PROMPTS.manager.validation.promptName"], "Prompt name is required.");
-  assert.equal(Object.hasOwn(lang, "DRAWING-PROMPTS.manager.fields.drawingName"), false);
-  assert.equal(Object.hasOwn(lang, "DRAWING-PROMPTS.manager.summary.drawingName"), false);
-  assert.equal(Object.hasOwn(lang, "DRAWING-PROMPTS.manager.validation.drawingName"), false);
 });

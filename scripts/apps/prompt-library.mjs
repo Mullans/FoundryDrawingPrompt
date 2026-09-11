@@ -124,9 +124,10 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
 
   static PARTS = { body: { template: "modules/drawing-prompts/templates/prompt-library.hbs" } };
 
-  static async open() {
+  static async open(dependencies = null) {
     if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
-    const app = this.#instance ??= new this();
+    const app = this.#instance ??= new this({}, dependencies ?? {});
+    if ( dependencies?.activePromptId ) app.activePromptId = dependencies.activePromptId;
     await app.render({ force: true });
     app.bringToFront();
     return app;
@@ -211,9 +212,9 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
     return labels.map(([value, label]) => ({ value, label, selected: value === this.#sortDirection }));
   }
 
-  static async #onNew() { await this.openNew(); }
-  static async #onOpen(_event, target) { await this.openManager(target.dataset.promptId); }
-  static async #onOpenCopy(_event, target) { await this.openCopy(target.dataset.promptId); }
+  static async #onNew() { await this.openNew(); await this.render({ parts: ["body"] }); }
+  static async #onOpen(_event, target) { await this.openManager(target.dataset.promptId); await this.render({ parts: ["body"] }); }
+  static async #onOpenCopy(_event, target) { await this.openCopy(target.dataset.promptId); await this.render({ parts: ["body"] }); }
   static async #onToggleArchived() { this.#showArchived = !this.#showArchived; await this.render({ parts: ["body"] }); }
   static async #onShowArchived() { this.#showArchived = true; await this.render({ parts: ["body"] }); }
 
@@ -233,7 +234,11 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
     const confirmed = await DialogV2.confirm({ window: { title: "DRAWING-PROMPTS.library.deleteTitle" }, content: `<p>${game.i18n.localize("DRAWING-PROMPTS.library.deleteConfirm")}</p>`, yes: { label: "DRAWING-PROMPTS.library.delete", class: "dp-danger" }, rejectClose: false, modal: true });
     if ( !confirmed ) return;
     const service = this.lifecycleServices ?? await import("../prompts/prompt-service.mjs");
-    await service.deletePrompt(target.dataset.promptId, { confirmed: true });
-    await this.render({ parts: ["body"] });
+    try {
+      await service.deletePrompt(target.dataset.promptId, { confirmed: true });
+      await this.render({ parts: ["body"] });
+    } catch (error) {
+      ui.notifications.error(error.message);
+    }
   }
 }

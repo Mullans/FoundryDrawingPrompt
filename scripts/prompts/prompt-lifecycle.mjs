@@ -1,5 +1,5 @@
 /**
- * Prompt lifecycle — create/send, finish, cancel, reopen, resend, redeliver.
+ * Prompt lifecycle — create/send, close, cancel, reopen, resend, redeliver.
  */
 
 import { FILES_UPLOAD_PERMISSION, INTERNAL, MODULE_ID, PROMPT_STATUS, STATUS } from "../constants.mjs";
@@ -134,9 +134,6 @@ export async function sendPrompt(draftOrId) {
   if ( prompt.deliverySummary.hasRecipients ) Hooks.callAll("drawing-prompts.promptSent", prompt);
   return prompt;
 }
-
-/** @deprecated Internal compatibility for the pre-library test suite. */
-export const createAndSendPrompt = sendPrompt;
 
 /** Retry only unresolved invitations, preserving their assignment identities. */
 export async function retryPromptDeliveries(promptId) {
@@ -290,7 +287,7 @@ export async function cancelAllAssignments(promptId) {
 }
 
 /**
- * Finish a prompt, cancelling still-active assignments and dropping unsaved submission payloads.
+ * Close a prompt while retaining recoverable captures and cancelling active Assignments.
  * @param {string} promptId Prompt id.
  * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
  */
@@ -537,9 +534,19 @@ function requireOwnedPrompt(promptId) {
  */
 export async function reopenAssignment(assignmentId, userId = null) {
   assertGM();
-  const { prompt, assignment } = requirePromptAssignment(assignmentId);
+  const { prompt, assignment: originalAssignment } = requirePromptAssignment(assignmentId);
+  let assignment = originalAssignment;
   assertPromptOwner(prompt);
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
+  if ( prompt.lifecycleStatus === PROMPT_STATUS.CLOSED ) {
+    prompt.markReopened();
+    if ( prompt.timerStatus !== "none" ) {
+      prompt.timerState = { timerStatus: "paused", deadlineAt: null, remainingMs: prompt.remainingMs };
+    }
+    await savePrompt(prompt, { lifecycleOnly: true });
+    Hooks.callAll("drawing-prompts.promptReopened", prompt);
+    assignment = prompt.getAssignment(assignmentId);
+  }
   const restorationSubmission = await resolveRestorationSubmission(assignment, prompt);
   if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
   assignment.markReopened();

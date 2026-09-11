@@ -106,7 +106,7 @@ test("New, Open, and Open Copy delegate without mutating lifecycle", async () =>
   await PromptLibrary.DEFAULT_OPTIONS.actions.openPrompt.call(library, null, target);
   await PromptLibrary.DEFAULT_OPTIONS.actions.openCopy.call(library, null, target);
   assert.deepEqual(calls, [["new"], ["open", "p-exact"], ["copy", "p-exact"]]);
-  assert.deepEqual(library.renderCalls, []);
+  assert.deepEqual(library.renderCalls, [{ parts: ["body"] }, { parts: ["body"] }, { parts: ["body"] }]);
 });
 
 test("Archive and Restore apply to the selected Prompt and refresh", async () => {

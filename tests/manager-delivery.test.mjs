@@ -169,12 +169,35 @@ test("zero receipts use a separate modal with disabled Continue and Back to setu
   assert.equal(setup.canSend, true);
   assert.equal(setup.deliveryFeedback, null);
   assert.equal(entries.size, 1, "Back retains the auto-saved Draft in the library");
+  assert.equal(manager.activePrompt?.id, [...entries.keys()][0], "Back keeps editing the retained Draft identity");
+  assert.equal(manager.activePrompt?.lifecycleStatus, "draft");
   assert.equal(manager.draft.promptText, "Keep this prompt");
   assert.equal(manager.draft.promptName, "Birds");
   assert.equal(manager.draft.canvasWidth, 640);
   assert.equal(manager.draft.canvasHeight, 480);
   assert.equal(manager.draft.timerSeconds, 120);
   assert.deepEqual([...manager.draft.selectedUserIds], ["u1"]);
+});
+
+test("Archived Prompt inspection disables assignment mutations", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({
+    id: "archived",
+    gmUserId: "gm",
+    lifecycleStatus: "archived",
+    assignments: {
+      submitted: { id: "submitted", userId: "u1", userName: "Ada", status: "submitted", delivery: { status: "received" }, assets: { overlayPath: "drawing.webp" } }
+    }
+  });
+  manager.selectedAssignmentId = "submitted";
+  const context = await manager._prepareContext({});
+  assert.equal(context.archivedReadOnly, true);
+  assert.equal(context.selectedCanSave, false);
+  assert.equal(context.selectedCanPlace, false);
+  assert.equal(context.rows[0].canReopen, false);
+  assert.equal(context.rows[0].canCancel, false);
+  assert.equal(context.rows[0].canResend, false);
 });
 
 test("partial delivery modal uses the requested Continue explanation", async () => {

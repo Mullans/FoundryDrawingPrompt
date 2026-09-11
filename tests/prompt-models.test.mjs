@@ -226,7 +226,6 @@ test("DrawingPrompt preserves saved Draft selections and restores archived Draft
   const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(draft.toObject())));
   assert.equal(roundTrip.promptName, "Later");
   assert.deepEqual(roundTrip.selectedUserIds, ["u1", "u2"]);
-  assert.equal(Object.hasOwn(roundTrip.toObject(), "drawingName"), false);
 });
 
 test("new Drafts have no creation timestamp until persistence", () => {

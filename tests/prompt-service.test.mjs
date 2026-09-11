@@ -75,7 +75,7 @@ beforeEach(() => {
     id: "p-save",
     gmUserId: "gm1",
     promptText: "Draw a griffin",
-    drawingName: "Griffin",
+    promptName: "Griffin",
     assignments: { "a-saved": assignment }
   };
   const entry = {
@@ -379,6 +379,10 @@ test("reopenAssignment does not persist pendingSubmission to JournalEntry", asyn
   };
   storedPrompt.canvasWidth = 1024;
   storedPrompt.canvasHeight = 768;
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  storedPrompt.timerStatus = "paused";
+  storedPrompt.deadlineAt = null;
+  storedPrompt.remainingMs = 20_000;
   const assignment = storedPrompt.assignments["a-saved"];
   assignment.savedSubmissionTs = 123_456;
   assignment.assets.mergedPath = "drawings/griffin-merged.webp";
@@ -391,6 +395,8 @@ test("reopenAssignment does not persist pendingSubmission to JournalEntry", asyn
 
     assert.equal(storedPrompt.assignments["a-saved"].pendingSubmission, null);
     assert.equal(storedPrompt.assignments["a-saved"].status, STATUS.OPENED);
+    assert.equal(storedPrompt.lifecycleStatus, PROMPT_STATUS.OPEN, "reopening one Assignment reopens its owning Prompt");
+    assert.equal(storedPrompt.timerStatus, "paused");
     assert.equal(reopenPayload?.restorationSubmission?.mode, "staged");
     assert.equal(reopenPayload?.restorationSubmission?.recoveryKind, "full-submission");
     assert.equal(reopenPayload?.restorationSubmission?.assignmentId, "a-saved");
