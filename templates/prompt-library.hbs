@@ -1,25 +1,64 @@
 <div class="dp-library-shell">
-  <section class="dp-library-section" aria-labelledby="dp-library-closed-heading">
-    <h2 id="dp-library-closed-heading">{{localize "DRAWING-PROMPTS.library.closed"}}</h2>
-    {{#each closed}}
-    <div class="dp-library-row"><strong class="dp-library-name">{{this.name}}</strong>
-      <div class="dp-library-actions">
-      <button type="button" data-action="openPrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.open"}}</button>
-      <button type="button" data-action="archivePrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.archive"}}</button>
-      <button class="dp-danger" type="button" data-action="deletePrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.delete"}}</button>
-      </div>
+  <header class="dp-library-heading">
+    <h1>{{localize "DRAWING-PROMPTS.library.heading"}}</h1>
+    <button class="dp-library-new" type="button" data-action="newPrompt"><i class="fa-solid fa-plus" inert></i> {{localize "DRAWING-PROMPTS.library.newPrompt"}}</button>
+  </header>
+
+  <div class="dp-library-toolbar" aria-label="{{localize "DRAWING-PROMPTS.library.controls"}}">
+    <input class="dp-library-search" name="promptSearch" type="search" value="{{query}}" placeholder="{{localize "DRAWING-PROMPTS.library.searchPlaceholder"}}" aria-label="{{localize "DRAWING-PROMPTS.library.searchLabel"}}">
+    <div class="dp-library-sort-group">
+      <label for="dp-library-sort">{{localize "DRAWING-PROMPTS.library.sortBy"}}</label>
+      <select id="dp-library-sort" name="sortField" aria-label="{{localize "DRAWING-PROMPTS.library.sortField"}}">
+        {{#each sortOptions}}<option value="{{this.value}}" {{#if this.selected}}selected{{/if}}>{{this.label}}</option>{{/each}}
+      </select>
+      <select name="sortDirection" aria-label="{{localize "DRAWING-PROMPTS.library.sortDirection"}}">
+        {{#each directionOptions}}<option value="{{this.value}}" {{#if this.selected}}selected{{/if}}>{{this.label}}</option>{{/each}}
+      </select>
     </div>
-    {{else}}<p class="hint">{{localize "DRAWING-PROMPTS.library.empty"}}</p>{{/each}}
-  </section>
-  <section class="dp-library-section" aria-labelledby="dp-library-archived-heading">
-    <h2 id="dp-library-archived-heading">{{localize "DRAWING-PROMPTS.library.archived"}}</h2>
-    {{#each archived}}
-    <div class="dp-library-row"><strong class="dp-library-name">{{this.name}}</strong>
-      <div class="dp-library-actions">
-      <button type="button" data-action="restorePrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.restore"}}</button>
-      <button class="dp-danger" type="button" data-action="deletePrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.delete"}}</button>
+    <button class="dp-library-archive-toggle" type="button" data-action="toggleArchived" aria-pressed="{{showArchived}}" aria-label="{{archiveToggleLabel}}" title="{{archiveToggleLabel}}">
+      <i class="fa-solid {{archiveToggleIcon}}" inert></i><span>{{archiveToggleText}}</span>
+    </button>
+  </div>
+
+  {{#if hasRows}}
+  <section class="dp-library-list" aria-label="{{localize "DRAWING-PROMPTS.library.heading"}}">
+    {{#each rows}}
+    <article class="dp-library-row dp-library-row--{{this.status}}{{#if this.isCurrent}} is-current{{/if}}">
+      <div class="dp-library-identity">
+        <strong class="dp-library-name" title="{{this.promptName}}">{{this.promptName}}</strong>
+        <span class="dp-library-status dp-library-status--{{this.status}}">{{this.statusLabel}}</span>
       </div>
-    </div>
-    {{else}}<p class="hint">{{localize "DRAWING-PROMPTS.library.empty"}}</p>{{/each}}
+      <details class="dp-library-info">
+        <summary aria-label="{{localize "DRAWING-PROMPTS.library.information"}}: {{this.promptName}}" title="{{localize "DRAWING-PROMPTS.library.information"}}"><i class="fa-solid fa-circle-info" inert></i></summary>
+        <div class="dp-library-popover">
+          <dl>
+            <dt>{{localize "DRAWING-PROMPTS.library.promptName"}}</dt><dd>{{this.promptName}}</dd>
+            <dt>{{localize "DRAWING-PROMPTS.library.promptText"}}</dt><dd>{{this.promptText}}</dd>
+            <dt>{{localize "DRAWING-PROMPTS.library.created"}}</dt><dd>{{this.createdAt}}</dd>
+            <dt>{{localize "DRAWING-PROMPTS.library.closedDate"}}</dt><dd>{{this.closedAt}}</dd>
+            <dt>{{localize "DRAWING-PROMPTS.library.statusLabel"}}</dt><dd>{{this.statusLabel}}</dd>
+          </dl>
+        </div>
+      </details>
+      <div class="dp-library-actions">
+        <button class="dp-library-open" type="button" data-action="openPrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.open"}}</button>
+        <button type="button" data-action="openCopy" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.openCopy"}}</button>
+        <details class="dp-library-more">
+          <summary aria-label="{{localize "DRAWING-PROMPTS.library.moreActions"}}: {{this.promptName}}" title="{{localize "DRAWING-PROMPTS.library.moreActions"}}"><i class="fa-solid fa-ellipsis-vertical" inert></i></summary>
+          <div class="dp-library-menu">
+            {{#if this.canArchive}}<button type="button" data-action="archivePrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.archive"}}</button>{{/if}}
+            {{#if this.canRestore}}<button type="button" data-action="restorePrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.restore"}}</button>{{/if}}
+            <button class="dp-danger" type="button" data-action="deletePrompt" data-prompt-id="{{this.id}}">{{localize "DRAWING-PROMPTS.library.delete"}}</button>
+          </div>
+        </details>
+      </div>
+    </article>
+    {{/each}}
   </section>
+  {{else}}
+  <div class="dp-library-empty">
+    <p>{{emptyMessage}}</p>
+    {{#if hiddenArchivedMatch}}<button type="button" data-action="showArchived">{{localize "DRAWING-PROMPTS.library.showArchivedAction"}}</button>{{/if}}
+  </div>
+  {{/if}}
 </div>
