@@ -93,12 +93,12 @@ test("a combined live snapshot may use the wire budget exactly once", () => {
   assert.equal(isValidSnapshotPayload({ composite, overlay: `${overlay}a` }), false);
 });
 
-test("estimateSubmissionWireSize includes op-log JSON length", () => {
+test("submission wire sizing ignores local-only history data", () => {
   const payload = {
     overlay: { dataUrl: "data:image/webp;base64,abc" },
     merged: { dataUrl: "data:image/webp;base64,def" },
     opLog: { operations: [{ type: "stroke", points: [1, 2, 3] }] }
   };
   const withoutOpLog = String(payload.overlay.dataUrl).length + String(payload.merged.dataUrl).length;
-  assert.equal(estimateSubmissionWireSize(payload) > withoutOpLog, true);
+  assert.equal(estimateSubmissionWireSize(payload), withoutOpLog);
 });

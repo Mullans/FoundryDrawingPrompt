@@ -5,7 +5,7 @@
 export async function refreshManager() {
   if ( !game.user.isGM ) return;
   const { DrawingPromptManager } = await import("../apps/drawing-prompt-manager.mjs");
-  DrawingPromptManager.refreshOpen();
+  await DrawingPromptManager.refreshOpen();
 }
 
 /**

@@ -14,8 +14,7 @@ import {
   ensureDir,
   normalizePath,
   uploadBlob,
-  uploadDataUrl,
-  uploadJson
+  uploadDataUrl
 } from "./asset-service.mjs";
 import {
   bakeAndEncodePromptCanvasMerged,
@@ -102,7 +101,7 @@ export async function saveAssignmentAssets({
     fallback: ports.fallbackSlug()
   });
 
-  const [primary, opLog, overlay] = await uploadSubmissionAssets(
+  const [primary, overlay] = await uploadSubmissionAssets(
     dir,
     filenames,
     submission,
@@ -113,7 +112,7 @@ export async function saveAssignmentAssets({
 
   assignment.assets.overlayPath = hasMerged ? overlay.path : primary.path;
   assignment.assets.mergedPath = hasMerged ? primary.path : null;
-  assignment.assets.oplogPath = opLog.path;
+  assignment.assets.oplogPath = null;
 
   if ( writeSourceFull ) {
     const sourceAssets = await uploadSourceFramingAssets({
@@ -162,7 +161,7 @@ export async function saveAssignmentAssets({
       merged: assignment.assets.mergedPath,
       full: assignment.assets.fullPath,
       sourceOverlay: assignment.assets.sourceOverlayPath,
-      oplog: opLog.path,
+      oplog: null,
       folder: dir
     }
   };
@@ -182,7 +181,6 @@ export function createAssignmentSavePorts() {
     browseFiles,
     uploadBlob,
     uploadDataUrl,
-    uploadJson,
     hasSourceBackground,
     bakeAndEncodePromptCanvasMerged,
     bakeAndEncodeSourceSpaceAssets,
@@ -251,14 +249,11 @@ async function loadSubmissionOverlayRgba(submission, prompt, ports) {
  * @param {boolean} hasMerged Whether merged primary exists.
  * @param {Blob|null} rematerializedMergedBlob GM-baked merged when submission lacked merged.
  * @param {AssignmentSavePorts} ports Ports.
- * @returns {Promise<[{path: string}, {path: string}, {path: string}|undefined]>}
+ * @returns {Promise<[{path: string}, {path: string}|undefined]>}
  */
 async function uploadSubmissionAssets(dir, filenames, submission, hasMerged, rematerializedMergedBlob, ports) {
   if ( rematerializedMergedBlob && hasMerged ) {
-    const uploads = [
-      ports.uploadBlob(dir, filenames.primary, rematerializedMergedBlob),
-      ports.uploadJson(dir, filenames.opLog, submission.opLog ?? {})
-    ];
+    const uploads = [ports.uploadBlob(dir, filenames.primary, rematerializedMergedBlob)];
     if ( isStagedSubmission(submission) ) {
       uploads.push(uploadStagedPath(dir, filenames.overlay, submission.staged.overlayPath, submission.receiptTs, ports));
     } else {
@@ -269,10 +264,7 @@ async function uploadSubmissionAssets(dir, filenames, submission, hasMerged, rem
 
   if ( isStagedSubmission(submission) ) {
     const primaryPath = hasMerged ? submission.staged.mergedPath : submission.staged.overlayPath;
-    const uploads = [
-      uploadStagedPath(dir, filenames.primary, primaryPath, submission.receiptTs, ports),
-      ports.uploadJson(dir, filenames.opLog, submission.opLog ?? {})
-    ];
+    const uploads = [uploadStagedPath(dir, filenames.primary, primaryPath, submission.receiptTs, ports)];
     if ( hasMerged ) {
       uploads.push(uploadStagedPath(dir, filenames.overlay, submission.staged.overlayPath, submission.receiptTs, ports));
     }
@@ -280,10 +272,7 @@ async function uploadSubmissionAssets(dir, filenames, submission, hasMerged, rem
   }
 
   const primaryDataUrl = hasMerged ? submission.merged?.dataUrl : submission.overlay?.dataUrl;
-  const uploads = [
-    ports.uploadDataUrl(dir, filenames.primary, primaryDataUrl),
-    ports.uploadJson(dir, filenames.opLog, submission.opLog ?? {})
-  ];
+  const uploads = [ports.uploadDataUrl(dir, filenames.primary, primaryDataUrl)];
   if ( hasMerged ) uploads.push(ports.uploadDataUrl(dir, filenames.overlay, submission.overlay?.dataUrl));
   return Promise.all(uploads);
 }
@@ -389,7 +378,6 @@ function extensionFor(format) {
  * @property {(dir: string) => Promise<string[]>} browseFiles
  * @property {(dir: string, name: string, blob: Blob) => Promise<{path: string}>} uploadBlob
  * @property {(dir: string, name: string, dataUrl: string) => Promise<{path: string}>} uploadDataUrl
- * @property {(dir: string, name: string, data: object) => Promise<{path: string}>} uploadJson
  * @property {(prompt: object) => boolean} hasSourceBackground
  * @property {typeof bakeAndEncodePromptCanvasMerged} bakeAndEncodePromptCanvasMerged
  * @property {typeof bakeAndEncodeSourceSpaceAssets} bakeAndEncodeSourceSpaceAssets

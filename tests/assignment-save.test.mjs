@@ -126,7 +126,8 @@ test("saveAssignmentAssets opens one Save gate and writes Prompt-canvas files wi
   assert.equal(result.paths.full, null);
   assert.equal(result.paths.sourceOverlay, null);
   assert.ok(result.paths.primary.endsWith(".webp"));
-  assert.ok(result.paths.oplog.endsWith(".json"));
+  assert.equal(result.paths.oplog, null);
+  assert.ok(!ports.uploads.some(upload => upload.role === "json"));
   assert.ok(!ports.uploads.some(u => u.name.includes("_full")));
   assert.ok(!ports.uploads.some(u => u.name.includes("_source")));
   assert.equal(canPlaceFramingView(assignment, FRAMING_VIEW.PROMPT_CANVAS), true);

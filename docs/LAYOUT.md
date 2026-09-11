@@ -8,8 +8,8 @@ This repository owns Drawing Prompts product documentation, architectural histor
 - [CLAUDE.md](../CLAUDE.md): imports AGENTS.md.
 - [CONTEXT.md](../CONTEXT.md): domain vocabulary.
 - [README.md](../README.md): product usage and codebase layout.
-- [docs/adr/](adr/): the five architectural decisions for framing/dual saves, display layers, timer layout, placement lifecycle, and socket trust. These records retain their product context and rejected alternatives.
-- [docs/design/](design/): Drawing Prompts display surfaces and live manager layout specifications.
+- [docs/adr/](adr/): the six architectural decisions for framing/dual saves, display layers, timer layout, placement lifecycle, socket trust, and the local-first recovery boundary. These records retain their product context and rejected alternatives.
+- [docs/design/](design/): Drawing Prompts display surfaces, live manager layout, and approved prompt lifecycle/recovery specifications.
 - [docs/verification/](verification/): product walkthrough cases and sign-off evidence.
 - mockups/: tracked HTML UI references.
 - [tools/forge-probe.md](../tools/forge-probe.md): module-specific Forge path-probe snippets.

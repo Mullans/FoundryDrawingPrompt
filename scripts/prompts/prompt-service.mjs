@@ -38,6 +38,7 @@ export {
 } from "./assignment-placement.mjs";
 export {
   buildRestorationSubmissionFromSavedAssets,
+  buildRestorationSubmissionFromRetainedCapture,
   getPendingSubmission
 } from "./pending-submission.mjs";
 export { getAssignment, getPrompt } from "./prompt-context.mjs";
@@ -46,6 +47,15 @@ export {
   cancelAssignment,
   createAndSendPrompt,
   createPrompt,
+  retryPromptDeliveries,
+  continuePromptDeliveries,
+  invitePromptRecipients,
+  processRecoveryTombstonesForUser,
+  closePrompt,
+  reopenPrompt,
+  archivePrompt,
+  restorePrompt,
+  deletePrompt,
   finishPrompt,
   redeliverAssignmentsForUser,
   reopenAssignment,
@@ -75,6 +85,16 @@ export async function openPromptManager() {
   await DrawingPromptManager.open();
 }
 
+/** Open the singleton Closed/Archived Prompt library. */
+export async function openPromptLibrary() {
+  if ( !game.user.isGM ) {
+    ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
+    return;
+  }
+  const { PromptLibrary } = await import("../apps/prompt-library.mjs");
+  await PromptLibrary.open();
+}
+
 /**
  * Open the player prompt list.
  * @returns {Promise<void>}
@@ -98,7 +118,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   const resolvedName = resolveDrawingName(prompt, name);
   if ( !resolvedName ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.nameRequired"));
 
-  const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath && assignment.assets?.oplogPath);
+  const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath);
   const submission = peekMemoryOrCachedSubmission(assignment.id);
   if ( !submission && !alreadySaved ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.pendingSubmissionLost"));
 

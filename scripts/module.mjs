@@ -4,6 +4,7 @@ import { registerSettings, migrateLegacySettings } from "./settings.mjs";
 import { initSocket } from "./socket.mjs";
 import { getSocketHandlers, openPlayerPromptList, openPromptManager } from "./prompts/prompt-service.mjs";
 import { loadAllPrompts } from "./prompts/persistence-service.mjs";
+import { recoverInterruptedPromptDeliveries } from "./prompts/prompt-delivery.mjs";
 import { renderTokenTransformHUD } from "./foundry/token-transform-service.mjs";
 
 Hooks.once("init", () => {
@@ -19,6 +20,7 @@ Hooks.once("ready", async () => {
   await migrateLegacySettings();
   if ( !globalThis.socketlib ) ui.notifications.error(game.i18n.localize("DRAWING-PROMPTS.errors.socketlibMissing"));
   if ( game.user.isGM ) {
+    await recoverInterruptedPromptDeliveries();
     const activeCount = loadAllPrompts().filter(prompt => prompt.needsAttention).length;
     if ( activeCount ) ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.notifications.activePrompts", { count: activeCount }));
   }
@@ -27,7 +29,10 @@ Hooks.once("ready", async () => {
 
 Hooks.on("userConnected", (user, connected) => {
   if ( connected && game.user.isGM ) {
-    import("./prompts/prompt-service.mjs").then(s => s.redeliverAssignmentsForUser(user.id));
+    import("./prompts/prompt-service.mjs").then(async s => {
+      await s.processRecoveryTombstonesForUser(user.id);
+      await s.redeliverAssignmentsForUser(user.id);
+    });
   }
   void refreshOpenApplications();
 });
@@ -53,10 +58,12 @@ Hooks.on("renderTokenHUD", renderTokenTransformHUD);
  * @returns {Promise<void>}
  */
 async function refreshOpenApplications() {
-  const [{ DrawingPromptManager }, { PlayerPromptList }] = await Promise.all([
+  const [{ DrawingPromptManager }, { PlayerPromptList }, { PromptLibrary }] = await Promise.all([
     import("./apps/drawing-prompt-manager.mjs"),
-    import("./apps/player-prompt-list.mjs")
+    import("./apps/player-prompt-list.mjs"),
+    import("./apps/prompt-library.mjs")
   ]);
   DrawingPromptManager.refreshOpen();
   PlayerPromptList.refreshOpen();
+  PromptLibrary.refreshOpen();
 }

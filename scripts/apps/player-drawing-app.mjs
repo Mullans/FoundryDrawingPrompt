@@ -1,6 +1,14 @@
 import { CANVAS_CHROME, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { CANVAS_CHROME_CSS_CLASSES, canvasChromeCssClass, normalizeCanvasChrome } from "../drawing/canvas-chrome.mjs";
 import { DrawingEngine } from "../drawing/drawing-engine.mjs";
+import { DrawingSessionCache } from "../drawing/drawing-session-cache.mjs";
+import {
+  resolveRecovery,
+  restoreResolvedRecovery
+} from "../drawing/recovery-copy.mjs";
+import { recoveryStore } from "../drawing/recovery-store.mjs";
+import { createRecoverySaveCoordinator } from "../drawing/recovery-save-coordinator.mjs";
+import { ownsDrawingShortcut } from "../drawing/shortcut-focus.mjs";
 import {
   parseRecentColors,
   pushRecentColor,
@@ -20,11 +28,10 @@ import {
   zoomView
 } from "../drawing/player-navigation.mjs";
 import { buildFullSubmission, buildSubmission } from "../drawing/export-service.mjs";
-import { restoreEngineFromSubmission } from "../drawing/submission-restore.mjs";
 import { loadBackgroundImage } from "../foundry/background-source-service.mjs";
 import { canStageUploads, stageSubmissionImages } from "../prompts/asset-service.mjs";
 import { updateStatus } from "../prompts/client-store.mjs";
-import { isValidSnapshotPayload } from "../prompts/wire-validation.mjs";
+import { selectLiveSnapshotPayload } from "../prompts/live-snapshot.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { createLeadingTrailingThrottle } from "../utils/throttle.mjs";
 import { formatClock, formatTimerState } from "../utils/timer-chip.mjs";
@@ -36,6 +43,8 @@ const { ApplicationV2, DialogV2, HandlebarsApplicationMixin } = foundry.applicat
  */
 export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) {
   static #registry = new Map();
+  static #sessions = new DrawingSessionCache();
+  static #recoveryStorageWarned = false;
 
   static DEFAULT_OPTIONS = {
     id: "drawing-prompts-player-{id}",
@@ -138,6 +147,29 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     await app.#sendSnapshot();
   }
 
+  /** Export a full-quality drawing without submitting or closing the player window. */
+  static async captureRetainedForAssignment(assignmentId, requestId) {
+    const app = this.#registry.get(assignmentId);
+    if ( !app?.#engine || app.mode !== "live" ) return null;
+    const format = game.settings.get(MODULE_ID, SETTINGS.EXPORT_FORMAT) || "webp";
+    const quality = Number(game.settings.get(MODULE_ID, SETTINGS.WEBP_QUALITY) ?? 0.9);
+    const submission = canStageUploads()
+      ? await app.#buildStagedSubmissionPayload({ format, quality })
+      : await buildFullSubmission(app.#engine, { format, quality });
+    return { requestId, assignmentId, submission };
+  }
+
+  /** Permanently invalidate player-local state for an authenticated Prompt deletion. */
+  static async clearRecoveryForIdentity(identity) {
+    const app = this.#registry.get(identity?.assignmentId);
+    if ( app ) {
+      app.#closeReason = "remote";
+      await app.close();
+    }
+    this.#sessions.invalidate(identity);
+    await recoveryStore.clear(identity);
+  }
+
   /**
    * @param {object} options Constructor options.
    * @param {object} options.assignmentPayload Assignment payload.
@@ -151,6 +183,10 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.#color = initialBrushColor();
     this.#recentColors = initialRecentColors();
     this.#canvasChrome = initialCanvasChrome();
+    this.#recoverySaves = createRecoverySaveCoordinator({
+      store: recoveryStore,
+      warn: error => this.#warnRecoveryStorage(error)
+    });
   }
 
   #background;
@@ -160,6 +196,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #openedEmitted = false;
   #timerId = null;
   #engine = null;
+  #retainedSession = false;
   #engineReadyPromise = null;
   #snapshotThrottle = null;
   /** Whether the GM's Framing View needs overlay (ink-only) bytes for its live remap. */
@@ -185,6 +222,10 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   #spaceHeld = false;
   /** @type {string|null} Restoration payload already applied for this open. */
   #restorationKey = null;
+  #recoverySaves;
+  #pagehideHandler = null;
+  #lastRecoverySnapshot = null;
+  #historyMissingShown = false;
   /** @type {{pointerId: number, lastX: number, lastY: number}|null} */
   #panDrag = null;
 
@@ -238,10 +279,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   /** @override */
   _onClose(options) {
     super._onClose(options);
+    if ( this.mode === "live" ) this.#engine?.finishForWindowClose();
+    this.#flushRecoveryCopy();
+    if ( this.#pagehideHandler ) globalThis.window?.removeEventListener?.("pagehide", this.#pagehideHandler);
+    this.#pagehideHandler = null;
     if ( this.#timerId ) window.clearInterval(this.#timerId);
     this.#timerId = null;
     this.#destroyNavigation();
-    this.#destroyEngine();
+    this.#releaseEngine();
     this.constructor.#registry.delete(this.assignmentPayload.assignment.id);
 
     if ( this.mode === "live" && !this.#closeReason ) {
@@ -301,7 +346,6 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       return {
         mode: "staged",
         staged,
-        opLog: fullSubmission.opLog,
         width: fullSubmission.width,
         height: fullSubmission.height,
         formats: {
@@ -353,6 +397,16 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       await this.#applyRestoration(this.#engine);
       return;
     }
+    if ( this.mode === "live" ) {
+      const retained = this.constructor.#sessions.take(this.#recoveryIdentity());
+      if ( retained ) {
+        this.#engine = retained;
+        this.#retainedSession = true;
+        this.#wireEngine(this.#engine);
+        this.#engine.attach(canvas);
+        return;
+      }
+    }
     this.#engineReadyPromise = this.#createEngine(canvas).finally(() => {
       this.#engineReadyPromise = null;
     });
@@ -394,22 +448,31 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       background,
       fitMode: this.#background?.fitMode
     });
+    this.#engine = engine;
+    this.#wireEngine(engine);
+    engine.attach(canvas);
+    await this.#applyRestoration(engine);
+  }
+
+  #wireEngine(engine) {
     engine.setTool(this.#activeTool);
     engine.setColor(this.#color);
     engine.setBrushSize(this.#brushSize);
     engine.setBrushOpacity(this.#brushOpacity);
     this.#unsubscribers = [
       engine.onChange(() => {
-        this.#maybeRecordDrawnColor();
         this.#refreshToolbarState();
         this.#queueSnapshot();
+      }),
+      engine.onCommittedAction(action => {
+        this.#maybeRecordDrawnColor(action);
+        this.#queueRecoveryCopy();
       }),
       engine.onColorSampled(hex => this.#applyColor(hex)),
       engine.onWarning(key => ui.notifications.warn(game.i18n.localize(key)))
     ];
-    this.#engine = engine;
-    engine.attach(canvas);
-    await this.#applyRestoration(engine);
+    this.#pagehideHandler ??= () => this.#requestPagehideSave();
+    globalThis.window?.addEventListener?.("pagehide", this.#pagehideHandler);
   }
 
   /**
@@ -418,31 +481,114 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @returns {Promise<void>}
    */
   async #applyRestoration(engine) {
-    const submission = this.assignmentPayload?.restorationSubmission;
-    if ( !submission ) return;
-    const key = restorationKey(submission);
+    if ( this.mode !== "live" ) return;
+    if ( this.#retainedSession ) return;
+    const identity = this.#recoveryIdentity();
+    const submission = this.assignmentPayload?.restorationSubmission ?? null;
+    const key = `${identity.worldId}:${identity.userId}:${identity.assignmentId}:${restorationKey(submission)}`;
     if ( this.#restorationKey === key ) return;
     this.#suppressRecentColorRecord = true;
     try {
-      const restored = await restoreEngineFromSubmission(engine, submission, this.assignmentPayload.prompt);
-      if ( restored ) this.#restorationKey = key;
+      const stored = await recoveryStore.load(identity);
+      if ( stored ) {
+        engine.loadRecoverySnapshot(stored.snapshot);
+        this.#restorationKey = key;
+        if ( stored.kind === "artwork" ) await this.#showHistoryMissing();
+        return;
+      }
+      const resolution = resolveRecovery(identity, submission);
+      await restoreResolvedRecovery(engine, resolution, this.assignmentPayload.prompt);
+      this.#restorationKey = key;
+      if ( resolution.kind === "local" ) this.#queueRecoveryCopy();
+      if ( resolution.historyMissing ) await this.#showHistoryMissing();
     } catch (err) {
-      console.warn("drawing-prompts | failed to restore reopened submission", err);
+      console.warn("drawing-prompts | failed to restore Recovery copy", err);
+      if ( identity.existingAssignment ) await this.#showHistoryMissing();
     } finally {
       this.#suppressRecentColorRecord = false;
     }
   }
 
-  /**
-   * Destroy the current engine and subscriptions.
-   * @returns {void}
-   */
-  #destroyEngine() {
+  /** Identity used to isolate this browser's Recovery copy. */
+  #recoveryIdentity() {
+    const assignment = this.assignmentPayload.assignment;
+    const prompt = this.assignmentPayload.prompt;
+    return {
+      worldId: game.world?.id ?? game.worldId,
+      gmUserId: prompt.gmUserId,
+      userId: game.user.id,
+      assignmentId: assignment.id,
+      promptId: prompt.id,
+      width: prompt.canvasWidth,
+      height: prompt.canvasHeight,
+      existingAssignment: Boolean(
+        assignment.openedAt
+        || assignment.submittedAt
+        || assignment.rejectedAt
+        || Number(assignment.reopenedCount) > 0
+        || this.assignmentPayload.restorationSubmission
+      )
+    };
+  }
+
+  /** Debounce browser writes generated by drawing and history changes. */
+  #queueRecoveryCopy() {
+    if ( this.mode !== "live" || !this.#engine ) return;
+    const identity = this.#recoveryIdentity();
+    const snapshot = this.#engine.getRecoverySnapshot({ copyPixels: false });
+    this.#lastRecoverySnapshot = snapshot;
+    this.#recoverySaves.changed(identity, snapshot);
+  }
+
+  /** Capture the latest immutable state before close; Submit and Reject intentionally retain it. */
+  #flushRecoveryCopy() {
+    if ( this.mode !== "live" || !this.#engine ) return;
+    const identity = this.#recoveryIdentity();
+    const snapshot = this.#engine.getRecoverySnapshot({ copyPixels: false });
+    this.#lastRecoverySnapshot = snapshot;
+    this.#recoverySaves.flush(identity, snapshot);
+  }
+
+  /** Pagehide republishes only an already-pinned snapshot; it never starts a large canvas/history copy. */
+  #requestPagehideSave() {
+    if ( this.mode !== "live" || !this.#lastRecoverySnapshot ) return;
+    this.#recoverySaves.pagehide(this.#recoveryIdentity());
+  }
+
+  #warnRecoveryStorage(error) {
+    if ( this.constructor.#recoveryStorageWarned ) return;
+    this.constructor.#recoveryStorageWarned = true;
+    console.warn("drawing-prompts | could not persist local Recovery generation", error);
+    ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.player.warnings.recoveryStorage"));
+  }
+
+  /** Present the product-mandated missing editable history notice once per app open. */
+  async #showHistoryMissing() {
+    if ( this.#historyMissingShown ) return;
+    this.#historyMissingShown = true;
+    await DialogV2.wait({
+      window: { title: "Drawing recovery" },
+      content: "<p>History not found.</p>",
+      buttons: [{ action: "ok", label: "OK", default: true }],
+      close: () => "ok",
+      modal: true
+    });
+  }
+
+  #releaseEngine() {
+    if ( !this.#engine ) return;
+    this.#recoverySaves.destroy();
     this.#snapshotThrottle?.cancel();
     this.#snapshotThrottle = null;
     for ( const unsubscribe of this.#unsubscribers ) unsubscribe();
     this.#unsubscribers = [];
-    this.#engine?.destroy();
+    this.#engine.detach();
+    if ( this.mode !== "live" ) {
+      this.#engine.destroy();
+      this.#engine = null;
+      return;
+    }
+    this.constructor.#sessions.retain(this.#recoveryIdentity(), this.#engine);
     this.#engine = null;
   }
 
@@ -475,8 +621,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @returns {void}
    */
   #wireNavigation(viewport) {
+    // Canvas is not natively focusable. Give pointer work a real keyboard owner;
+    // never infer ownership from a frontmost application after focus leaves it.
+    viewport.tabIndex = 0;
     const onWheel = event => this.#onNavWheel(event);
-    const onPointerDown = event => this.#onNavPointerDown(event);
+    const onPointerDown = event => {
+      viewport.focus({ preventScroll: true });
+      this.#onNavPointerDown(event);
+    };
     const onPointerMove = event => this.#onNavPointerMove(event);
     const onPointerUp = event => this.#onNavPointerUp(event);
     const onDblClick = event => {
@@ -484,22 +636,23 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       this.#resetNavigation();
     };
     const onKeyDown = event => {
-      if ( !this.rendered ) return;
-      const target = event.target;
-      if ( target?.closest?.("input, textarea, select, [contenteditable='true']") ) return;
+      if ( !this.rendered || !ownsDrawingShortcut(this.element, event) ) return;
 
       if ( event.code === "Space" && !event.repeat ) {
         this.#spaceHeld = true;
-        if ( this.element?.contains(target) || target === document.body ) event.preventDefault();
+        event.preventDefault();
+        event.stopPropagation();
         return;
       }
 
       if ( event.key === "Enter" && this.#engine?.commitLineDraft() ) {
         event.preventDefault();
+        event.stopPropagation();
         return;
       }
       if ( event.key === "Escape" && this.#engine?.cancelLineDraft() ) {
         event.preventDefault();
+        event.stopPropagation();
         return;
       }
 
@@ -514,6 +667,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       if ( tool && !event.ctrlKey && !event.metaKey && !event.altKey ) {
         this.#selectTool(tool);
         event.preventDefault();
+        event.stopPropagation();
       }
     };
     const onKeyUp = event => {
@@ -523,11 +677,14 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       this.#spaceHeld = false;
       this.#endPanDrag();
     };
+    const onFocusOut = event => {
+      if ( !this.element?.contains(event.relatedTarget) ) onBlur();
+    };
     const onContextMenu = event => {
       event.preventDefault();
     };
 
-    this.#navHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur, onContextMenu };
+    this.#navHandlers = { onWheel, onPointerDown, onPointerMove, onPointerUp, onDblClick, onKeyDown, onKeyUp, onBlur, onFocusOut, onContextMenu };
     viewport.addEventListener("wheel", onWheel, { passive: false });
     viewport.addEventListener("pointerdown", onPointerDown, true);
     viewport.addEventListener("pointermove", onPointerMove);
@@ -535,7 +692,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     viewport.addEventListener("pointercancel", onPointerUp);
     viewport.addEventListener("dblclick", onDblClick);
     viewport.addEventListener("contextmenu", onContextMenu);
-    window.addEventListener("keydown", onKeyDown);
+    this.element.addEventListener("focusout", onFocusOut);
+    this.element.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
 
@@ -564,7 +722,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       viewport.removeEventListener("contextmenu", handlers.onContextMenu);
     }
     if ( handlers ) {
-      window.removeEventListener("keydown", handlers.onKeyDown);
+      this.element?.removeEventListener("focusout", handlers.onFocusOut);
+      this.element?.removeEventListener("keydown", handlers.onKeyDown);
       window.removeEventListener("keyup", handlers.onKeyUp);
       window.removeEventListener("blur", handlers.onBlur);
     }
@@ -760,18 +919,20 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    */
   async #sendSnapshot() {
     if ( !this.#canSendSnapshots() || !this.#engine ) return;
+    const payload = this.#buildSnapshotPayload();
+    if ( !payload ) return;
     await emit.drawingSnapshot(
       this.assignmentPayload.prompt.gmUserId,
       this.assignmentPayload.assignment.id,
       game.user.id,
-      this.#buildSnapshotPayload()
+      payload
     );
   }
 
   /**
    * Build the live snapshot payload. Composite feeds the Prompt-canvas GM view; overlay-only
    * ink rides along only while the GM's Framing View remaps it (matches dual Save).
-   * @returns {{composite: string, overlay?: string}}
+   * @returns {{composite?: string, overlay?: string}|null}
    */
   #buildSnapshotPayload() {
     const opts = {
@@ -779,12 +940,11 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       quality: INTERNAL.SNAPSHOT_QUALITY
     };
     const composite = this.#engine.getCompositeSnapshot(opts);
-    if ( !this.#overlayRequested ) return { composite };
-    const payload = { composite, overlay: this.#engine.getOverlaySnapshot(opts) };
-    // Combined wire budget: drop overlay and keep composite rather than failing the tick.
-    if ( isValidSnapshotPayload(payload) ) return payload;
-    console.debug("drawing-prompts | dropped overlay snapshot over the combined snapshot wire budget");
-    return { composite };
+    return selectLiveSnapshotPayload({
+      composite,
+      overlay: this.#overlayRequested ? this.#engine.getOverlaySnapshot(opts) : undefined,
+      overlayRequested: this.#overlayRequested
+    });
   }
 
   /**
@@ -937,20 +1097,16 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   }
 
   /**
-   * When a stroke/fill op lands at the tip of the log, remember its color.
+   * When a pixel-changing stroke/fill action commits, remember its color.
+   * @param {{actionId: string, kind: string, color?: string}} action Committed action.
    * @returns {void}
    */
-  #maybeRecordDrawnColor() {
+  #maybeRecordDrawnColor(action) {
     // The manager's preview window shares this application class. It draws nothing
     // a player owns, but it writes *this* client's LAST_BRUSH_COLORS -- so a GM
     // previewing a submission pollutes the GM's own palette (not a player's).
     if ( this.mode === "preview" ) return;
-    const log = this.#engine?.getOpLog?.();
-    if ( !log ) return;
-    // Tip selection stays here: "is the pointer at the end" is undo/redo state
-    // owned by the op log, not a palette concern. A pointer behind the end means
-    // there is no tip to consider, which the helper reads as a null op.
-    const op = log.pointer === log.ops.length ? log.ops.at(-1) : null;
+    const op = action ? { id: action.actionId, type: action.kind, color: action.color } : null;
     const { record, nextLastRecordedOpId } = shouldRecordDrawnColor({
       op,
       lastRecordedOpId: this.#lastRecordedOpId,

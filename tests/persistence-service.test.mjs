@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
-import { MODULE_ID, FLAG_PROMPT, STATUS } from "../scripts/constants.mjs";
+import { MODULE_ID, FLAG_PROMPT, PROMPT_STATUS, STATUS } from "../scripts/constants.mjs";
 import { savePrompt } from "../scripts/prompts/persistence-service.mjs";
 import { DrawingPrompt } from "../scripts/prompts/prompt-models.mjs";
 
@@ -152,4 +152,21 @@ test("assignment-scoped saves preserve interleaved sibling assignment updates", 
   assert.equal(storedPrompt.assignments.a2.status, STATUS.SUBMITTED);
   assert.equal(storedPrompt.assignments.a2.assets.overlayPath, "worlds/demo/drawing-prompts/a2.webp");
   assert.equal(storedPrompt.assetFolderName, "drawing-prompts");
+});
+
+test("lifecycle saves preserve newer assignment state while freezing the timer", async () => {
+  const closing = DrawingPrompt.fromObject(structuredClone(storedPrompt));
+  closing.timerState = { timerStatus: "paused", deadlineAt: null, remainingMs: 12_000 };
+  closing.markClosed(500);
+
+  const receipt = DrawingPrompt.fromObject(structuredClone(storedPrompt));
+  receipt.getAssignment("a1").delivery.status = "received";
+  await savePrompt(receipt, { deliveryOnly: "a1" });
+  await savePrompt(closing, { lifecycleOnly: true });
+
+  assert.equal(storedPrompt.lifecycleStatus, PROMPT_STATUS.CLOSED);
+  assert.equal(storedPrompt.closedAt, 500);
+  assert.equal(storedPrompt.timerStatus, "paused");
+  assert.equal(storedPrompt.remainingMs, 12_000);
+  assert.equal(storedPrompt.assignments.a1.delivery.status, "received");
 });

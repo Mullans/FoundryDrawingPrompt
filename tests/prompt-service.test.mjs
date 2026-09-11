@@ -1,26 +1,39 @@
 import assert from "node:assert/strict";
 import { before, beforeEach, test } from "node:test";
 
-import { FLAG_PROMPT, MODULE_ID, STATUS } from "../scripts/constants.mjs";
+import { FLAG_PROMPT, MODULE_ID, PROMPT_STATUS, STATUS } from "../scripts/constants.mjs";
 
 let saveAssignment;
 let stagedFetchUrl;
 let buildRestorationSubmissionFromSavedAssets;
 let reopenAssignment;
+let closePrompt;
+let reopenPrompt;
+let archivePrompt;
+let restorePrompt;
+let deletePrompt;
+let processRecoveryTombstonesForUser;
 let DrawingAssignment;
 let DrawingPrompt;
 let storedPrompt;
 let emit;
+let deletedFiles;
+let failSetFlagAt;
+let setFlagCalls;
 
 before(async () => {
   class ApplicationV2 {}
   globalThis.foundry = {
+    utils: { randomID: () => "capture-request" },
     applications: {
       api: {
         ApplicationV2,
         DialogV2: class {},
         HandlebarsApplicationMixin: Base => class extends Base {}
-      }
+      },
+      apps: { FilePicker: class {
+        static async delete(_source, path) { deletedFiles.push(path); }
+      } }
     }
   };
   ({ DrawingAssignment, DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs"));
@@ -28,12 +41,21 @@ before(async () => {
     saveAssignment,
     stagedFetchUrl,
     buildRestorationSubmissionFromSavedAssets,
-    reopenAssignment
+    reopenAssignment,
+    closePrompt,
+    reopenPrompt,
+    archivePrompt,
+    restorePrompt,
+    deletePrompt,
+    processRecoveryTombstonesForUser
   } = await import("../scripts/prompts/prompt-service.mjs"));
   ({ emit } = await import("../scripts/socket.mjs"));
 });
 
 beforeEach(() => {
+  deletedFiles = [];
+  failSetFlagAt = null;
+  setFlagCalls = 0;
   const assignment = new DrawingAssignment({
     id: "a-saved",
     promptId: "p-save",
@@ -60,9 +82,12 @@ beforeEach(() => {
     id: "p-save",
     getFlag: (moduleId, flag) => moduleId === MODULE_ID && flag === FLAG_PROMPT ? storedPrompt : null,
     setFlag: async (_moduleId, _flag, value) => {
+      setFlagCalls++;
+      if ( setFlagCalls === failSetFlagAt ) throw new Error("simulated incremental persistence failure");
       storedPrompt = structuredClone(value);
       return entry;
-    }
+    },
+    delete: async () => { storedPrompt = null; return entry; }
   };
   const journal = {
     get: id => id === "p-save" ? entry : null,
@@ -74,7 +99,13 @@ beforeEach(() => {
     users: new Map([
       ["u1", { id: "u1", name: "Ada", active: false }]
     ]),
-    i18n: { localize: key => key }
+    i18n: { localize: key => key },
+    world: { id: "test-world" },
+    settings: {
+      values: new Map(),
+      get(_module, key) { return this.values.get(key) ?? []; },
+      async set(_module, key, value) { this.values.set(key, structuredClone(value)); return value; }
+    }
   };
   globalThis.Hooks = { callAll: () => {} };
   globalThis.sessionStorage = {
@@ -83,6 +114,169 @@ beforeEach(() => {
     getItem(key) { return this.store.get(key) ?? null; },
     removeItem(key) { this.store.delete(key); }
   };
+});
+
+test("Prompt lifecycle closes with a frozen timer and reopens paused", async () => {
+  storedPrompt.timerSeconds = 60;
+  storedPrompt.timerStatus = "running";
+  storedPrompt.deadlineAt = Date.now() + 30_000;
+  storedPrompt.remainingMs = null;
+
+  const closed = await closePrompt("p-save");
+  assert.equal(closed.lifecycleStatus, PROMPT_STATUS.CLOSED);
+  assert.equal(closed.timerStatus, "paused");
+  assert.equal(closed.deadlineAt, null);
+  assert.ok(closed.remainingMs <= 30_000 && closed.remainingMs > 0);
+  assert.equal(storedPrompt.lifecycleStatus, PROMPT_STATUS.CLOSED);
+
+  const reopened = await reopenPrompt("p-save");
+  assert.equal(reopened.lifecycleStatus, PROMPT_STATUS.OPEN);
+  assert.equal(reopened.timerStatus, "paused");
+  assert.equal(reopened.deadlineAt, null);
+});
+
+test("Closing a Prompt cancels active Assignments and closes their player work", async () => {
+  const assignment = storedPrompt.assignments["a-saved"];
+  assignment.status = STATUS.OPENED;
+  assignment.delivery = { status: "received", generation: 2 };
+  game.users.get("u1").active = true;
+  const originalCancel = emit.cancelDrawingPrompt;
+  const cancelled = [];
+  emit.cancelDrawingPrompt = async (...args) => cancelled.push(args);
+  try {
+    const closed = await closePrompt("p-save", { closeWithoutCaptures: true });
+    assert.equal(closed.getAssignment("a-saved").status, STATUS.CANCELLED);
+    assert.deepEqual(cancelled, [["u1", "a-saved", 2]]);
+  } finally {
+    emit.cancelDrawingPrompt = originalCancel;
+  }
+});
+
+test("Close accepts only a correlated full-quality retained capture and persists it incrementally", async () => {
+  const assignment = storedPrompt.assignments["a-saved"];
+  assignment.status = STATUS.OPENED;
+  assignment.delivery = { status: "received", generation: 0 };
+  assignment.assets = {};
+  assignment.pendingSubmission = null;
+  storedPrompt.timerStatus = "running";
+  storedPrompt.deadlineAt = Date.now() + 20_000;
+  game.users.get("u1").active = true;
+  const originalCapture = emit.requestRetainedCapture;
+  const originalCancel = emit.cancelDrawingPrompt;
+  emit.cancelDrawingPrompt = async () => {};
+  emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
+    requestId: `${requestId}-stale`, assignmentId,
+    submission: { mode: "staged", staged: { overlayPath: "pending/full.webp", mergedPath: null },
+      width: 512, height: 512 }
+  });
+  try {
+    await assert.rejects(() => closePrompt("p-save"), error => error.code === "RETAINED_CAPTURE_FAILED");
+    assert.equal(storedPrompt.lifecycleStatus ?? PROMPT_STATUS.OPEN, PROMPT_STATUS.OPEN);
+    assert.equal(storedPrompt.timerStatus, "paused", "a failed close attempt must leave drawing time frozen");
+
+    emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
+      requestId, assignmentId,
+      submission: { mode: "staged", staged: { overlayPath: "pending/full.webp", mergedPath: null },
+        width: 512, height: 512 }
+    });
+    const closed = await closePrompt("p-save");
+    assert.deepEqual(closed.getAssignment("a-saved").retainedCapture, {
+      kind: "full-submission", receiptTs: closed.getAssignment("a-saved").retainedCapture.receiptTs,
+      width: 512, height: 512, overlayPath: "pending/full.webp", mergedPath: null
+    });
+    assert.equal(storedPrompt.assignments["a-saved"].retainedCapture.overlayPath, "pending/full.webp");
+  } finally {
+    emit.requestRetainedCapture = originalCapture;
+    emit.cancelDrawingPrompt = originalCancel;
+  }
+});
+
+test("Close reports incremental retained-capture persistence failure through the resolution gate", async () => {
+  const assignment = storedPrompt.assignments["a-saved"];
+  assignment.status = STATUS.OPENED;
+  assignment.delivery = { status: "received", generation: 0 };
+  assignment.assets = {};
+  game.users.get("u1").active = true;
+  const originalCapture = emit.requestRetainedCapture;
+  emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
+    requestId, assignmentId,
+    submission: { mode: "staged", staged: { overlayPath: "pending/full.webp", mergedPath: null }, width: 512, height: 512 }
+  });
+  failSetFlagAt = 2;
+  try {
+    await assert.rejects(() => closePrompt("p-save"), error =>
+      error.code === "RETAINED_CAPTURE_FAILED" && error.assignmentIds?.includes("a-saved"));
+  } finally {
+    emit.requestRetainedCapture = originalCapture;
+  }
+});
+
+test("Prompt lifecycle only archives Closed Prompts and restores them", async () => {
+  await assert.rejects(() => archivePrompt("p-save"), /Illegal transition/);
+  await closePrompt("p-save");
+  const archived = await archivePrompt("p-save");
+  assert.equal(archived.lifecycleStatus, PROMPT_STATUS.ARCHIVED);
+  const restored = await restorePrompt("p-save");
+  assert.equal(restored.lifecycleStatus, PROMPT_STATUS.CLOSED);
+});
+
+test("Delete requires explicit confirmation and removes the Prompt entry", async () => {
+  assert.equal(await deletePrompt("p-save", { confirmed: false }), false);
+  assert.notEqual(storedPrompt, null);
+  assert.equal(await deletePrompt("p-save", { confirmed: true }), true);
+  assert.equal(storedPrompt, null);
+  assert.deepEqual(game.settings.get("drawing-prompts", "recoveryTombstones"), [{
+    worldId: "test-world", gmUserId: "gm1", userId: "u1", assignmentId: "a-saved", promptId: "p-save", width: 512, height: 512
+  }]);
+});
+
+test("Delete failure preserves the Prompt and does not queue Recovery cleanup", async () => {
+  const FilePicker = foundry.applications.apps.FilePicker;
+  const originalDelete = FilePicker.delete;
+  storedPrompt.assignments["a-saved"].retainedCapture = {
+    kind: "saved-preview", overlayPath: "drawing-prompts/pending/a-saved/preview.webp"
+  };
+  FilePicker.delete = async () => { throw new Error("simulated file deletion failure"); };
+  try {
+    await assert.rejects(() => deletePrompt("p-save", { confirmed: true }), /Could not remove all module-owned Prompt data/);
+    assert.notEqual(storedPrompt, null);
+    assert.deepEqual(game.settings.get("drawing-prompts", "recoveryTombstones"), []);
+  } finally {
+    FilePicker.delete = originalDelete;
+  }
+});
+
+test("Recovery tombstones clear on the player's next connection acknowledgement", async () => {
+  await deletePrompt("p-save", { confirmed: true });
+  const originalClear = emit.clearRecoveryCopy;
+  emit.clearRecoveryCopy = async (_userId, identity) => identity.assignmentId === "a-saved";
+  try {
+    await processRecoveryTombstonesForUser("u1");
+    assert.deepEqual(game.settings.get("drawing-prompts", "recoveryTombstones"), []);
+  } finally {
+    emit.clearRecoveryCopy = originalClear;
+  }
+});
+
+test("Delete removes only recorded internal capture files and preserves exported assets", async () => {
+  const assignment = storedPrompt.assignments["a-saved"];
+  assignment.pendingSubmission = { staged: {
+    overlayPath: "drawing-prompts/pending/a-saved/pending.webp",
+    mergedPath: "drawing-prompts/pending/a-saved/pending-merged.webp"
+  } };
+  assignment.retainedCapture = {
+    kind: "saved-preview", overlayPath: "drawing-prompts/pending/a-saved/preview.webp"
+  };
+  assignment.assets.overlayPath = "drawings/exported.webp";
+
+  await deletePrompt("p-save", { confirmed: true });
+
+  assert.deepEqual(deletedFiles.sort(), [
+    "drawing-prompts/pending/a-saved/pending-merged.webp",
+    "drawing-prompts/pending/a-saved/pending.webp",
+    "drawing-prompts/pending/a-saved/preview.webp"
+  ]);
+  assert.equal(deletedFiles.includes("drawings/exported.webp"), false);
 });
 
 test("saveAssignment backfills the save gate timestamp when cached submission data is gone", async () => {
@@ -114,7 +308,7 @@ test("stagedFetchUrl appends the cache-buster with & when the URL already has a 
   assert.equal(url, `${forgeUrl}&ts=999`);
 });
 
-test("buildRestorationSubmissionFromSavedAssets returns staged path-only payload", async () => {
+test("buildRestorationSubmissionFromSavedAssets returns full-quality image paths without a GM operation log", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async url => {
     assert.match(String(url), /griffin\.json$/);
@@ -139,9 +333,11 @@ test("buildRestorationSubmissionFromSavedAssets returns staged path-only payload
     assert.equal(submission.staged.overlayPath, "drawings/griffin.webp");
     assert.equal(submission.staged.mergedPath, "drawings/griffin-merged.webp");
     assert.equal(submission.formats.overlay, "webp");
-    assert.deepEqual(submission.opLog, { ops: [{ type: "stroke" }] });
+    assert.equal(submission.opLog, undefined);
     assert.equal(submission.width, 800);
     assert.equal(submission.height, 600);
+    assert.equal(submission.recoveryKind, "full-submission");
+    assert.equal(submission.assignmentId, "a-saved");
     assert.equal(submission.overlay, undefined);
   } finally {
     globalThis.fetch = originalFetch;
@@ -174,6 +370,9 @@ test("reopenAssignment does not persist pendingSubmission to JournalEntry", asyn
     assert.equal(storedPrompt.assignments["a-saved"].pendingSubmission, null);
     assert.equal(storedPrompt.assignments["a-saved"].status, STATUS.OPENED);
     assert.equal(reopenPayload?.restorationSubmission?.mode, "staged");
+    assert.equal(reopenPayload?.restorationSubmission?.recoveryKind, "full-submission");
+    assert.equal(reopenPayload?.restorationSubmission?.assignmentId, "a-saved");
+    assert.equal(reopenPayload?.restorationSubmission?.opLog, undefined);
     assert.equal(reopenPayload?.restorationSubmission?.staged?.overlayPath, "drawings/griffin.webp");
     assert.equal(reopenPayload?.assignment?.pendingSubmission, undefined);
   } finally {

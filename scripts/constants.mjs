@@ -11,6 +11,12 @@ export const STATUS = Object.freeze({
   CANCELLED: "cancelled"
 });
 
+export const PROMPT_STATUS = Object.freeze({
+  OPEN: "open",
+  CLOSED: "closed",
+  ARCHIVED: "archived"
+});
+
 export const BG_SOURCE = Object.freeze({
   BLANK: "blank",
   FILE: "file",
@@ -48,8 +54,6 @@ export const CANVAS_CHROME = Object.freeze({
 export const INTERNAL = Object.freeze({
   SNAPSHOT_THROTTLE_MS: 1500,
   SNAPSHOT_MAX_EDGE: 512,
-  SNAPSHOT_EVERY_OPS: 8,
-  MAX_CHECKPOINTS: 6,
   SNAPSHOT_QUALITY: 0.5,
   MAX_SNAPSHOT_WIRE_BYTES: 512 * 1024,
   MAX_CANVAS_DIM: 4096,
@@ -58,7 +62,8 @@ export const INTERNAL = Object.freeze({
   MAX_OPLOG_BYTES: 512 * 1024,
   WIRE_QUALITY_STEPS: Object.freeze([0.8, 0.6, 0.45]),
   WIRE_DOWNSCALE_STEP: 0.75,
-  LEGACY_FIT_MODE_MIGRATED: "legacyFitModeMigrated"
+  LEGACY_FIT_MODE_MIGRATED: "legacyFitModeMigrated",
+  RECOVERY_TOMBSTONES: "recoveryTombstones"
 });
 
 export const SETTINGS = Object.freeze({

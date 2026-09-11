@@ -1,7 +1,7 @@
 import { FIT_MODE, INTERNAL } from "../constants.mjs";
 import { computeBackgroundLayout } from "./background-layout.mjs";
 import { canvasToEncodedImage } from "./export-service.mjs";
-import { OperationLog } from "./operation-log.mjs";
+import { PixelTileHistory, tilesForStroke } from "./pixel-tile-history.mjs";
 import { BrushTool } from "./tools/brush-tool.mjs";
 import { EraserTool } from "./tools/eraser-tool.mjs";
 import { EyedropperTool } from "./tools/eyedropper-tool.mjs";
@@ -27,16 +27,18 @@ export class DrawingEngine {
   #brushSize = 8;
   #brushOpacity = 1;
   #tools;
-  #opLog = new OperationLog();
-  #checkpoints = [];
+  #history;
   #changeCallbacks = new Set();
+  #committedActionCallbacks = new Set();
   #colorCallbacks = new Set();
   #warningCallbacks = new Set();
   #dirty = false;
   #rafId = null;
+  #strokeRafId = null;
   #pointerId = null;
   #currentStroke = null;
-  #strokeBaseCanvas = null;
+  #renderedTailTiles = [];
+  #renderedPointCount = 0;
   #handlers = null;
 
   /**
@@ -51,6 +53,7 @@ export class DrawingEngine {
     this.#drawCanvas = createCanvas(this.width, this.height);
     this.#bgCtx = this.#bgCanvas.getContext("2d", { willReadFrequently: true });
     this.#drawCtx = this.#drawCanvas.getContext("2d", { willReadFrequently: true });
+    this.#history = new PixelTileHistory({ width: this.width, height: this.height });
     this.#tools = {
       brush: new BrushTool(),
       eraser: new EraserTool(),
@@ -117,8 +120,9 @@ export class DrawingEngine {
     this.detach();
     if ( this.#rafId !== null ) globalThis.cancelAnimationFrame?.(this.#rafId);
     this.#rafId = null;
-    this.#checkpoints.length = 0;
+    this.#strokeRafId = null;
     this.#changeCallbacks.clear();
+    this.#committedActionCallbacks.clear();
     this.#colorCallbacks.clear();
     this.#warningCallbacks.clear();
   }
@@ -167,8 +171,6 @@ export class DrawingEngine {
       return;
     }
     if ( !this.#currentStroke ) {
-      this.#strokeBaseCanvas = createCanvas(this.width, this.height);
-      this.#strokeBaseCanvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0);
       this.#currentStroke = {
         type: "stroke",
         color: this.#color,
@@ -177,6 +179,9 @@ export class DrawingEngine {
         straight: true,
         points: list.map(pt => ({ x: pt.x, y: pt.y }))
       };
+      this.#history.beginEdit();
+      this.#renderedTailTiles = [];
+      this.#renderedPointCount = 0;
     } else {
       this.#currentStroke.points = list.map(pt => ({ x: pt.x, y: pt.y }));
       this.#currentStroke.color = this.#color;
@@ -184,8 +189,7 @@ export class DrawingEngine {
       this.#currentStroke.opacity = this.#brushOpacity;
       this.#currentStroke.straight = true;
     }
-    this.#renderCurrentStroke();
-    this.#emitChange();
+    this.#scheduleCurrentStrokeRender();
   }
 
   /**
@@ -194,12 +198,11 @@ export class DrawingEngine {
    */
   cancelStrokePreview() {
     if ( !this.#currentStroke ) return;
-    if ( this.#strokeBaseCanvas ) {
-      this.#drawCtx.clearRect(0, 0, this.width, this.height);
-      this.#drawCtx.drawImage(this.#strokeBaseCanvas, 0, 0);
-    }
+    this.#cancelScheduledStrokeRender();
+    this.#history.cancelEdit(this.#drawCtx);
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
+    this.#renderedTailTiles = [];
+    this.#renderedPointCount = 0;
     this.#markDirty();
     this.#emitChange();
   }
@@ -213,6 +216,7 @@ export class DrawingEngine {
       this.cancelStrokePreview();
       return false;
     }
+    this.#flushCurrentStrokeRender();
     const op = {
       id: operationId(),
       type: this.#currentStroke.type,
@@ -226,10 +230,9 @@ export class DrawingEngine {
       if ( this.#currentStroke.straight ) op.straight = true;
     }
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
-    this.#commitOperation(op);
-    this.#markDirty();
-    return true;
+    this.#renderedTailTiles = [];
+    this.#renderedPointCount = 0;
+    return this.#commitPreparedAction({ id: op.id, kind: op.type, color: op.color });
   }
 
   /**
@@ -282,10 +285,7 @@ export class DrawingEngine {
    */
   undo() {
     this.#discardLineDraft();
-    if ( !this.canUndo ) return false;
-    const pointer = this.#opLog.undo();
-    if ( pointer === null ) return false;
-    this.#restoreToPointer(pointer);
+    if ( !this.#history.undo(this.#drawCtx) ) return false;
     this.#emitChange();
     return true;
   }
@@ -296,9 +296,7 @@ export class DrawingEngine {
    */
   redo() {
     this.#discardLineDraft();
-    const pointer = this.#opLog.redo();
-    if ( pointer === null ) return false;
-    this.#restoreToPointer(pointer);
+    if ( !this.#history.redo(this.#drawCtx) ) return false;
     this.#emitChange();
     return true;
   }
@@ -310,16 +308,16 @@ export class DrawingEngine {
   clearLayer() {
     this.#discardLineDraft();
     this.#drawCtx.clearRect(0, 0, this.width, this.height);
-    this.#commitOperation({ id: operationId(), type: "clear", ts: Date.now() });
-    this.#markDirty();
+    const action = { id: operationId(), kind: "clear" };
+    if ( this.#history.commitClear({ id: action.id }) ) this.#publishCommittedAction(action);
   }
 
   /**
-   * Whether undo is available within the retained checkpoint window.
+   * Whether undo is available within the bounded pixel-history window.
    * @returns {boolean}
    */
   get canUndo() {
-    return this.#opLog.pointer > this.#minimumUndoPointer();
+    return this.#history.canUndo;
   }
 
   /**
@@ -327,7 +325,7 @@ export class DrawingEngine {
    * @returns {boolean}
    */
   get canRedo() {
-    return this.#opLog.canRedo;
+    return this.#history.canRedo;
   }
 
   /**
@@ -338,6 +336,12 @@ export class DrawingEngine {
   onChange(callback) {
     this.#changeCallbacks.add(callback);
     return () => this.#changeCallbacks.delete(callback);
+  }
+
+  /** Subscribe to completed, pixel-changing drawing actions. */
+  onCommittedAction(callback) {
+    this.#committedActionCallbacks.add(callback);
+    return () => this.#committedActionCallbacks.delete(callback);
   }
 
   /**
@@ -437,7 +441,23 @@ export class DrawingEngine {
    * @returns {{ops: object[], pointer: number}}
    */
   getOpLog() {
-    return this.#opLog.toJSON();
+    return { ops: [], pointer: 0 };
+  }
+
+  /** Return a structured-cloneable foreground generation with bounded history. */
+  getRecoverySnapshot({ copyPixels = true } = {}) {
+    return this.#history.snapshot({ copyPixels });
+  }
+
+  get recoveryBytes() {
+    return this.#history.allocatedBytes;
+  }
+
+  /** Install a validated foreground generation and its coherent Undo/Redo history. */
+  loadRecoverySnapshot(snapshot) {
+    this.#currentStroke = null;
+    this.#history = PixelTileHistory.restore(snapshot, this.#drawCtx);
+    this.#emitChange();
   }
 
   /**
@@ -446,11 +466,25 @@ export class DrawingEngine {
    * @returns {void}
    */
   loadOpLog(serialized) {
-    this.#opLog = OperationLog.fromSerialized(serialized);
-    this.#checkpoints = [];
+    const operations = Array.isArray(serialized?.ops) ? serialized.ops : [];
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
-    this.#restoreToPointer(this.#opLog.pointer);
+    this.#drawCtx.clearRect(0, 0, this.width, this.height);
+    for ( const operation of operations.slice(0, Number(serialized?.pointer) || 0) ) this.#applyOperation(operation);
+    this.#history.resetFrom(this.#drawCtx);
+    this.#emitChange();
+  }
+
+  /**
+   * Replay editable operations over the current flat drawing and retain that drawing
+   * as the non-undoable recovery base.
+   * @param {{ops?: object[], pointer?: number}} serialized Serialized log.
+   * @returns {void}
+   */
+  loadOpLogOverCurrentDrawing(serialized) {
+    this.#currentStroke = null;
+    const operations = Array.isArray(serialized?.ops) ? serialized.ops : [];
+    for ( const operation of operations.slice(0, Number(serialized?.pointer) || 0) ) this.#applyOperation(operation);
+    this.#history.resetFrom(this.#drawCtx);
     this.#emitChange();
   }
 
@@ -470,10 +504,8 @@ export class DrawingEngine {
       canvas.getContext("2d").putImageData(new ImageData(data, w, h), 0, 0);
       this.#drawCtx.drawImage(canvas, 0, 0, this.width, this.height);
     }
-    this.#opLog = new OperationLog();
-    this.#checkpoints = [];
+    this.#history.resetFrom(this.#drawCtx);
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
     this.#markDirty();
     this.#emitChange();
   }
@@ -485,8 +517,6 @@ export class DrawingEngine {
    * @returns {void}
    */
   beginStroke(type, pt) {
-    this.#strokeBaseCanvas = createCanvas(this.width, this.height);
-    this.#strokeBaseCanvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0);
     this.#currentStroke = {
       type,
       color: this.#color,
@@ -494,8 +524,10 @@ export class DrawingEngine {
       opacity: type === "stroke" ? this.#brushOpacity : 1,
       points: [pt]
     };
-    this.#renderCurrentStroke();
-    this.#emitChange();
+    this.#history.beginEdit();
+    this.#renderedTailTiles = [];
+    this.#renderedPointCount = 0;
+    this.#scheduleCurrentStrokeRender();
   }
 
   /**
@@ -508,8 +540,7 @@ export class DrawingEngine {
     const last = this.#currentStroke.points.at(-1);
     if ( Math.hypot(pt.x - last.x, pt.y - last.y) < 0.5 ) return;
     this.#currentStroke.points.push(pt);
-    this.#renderCurrentStroke();
-    this.#emitChange();
+    this.#scheduleCurrentStrokeRender();
   }
 
   /**
@@ -520,6 +551,7 @@ export class DrawingEngine {
   commitStroke(pt) {
     if ( !this.#currentStroke ) return;
     this.extendStroke(pt);
+    this.#flushCurrentStrokeRender();
     const op = {
       id: operationId(),
       type: this.#currentStroke.type,
@@ -532,8 +564,9 @@ export class DrawingEngine {
       op.opacity = this.#currentStroke.opacity;
     }
     this.#currentStroke = null;
-    this.#strokeBaseCanvas = null;
-    this.#commitOperation(op);
+    this.#renderedTailTiles = [];
+    this.#renderedPointCount = 0;
+    this.#commitPreparedAction({ id: op.id, kind: op.type, color: op.color });
   }
 
   /**
@@ -541,10 +574,70 @@ export class DrawingEngine {
    * @returns {void}
    */
   #renderCurrentStroke() {
-    if ( !this.#currentStroke || !this.#strokeBaseCanvas ) return;
-    this.#drawCtx.clearRect(0, 0, this.width, this.height);
-    this.#drawCtx.drawImage(this.#strokeBaseCanvas, 0, 0);
+    if ( !this.#currentStroke ) return;
+    const points = this.#currentStroke.points;
+    const tail = this.#currentStroke.straight
+      ? points.slice(-2)
+      : points.slice(Math.max(0, this.#renderedPointCount - 2));
+    const newTailTiles = tilesForStroke(tail, this.#currentStroke.size, this.width, this.height);
+    const invalidated = uniqueTiles([...this.#renderedTailTiles, ...newTailTiles]);
+    this.#history.prepareEdit({ tiles: invalidated, source: this.#drawCtx });
+    this.#history.restoreEditTiles(this.#drawCtx, invalidated);
+    this.#drawCtx.save();
+    this.#drawCtx.beginPath();
+    for ( const rect of this.#history.tileRects(invalidated) ) {
+      this.#drawCtx.rect?.(rect.x, rect.y, rect.width, rect.height);
+    }
+    this.#drawCtx.clip?.();
     renderStroke(this.#drawCtx, this.#currentStroke);
+    this.#drawCtx.restore();
+    this.#history.updateEdit({
+      tiles: invalidated,
+      before: this.#drawCtx,
+      after: this.#drawCtx
+    });
+    this.#renderedTailTiles = newTailTiles;
+    this.#renderedPointCount = points.length;
+  }
+
+  /** Coalesce pointer samples into a prompt browser task without waiting for the next paint frame. */
+  #scheduleCurrentStrokeRender() {
+    if ( this.#strokeRafId !== null ) return;
+    if ( !globalThis.window || typeof globalThis.queueMicrotask !== "function" ) {
+      this.#renderCurrentStroke();
+      this.#emitChange();
+      return;
+    }
+    const token = {};
+    this.#strokeRafId = token;
+    globalThis.queueMicrotask(() => {
+      if ( this.#strokeRafId !== token ) return;
+      this.#strokeRafId = null;
+      this.#renderCurrentStroke();
+      this.#emitChange();
+    });
+  }
+
+  #flushCurrentStrokeRender() {
+    if ( this.#strokeRafId !== null ) {
+      this.#strokeRafId = null;
+    }
+    this.#renderCurrentStroke();
+    this.#emitChange();
+  }
+
+  #cancelScheduledStrokeRender() {
+    if ( this.#strokeRafId === null ) return;
+    this.#strokeRafId = null;
+  }
+
+  /** Resolve transient tool state before a live window detaches. */
+  finishForWindowClose() {
+    if ( this.#currentStroke && (this.#toolName === "brush" || this.#toolName === "eraser") ) {
+      this.commitStroke(this.#currentStroke.points.at(-1));
+      return;
+    }
+    this.#discardLineDraft();
   }
 
   /**
@@ -564,6 +657,7 @@ export class DrawingEngine {
     if ( !result.pixelsFilled ) return false;
 
     const drawImageData = this.#drawCtx.getImageData(0, 0, this.width, this.height);
+    const before = imageDataSource(drawImageData, this.width, this.height);
     for ( let i = 0; i < result.mask.length; i++ ) {
       if ( !result.mask[i] ) continue;
       const offset = i * 4;
@@ -573,16 +667,11 @@ export class DrawingEngine {
       drawImageData.data[offset + 3] = rgba.a;
     }
     this.#drawCtx.putImageData(drawImageData, 0, 0);
-    this.#commitOperation({
-      id: operationId(),
-      type: "fill",
-      ts: Date.now(),
-      seed: { x: Math.floor(pt.x), y: Math.floor(pt.y) },
-      color: this.#color,
-      tolerance: FILL_TOLERANCE
-    });
-    this.#markDirty();
-    return true;
+    return this.#commitPixelAction(
+      { id: operationId(), kind: "fill", color: this.#color },
+      before,
+      tilesForMask(result.mask, this.width, this.height)
+    );
   }
 
   /**
@@ -722,44 +811,28 @@ export class DrawingEngine {
   }
 
   /**
-   * Commit an operation and manage checkpoints.
-   * @param {object} op Operation.
+   * Commit a completed pixel action.
+   * @param {object} action Action metadata.
    * @returns {void}
    */
-  #commitOperation(op) {
-    this.#opLog.append(op);
-    this.#checkpoints = this.#checkpoints.filter(checkpoint => checkpoint.opCount <= this.#opLog.pointer);
-    if ( this.#opLog.pointer % INTERNAL.SNAPSHOT_EVERY_OPS === 0 ) this.#storeCheckpoint();
+  #commitPixelAction(action, before, tiles) {
+    if ( !before ) return false;
+    const committed = this.#history.commit({ ...action, tiles, before, after: this.#drawCtx });
+    if ( !committed ) return false;
+    this.#publishCommittedAction(action);
+    return true;
+  }
+
+  #commitPreparedAction(action) {
+    if ( !this.#history.commitEdit(action) ) return false;
+    this.#publishCommittedAction(action);
+    return true;
+  }
+
+  #publishCommittedAction(action) {
     this.#emitChange();
-  }
-
-  /**
-   * Store a draw-layer checkpoint.
-   * @returns {void}
-   */
-  #storeCheckpoint() {
-    const canvas = createCanvas(this.width, this.height);
-    canvas.getContext("2d").drawImage(this.#drawCanvas, 0, 0);
-    this.#checkpoints.push({ opCount: this.#opLog.pointer, canvas });
-    while ( this.#checkpoints.length > INTERNAL.MAX_CHECKPOINTS ) this.#checkpoints.shift();
-  }
-
-  /**
-   * Restore draw layer to an operation pointer.
-   * @param {number} pointer Pointer.
-   * @returns {void}
-   */
-  #restoreToPointer(pointer) {
-    this.#drawCtx.clearRect(0, 0, this.width, this.height);
-    const checkpoint = [...this.#checkpoints].reverse().find(item => item.opCount <= pointer);
-    let start = 0;
-    if ( checkpoint ) {
-      this.#drawCtx.drawImage(checkpoint.canvas, 0, 0);
-      start = checkpoint.opCount;
-    }
-    const ops = this.#opLog.ops.slice(start, pointer);
-    for ( const op of ops ) this.#applyOperation(op);
-    this.#markDirty();
+    const notification = { actionId: action.id, kind: action.kind, ...(action.color ? { color: action.color } : {}) };
+    for ( const callback of this.#committedActionCallbacks ) callback(notification);
   }
 
   /**
@@ -876,15 +949,40 @@ export class DrawingEngine {
     for ( const callback of this.#warningCallbacks ) callback(key);
   }
 
-  /**
-   * Minimum pointer that undo may reach.
-   * @returns {number}
-   */
-  #minimumUndoPointer() {
-    if ( !this.#checkpoints.length ) return 0;
-    const oldest = this.#checkpoints[0].opCount;
-    return oldest <= INTERNAL.SNAPSHOT_EVERY_OPS ? 0 : oldest;
+}
+
+function captureSource(context, width, height) {
+  return imageDataSource(context.getImageData(0, 0, width, height), width, height);
+}
+
+function imageDataSource(image, width, height) {
+  const pixels = new Uint8ClampedArray(image.data);
+  return {
+    getImageData(x, y, tileWidth, tileHeight) {
+      const data = new Uint8ClampedArray(tileWidth * tileHeight * 4);
+      for ( let row = 0; row < tileHeight; row++ ) {
+        const start = ((y + row) * width + x) * 4;
+        data.set(pixels.subarray(start, start + tileWidth * 4), row * tileWidth * 4);
+      }
+      return { width: tileWidth, height: tileHeight, data };
+    }
+  };
+}
+
+function tilesForMask(mask, width, height, tileSize = 128) {
+  const tiles = new Set();
+  const columns = Math.ceil(width / tileSize);
+  for ( let index = 0; index < mask.length; index++ ) {
+    if ( !mask[index] ) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    tiles.add(Math.floor(y / tileSize) * columns + Math.floor(x / tileSize));
   }
+  return [...tiles];
+}
+
+function uniqueTiles(tiles) {
+  return [...new Set(tiles)];
 }
 
 /**

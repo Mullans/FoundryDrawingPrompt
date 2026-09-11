@@ -1,4 +1,7 @@
 <div class="dp-manager-shell is-{{mode}}">
+  {{#if isSending}}
+  <p class="dp-sending-status" role="status"><i class="fa-solid fa-spinner fa-spin" inert></i> {{localize "DRAWING-PROMPTS.manager.actions.sending"}}</p>
+  {{/if}}
   {{#if hasActivePrompt}}
   <div class="dp-review-mode">
     {{#if promptQueue}}
@@ -209,6 +212,10 @@
   </div>
 
   <footer class="dp-action-bar form-footer">
+    <button type="button" data-action="openPromptLibrary">
+      <i class="fa-solid fa-box-archive" inert></i>
+      <span>{{localize "DRAWING-PROMPTS.library.title"}}</span>
+    </button>
     <button class="primary" type="button" data-action="finishPrompt" {{#unless canFinishPrompt}}disabled{{/unless}}>
       <i class="fa-solid fa-flag-checkered" inert></i>
       <span>{{localize "DRAWING-PROMPTS.manager.actions.finishPrompt"}}</span>
@@ -225,20 +232,20 @@
   {{else}}
   <div class="dp-manager-grid">
     <div class="dp-manager-main">
-      <fieldset>
+      <fieldset {{#if setupLocked}}disabled{{/if}}>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.prompt"}}</legend>
-
-        <div class="form-group stacked">
-          <label for="dp-prompt-text">{{localize "DRAWING-PROMPTS.manager.fields.promptText"}}</label>
-          <div class="form-fields">
-            <textarea id="dp-prompt-text" name="promptText" rows="4" placeholder="{{localize 'DRAWING-PROMPTS.manager.fields.promptText'}}">{{draft.promptText}}</textarea>
-          </div>
-        </div>
 
         <div class="form-group">
           <label for="dp-drawing-name">{{localize "DRAWING-PROMPTS.manager.fields.drawingName"}}</label>
           <div class="form-fields">
             <input id="dp-drawing-name" type="text" name="drawingName" value="{{draft.drawingName}}">
+          </div>
+        </div>
+
+        <div class="form-group stacked">
+          <label for="dp-prompt-text">{{localize "DRAWING-PROMPTS.manager.fields.promptTextOptional"}}</label>
+          <div class="form-fields">
+            <textarea id="dp-prompt-text" name="promptText" rows="4" placeholder="{{localize 'DRAWING-PROMPTS.manager.fields.promptTextOptional'}}">{{draft.promptText}}</textarea>
           </div>
         </div>
 
@@ -260,7 +267,7 @@
         </div>
       </fieldset>
 
-      <fieldset>
+      <fieldset {{#if setupLocked}}disabled{{/if}}>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.background"}}</legend>
 
         <div class="form-group">
@@ -302,7 +309,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="dp-players-fieldset">
+      <fieldset class="dp-players-fieldset" {{#if setupLocked}}disabled{{/if}}>
         <legend>
           {{localize "DRAWING-PROMPTS.manager.sections.players"}}
           <span class="dp-muted"><span class="dp-selected-count">{{draft.selectedCount}}</span> {{localize "DRAWING-PROMPTS.manager.selected"}}</span>
@@ -312,7 +319,7 @@
           {{#each rows}}
           <label class="dp-user-row {{this.classes}}">
             <span class="dp-row-control">
-              <input type="checkbox" name="selectedUserIds" value="{{this.userId}}" {{#if this.selected}}checked{{/if}}>
+              <input type="checkbox" name="selectedUserIds" value="{{this.userId}}" {{#if this.selected}}checked{{/if}} {{#if this.isOffline}}disabled{{/if}}>
             </span>
 
             <span class="dp-user-name">
@@ -333,7 +340,7 @@
     </div>
 
     <aside class="dp-preview-panel">
-      <fieldset>
+      <fieldset {{#if setupLocked}}disabled{{/if}}>
         <legend>{{localize "DRAWING-PROMPTS.manager.sections.framing"}}</legend>
         <p class="hint">{{localize "DRAWING-PROMPTS.manager.framing.hint"}}</p>
         <div class="dp-framing-editor" data-dp-framing-editor>
@@ -360,13 +367,13 @@
   </div>
 
   <footer class="dp-action-bar form-footer">
-    <button type="button" data-action="showPreview">
+      <button type="button" data-action="showPreview" {{#if setupLocked}}disabled{{/if}}>
       <i class="fa-solid fa-eye" inert></i>
       <span>{{localize "DRAWING-PROMPTS.manager.actions.showPreview"}}</span>
     </button>
     <button class="primary" type="button" data-action="sendPrompt" {{#if canSend}}{{else}}disabled{{/if}}>
       <i class="fa-solid fa-paper-plane" inert></i>
-      <span>{{localize "DRAWING-PROMPTS.manager.actions.sendPrompt"}}</span>
+      <span>{{sendLabel}}</span>
     </button>
   </footer>
   {{/if}}
