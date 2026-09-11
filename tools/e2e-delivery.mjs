@@ -61,7 +61,11 @@ async function openSetup() {
     manager.selectedAssignmentId = null;
     manager.draft.selectedUserIds = new Set();
     await manager.render({ parts: ["body"] });
+    // Opening may have scheduled the prior prompt's warning before the fixture switches
+    // to compose mode. Resolve that now-stale modal without mutating the retained prompt.
+    for ( const dialog of document.querySelectorAll("dialog.dp-delivery-warning-dialog") ) dialog.close();
   });
+  await gm.locator("dialog.dp-delivery-warning-dialog").waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
   await gm.locator("textarea[name='promptText']").waitFor({ state: "visible" });
 }
 
@@ -139,18 +143,21 @@ async function reloadGM() {
   }, timing);
 }
 
-async function openReloadedPrompt(id) {
+async function openReloadedPrompt(id, { hasRecipients }) {
   await gm.evaluate(async id => {
     await game.modules.get("drawing-prompts").api.openPromptManager();
     const manager = foundry.applications.instances.get("drawing-prompts-manager");
     if ( manager.activePrompt?.id !== id ) throw new Error("Reload fixture was not adopted as the newest active prompt");
     await manager.render({ parts: ["body"] });
   }, id);
-  const retry = gm.locator("button[data-action='retryDeliveries']");
-  const continued = gm.locator("button[data-action='continueDeliveries']");
+  const warning = gm.locator("dialog.dp-delivery-warning-dialog").last();
+  const retry = warning.locator("button[data-action='retry']");
+  const continued = warning.locator("button[data-action='continue']");
   await retry.waitFor({ state: "visible" });
   assert.equal(await retry.isEnabled(), true, "interrupted Retry is actionable");
-  assert.equal(await continued.isEnabled(), true, "interrupted Continue is actionable");
+  assert.equal(await continued.isEnabled(), hasRecipients, "Continue availability matches recovered membership");
+  const back = warning.locator("button[data-action='back']");
+  assert.equal(await back.count() > 0, !hasRecipients, "Back is reserved for zero-recipient recovery");
 }
 
 try {
@@ -205,8 +212,9 @@ try {
   await send("immediate", [userIds[0]]);
   progress("assert Sending before storage release");
   await gm.waitForFunction(() => deliveryTest.storageEntered);
-  assert.match(await gm.locator(".dp-delivery-feedback").first().innerText(), /Sending/i);
-  assert.equal(await gm.locator("button[data-action='sendPrompt']").isDisabled(), true);
+  const sendButton = gm.locator("button[data-action='sendPrompt']");
+  assert.match(await sendButton.innerText(), /Sending/i);
+  assert.equal(await sendButton.isDisabled(), true);
   assert.equal(await prompt("immediate"), undefined, "storage remains held while Sending is visible");
   await gm.evaluate(() => { JournalEntry.create = deliveryTest.originalCreate; deliveryTest.releaseStorage(); });
   let immediate = await waitDelivery("immediate", ["received"]);
@@ -234,7 +242,7 @@ try {
   const originalIds = Object.keys(partial.assignments).sort();
   await restoreOpen();
   progress("click Retry");
-  await gm.locator("button[data-action='retryDeliveries']").click();
+  await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='retry']").last().click();
   const retried = await waitDelivery("retry", ["received", "received"]);
   assert.deepEqual(Object.keys(retried.assignments).sort(), originalIds);
 
@@ -244,7 +252,7 @@ try {
   const unresolved = await waitDelivery("continue", ["received", "failed"]);
   const failed = Object.values(unresolved.assignments).find(a => a.userId === userIds[1]);
   progress("click Continue and reject late receipt");
-  await gm.locator("button[data-action='continueDeliveries']").click();
+  await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='continue']").last().click();
   await waitDelivery("continue", ["received", "withdrawn"]);
   const late = await other.evaluate(async ({ gmId, id }) => {
     const { emit } = await import("/modules/drawing-prompts/scripts/socket.mjs");
@@ -259,7 +267,7 @@ try {
   await waitDelivery("zero", ["failed"]);
   assert.equal(await gm.locator("textarea[name='promptText']").inputValue(), `${RUN}-zero`);
   assert.equal(await gm.locator(".dp-review-mode").count(), 0);
-  await gm.locator("button[data-action='continueDeliveries']").click();
+  await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='back']").last().click();
   await gm.waitForFunction(text => !game.journal.some(e => e.getFlag("drawing-prompts", "prompt")?.promptText === text), `${RUN}-zero`);
   assert.equal(await gm.locator("textarea[name='promptText']").inputValue(), `${RUN}-zero`);
   await restoreOpen();
@@ -322,9 +330,9 @@ try {
   const recoveredPending = await waitDelivery("reload-pending", ["failed"]);
   assert.equal(Object.values(recoveredPending.assignments)[0].delivery.error, "interrupted");
   assert.equal(Object.values(recoveredPending.assignments)[0].delivery.receivedAt, null);
-  await openReloadedPrompt(pendingReload.id);
+  await openReloadedPrompt(pendingReload.id, { hasRecipients: false });
   assert.equal(await gm.locator("textarea[name='promptText']").inputValue(), `${RUN}-reload-pending`);
-  await gm.locator("button[data-action='retryDeliveries']").click();
+  await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='retry']").last().click();
   const recoveredRetry = await waitDelivery("reload-pending", ["received"]);
   assert.deepEqual(Object.keys(recoveredRetry.assignments), Object.keys(pendingReload.assignments), "reload Retry keeps the original assignment");
 
@@ -333,13 +341,20 @@ try {
   await blockDelivery([userIds[1]]);
   await send("reload-sending", userIds);
   const sendingReload = await waitDelivery("reload-sending", ["received", "sending"]);
+  const receivedReloadId = Object.values(sendingReload.assignments).find(a => a.userId === userIds[0]).id;
+  // Receipt deliberately precedes window rendering. Let the successful recipient's
+  // socket handler finish before disconnecting the GM so only the blocked attempt is
+  // interrupted by the navigation.
+  await player.waitForFunction(id => [...foundry.applications.instances.values()].some(app =>
+    app.assignmentPayload?.assignment?.id === id && app.rendered
+  ), receivedReloadId);
   const missingReloadId = Object.values(sendingReload.assignments).find(a => a.userId === userIds[1]).id;
   await reloadGM();
   const recoveredSending = await waitDelivery("reload-sending", ["received", "failed"]);
   assert.equal(recoveredSending.assignments[missingReloadId].delivery.error, "interrupted", "startup recovered the attempt before its old timeout");
   assert.equal(recoveredSending.assignments[missingReloadId].delivery.receivedAt, null);
-  await openReloadedPrompt(sendingReload.id);
-  await gm.locator("button[data-action='continueDeliveries']").click();
+  await openReloadedPrompt(sendingReload.id, { hasRecipients: true });
+  await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='continue']").last().click();
   await waitDelivery("reload-sending", ["received", "withdrawn"]);
 
   progress("Resend All after reload Continue excludes the withdrawn invitation");

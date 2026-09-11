@@ -111,8 +111,7 @@ function installFoundryEnvironment() {
     refresh() {
       if ( this.destroyed ) throw new Error("refresh on destroyed preview");
       this.refreshCount += 1;
-      // Foundry v14 Tile renders its mesh at the document's absolute scene position
-      // while the Tile container itself normally remains at the origin.
+      // Foundry v14 places the centered Tile mesh at the document's top-left.
       this.mesh.x = this.document.x;
       this.mesh.y = this.document.y;
     },
@@ -131,7 +130,12 @@ function installFoundryEnvironment() {
   };
   Object.defineProperty(preview, "renderedBounds", {
     get() {
-      return { x: this.x + this.mesh.x, y: this.y + this.mesh.y, width: this.w, height: this.h };
+      return {
+        x: this.x + this.mesh.x - (this.w / 2),
+        y: this.y + this.mesh.y - (this.h / 2),
+        width: this.w,
+        height: this.h
+      };
     }
   });
 

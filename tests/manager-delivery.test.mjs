@@ -22,12 +22,16 @@ function journalCollection(entries) {
 
 class TestDialogV2 {
   static calls = [];
+  static dialogs = [];
   static results = [];
   static started = null;
   static async wait(options) {
     this.calls.push(options);
+    const dialog = { closeCalls: 0, async close() { this.closeCalls++; } };
+    this.dialogs.push(dialog);
+    options.render?.({}, dialog);
     this.started?.resolve();
-    return this.results.length ? this.results.shift() : "dismissed-test-dialog";
+    return this.results.length ? await this.results.shift() : "dismissed-test-dialog";
   }
 }
 globalThis.foundry = { applications: { api: {
@@ -186,6 +190,26 @@ test("partial delivery modal uses the requested Continue explanation", async () 
   assert.match(dialog.content, /No response from:.*Ben/s);
   assert.match(dialog.content, /Continue to start the drawing without these players\./);
   assert.equal(dialog.buttons.find(button => button.action === "continue").disabled, false);
+});
+
+test("closing the manager closes its in-flight delivery warning dialog", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.dialogs.length = 0;
+  const warningChoice = deferred();
+  TestDialogV2.results = [warningChoice.promise];
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({ id: "dialog-close", gmUserId: "gm", assignments: {
+    received: { id: "received", userId: "u1", userName: "Ada", status: "pending", delivery: { status: "received" } },
+    failed: { id: "failed", userId: "u2", userName: "Ben", status: "pending", delivery: { status: "failed" } }
+  } });
+
+  const showing = manager.showDeliveryWarning();
+  await Promise.resolve();
+  manager._onClose({});
+  assert.equal(TestDialogV2.dialogs[0].closeCalls, 1);
+  warningChoice.resolve(null);
+  await showing;
 });
 
 test("closing during delivery prevents completion render and warning resurrection", async () => {

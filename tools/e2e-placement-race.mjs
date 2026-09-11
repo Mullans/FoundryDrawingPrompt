@@ -84,10 +84,9 @@ async function runCaseSteps(mode, order) {
         return documents;
       } finally { clearTimeout(timer); c.finished = true; }
     };
-    const { loadPrompt } = await import("/modules/drawing-prompts/scripts/prompts/persistence-service.mjs");
-    await game.modules.get("drawing-prompts").api.openPromptManager();
+    const { DrawingPromptManager } = await import("/modules/drawing-prompts/scripts/apps/drawing-prompt-manager.mjs");
+    await DrawingPromptManager.openPrompt(f.promptId);
     const manager = foundry.applications.instances.get("drawing-prompts-manager");
-    manager.activePrompt = loadPrompt(f.promptId);
     manager.selectedAssignmentId = f.assignmentId;
     await manager.render({ parts: ["body"] });
     c.placementsBefore = manager.activePrompt.getAssignment(f.assignmentId).placements.length;
@@ -196,6 +195,8 @@ try {
     const assignment = Object.values(prompt.assignments)[0];
     f.assignmentId = assignment.id;
     assignment.status = "submitted";
+    assignment.delivery.status = "received";
+    assignment.delivery.receivedAt = Date.now();
     assignment.submittedAt = assignment.savedSubmissionTs = Date.now();
     Object.assign(assignment.assets, { mergedPath: "icons/svg/mystery-man.svg", tileWidth: 256, tileHeight: 256 });
     await savePrompt(prompt);

@@ -141,6 +141,7 @@ export async function placeWithLayerPreview({ layerName, createData, scene = glo
     let settled = false;
     let committing = false;
     let cleaned = false;
+    let committedPosition = null;
     const cleanup = () => {
       if ( cleaned ) return;
       cleaned = true;
@@ -173,12 +174,14 @@ export async function placeWithLayerPreview({ layerName, createData, scene = glo
       if ( !pos ) return;
       const size = previewPixelSize(preview, createData);
       const { x, y } = topLeftCenteredOn(pos, size);
-      preview.document.updateSource?.({ x, y });
-      preview.document.x = x;
-      preview.document.y = y;
-      // Let the placeable's refresh path apply document coordinates. In Foundry v14
-      // Tile renders its mesh at absolute scene coordinates while its container remains
-      // at the origin; also moving that container doubles the rendered offset.
+      committedPosition = { x, y };
+      // A v14 Tile mesh is centered on its document position. Display it at the cursor,
+      // but retain the cursor-centered top-left for creation. Tokens use top-left document
+      // coordinates for both their preview and created document.
+      const displayPosition = layerName === "tiles" ? { x: pos.x, y: pos.y } : { x, y };
+      preview.document.updateSource?.(displayPosition);
+      preview.document.x = displayPosition.x;
+      preview.document.y = displayPosition.y;
       preview.refresh?.();
     };
 
@@ -204,6 +207,7 @@ export async function placeWithLayerPreview({ layerName, createData, scene = glo
           const documentName = layer.constructor.documentName;
           const data = preview.document.toObject();
           delete data._id;
+          if ( layerName === "tiles" && committedPosition ) Object.assign(data, committedPosition);
           // A deliberate click is the commit boundary. Canceling a promise cannot cancel
           // the server request, so callers must receive its result and record the placement.
           committing = true;

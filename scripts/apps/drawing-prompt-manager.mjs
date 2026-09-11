@@ -209,6 +209,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#expiryTimerId = null;
     this.#expiryStateSignature = "";
     this.#deliveryWarningPromptId = null;
+    this.#deliveryWarningDialog = null;
     this.#presentedDeliveryWarningKey = null;
     this.#refreshPromise = null;
     this.#refreshRequested = false;
@@ -217,6 +218,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #expiryTimerId;
   #expiryStateSignature;
   #deliveryWarningPromptId;
+  #deliveryWarningDialog;
   #presentedDeliveryWarningKey;
   #refreshPromise;
   #refreshRequested;
@@ -512,6 +514,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   _onClose(options) {
     this.#closed = true;
     this.#refreshRequested = false;
+    void this.#deliveryWarningDialog?.close?.();
+    this.#deliveryWarningDialog = null;
     this.#deliveryWarningPromptId = null;
     this.#presentedDeliveryWarningKey = null;
     super._onClose(options);
@@ -1369,6 +1373,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
             icon: "fa-solid fa-triangle-exclamation"
           },
           classes: ["drawing-prompts", "dp-delivery-warning-dialog"],
+          render: (_event, dialog) => {
+            if ( this.#closed || this.activePrompt?.id !== promptId ) void dialog.close();
+            else this.#deliveryWarningDialog = dialog;
+          },
           content: `<div class="dp-delivery-warning">
             <p><strong>${game.i18n.localize("DRAWING-PROMPTS.manager.delivery.noResponse")}</strong> ${names}</p>
             <p>${explanation}</p>
@@ -1401,6 +1409,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         if ( !noRecipients ) return;
       } while ( true );
     } finally {
+      this.#deliveryWarningDialog = null;
       if ( this.#deliveryWarningPromptId === promptId ) this.#deliveryWarningPromptId = null;
     }
   }

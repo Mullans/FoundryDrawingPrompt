@@ -360,28 +360,32 @@ async function placeSavedTile(page) {
     if ( !preview ) return null;
     const cursor = { x: canvas.mousePosition.x, y: canvas.mousePosition.y };
     const globalCursor = canvas.stage.toGlobal(new PIXI.Point(cursor.x, cursor.y));
-    const rendered = preview.getBounds();
+    const renderedObject = preview.mesh ?? preview.shape ?? preview.children?.find(child => child?.getBounds);
+    const rendered = renderedObject?.getBounds?.() ?? preview.getBounds();
     const document = preview.document;
     return {
       cursor,
       globalCursor: { x: globalCursor.x, y: globalCursor.y },
       rendered: { x: rendered.x, y: rendered.y, width: rendered.width, height: rendered.height },
-      document: { x: document.x, y: document.y, width: document.width, height: document.height }
+      document: { x: document.x, y: document.y, width: document.width, height: document.height },
+      renderedType: renderedObject?.constructor?.name ?? null
     };
   });
   assert.ok(placementGeometry, "tile placement preview disappeared before geometry assertion");
-  const documentCenter = {
-    x: placementGeometry.document.x + (placementGeometry.document.width / 2),
-    y: placementGeometry.document.y + (placementGeometry.document.height / 2)
-  };
   const renderedCenter = {
     x: placementGeometry.rendered.x + (placementGeometry.rendered.width / 2),
     y: placementGeometry.rendered.y + (placementGeometry.rendered.height / 2)
   };
-  assert.ok(Math.abs(documentCenter.x - placementGeometry.cursor.x) <= 1, "preview document is not cursor-centered on x");
-  assert.ok(Math.abs(documentCenter.y - placementGeometry.cursor.y) <= 1, "preview document is not cursor-centered on y");
-  assert.ok(Math.abs(renderedCenter.x - placementGeometry.globalCursor.x) <= 2, "rendered tile preview is not cursor-centered on x");
-  assert.ok(Math.abs(renderedCenter.y - placementGeometry.globalCursor.y) <= 2, "rendered tile preview is not cursor-centered on y");
+  // Foundry v14 centers a Tile mesh on its preview document position. The placement
+  // helper converts that visual center back to a top-left only when creating the Tile.
+  assert.ok(Math.abs(placementGeometry.document.x - placementGeometry.cursor.x) <= 1,
+    "preview document origin is not at the cursor on x");
+  assert.ok(Math.abs(placementGeometry.document.y - placementGeometry.cursor.y) <= 1,
+    "preview document origin is not at the cursor on y");
+  assert.ok(Math.abs(renderedCenter.x - placementGeometry.globalCursor.x) <= 2,
+    `rendered tile preview is not cursor-centered on x: ${JSON.stringify({ renderedCenter, placementGeometry })}`);
+  assert.ok(Math.abs(renderedCenter.y - placementGeometry.globalCursor.y) <= 2,
+    `rendered tile preview is not cursor-centered on y: ${JSON.stringify({ renderedCenter, placementGeometry })}`);
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 40 });
 
   await page.waitForFunction(playerUser => {
@@ -406,7 +410,13 @@ async function placeSavedTile(page) {
     const tile = canvas.scene.tiles.find(item => !previousIds.includes(item.id));
     return tile ? { x: tile.x, y: tile.y, width: tile.width, height: tile.height } : null;
   }, tileIdsBefore);
-  assert.deepEqual(createdBounds, placementGeometry.document, "created Tile bounds differ from the committed preview");
+  const expectedCreatedBounds = {
+    x: placementGeometry.cursor.x - (placementGeometry.document.width / 2),
+    y: placementGeometry.cursor.y - (placementGeometry.document.height / 2),
+    width: placementGeometry.document.width,
+    height: placementGeometry.document.height
+  };
+  assert.deepEqual(createdBounds, expectedCreatedBounds, "created Tile bounds differ from the committed preview");
 }
 
 async function finishPrompt(page) {
