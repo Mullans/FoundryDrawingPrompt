@@ -1,28 +1,34 @@
-# Drawing Prompts remediation checkpoint — 2026-09-09
+# Drawing Prompts remediation checkpoint — 2026-09-10
 
-Resume in `C:\Code\FoundryHub\modules\drawing-prompts\.worktrees\drawing-prompts-remediation` on `codex/drawing-prompts-remediation`. The branch preserves the walkthrough foundation from `39578f1`; do not restart from `dev`.
+Work is complete on `codex/drawing-prompts-remediation` in
+`C:\Code\FoundryHub\modules\drawing-prompts\.worktrees\drawing-prompts-remediation`.
+The branch absorbs the work represented by PRs #6 and #7 and is ready to be proposed to `dev`.
 
-## Completed checkpoints
+## Landed checkpoints
 
-- `cc2dfde` + `cc64775`: lifecycle/recovery design, glossary, and ADR-0006. Independent Standards and Spec re-reviews passed.
-- `c170a68` + `517a9c0`: authoring and initial-delivery UX, timer gating, modal warnings, localization, and close/dismiss safeguards. Before the latest WIP, focused delivery tests passed 30/30 and the aggregate unit suite passed.
-- PRs #6 and #7 were rechecked as open/clean against `dev`. Port 30000 was not listening. No remediation PR, runtime verification, or Linear writes were completed.
+- `99e8b19`: serialized/coalesced manager delivery refresh, warning-state deduplication, and manager ownership transfer.
+- `6838922`: deep player-local Recovery module, schema validation, autosave/flush, local-first restoration, and GM flat fallback.
+- `c0661ec`: retained Prompt lifecycle, close-time captures, Prompt Library, deletion tombstones, public API, and lifecycle hooks.
+- `07bc176`: real Foundry Tile preview/cursor/created-bounds alignment and delivery-dialog lifecycle cleanup.
+- `875a36b`, `8a67a81`, `94ced8b`: recovery-cleanup authorization, transactional deletion ordering, degraded-base replay, retained-capture failure handling, and library singleton release.
+- Subsequent delivery-harness commits align runtime coverage with the modal Retry/Continue/Back workflow and deliberate GM reload semantics.
 
-## Current uncommitted WIP — preserve it
+## Verification evidence
 
-`git status` currently shows modifications to:
+- Full unit suite: 424 tests passed after the final production changes.
+- Delivery-focused gate: three consecutive passes before Wave 2; final unit coverage includes close/reopen ownership transfer, refresh coalescing, dialog deduplication, and generation reset.
+- Foundry 14.364 runtime:
+  - `e2e-smoke.mjs`: passed, including live rendered preview center and created Tile bounds.
+  - `e2e-placement-race.mjs`: passed twice consecutively.
+  - `e2e-reliability.mjs`: passed.
+  - `e2e-settings-migration.mjs`: passed.
+  - `e2e-delivery.mjs`: all functional cases passed. The deliberate hard GM reload produces two classified socketlib transport-disconnect diagnostics; no unexpected module/browser errors remain.
+- Independent final Standards and Spec reviews over `origin/dev...HEAD` found no unresolved code defects after verified fixes.
 
-- `scripts/apps/drawing-prompt-manager.mjs`
-- `tests/manager-delivery.test.mjs`
+## Evidence still requiring a human or unavailable integration
 
-The interrupted agent was addressing the final delivery review findings:
-
-1. If manager A closes during Send and manager B opens before persistence finishes, B must adopt the completed prompt; A must never render again.
-2. Opening an unresolved persisted prompt must render and then show the appropriate Retry/Continue or Retry/Back modal exactly once.
-3. The remaining duplicate-Send test must use deferred barriers, not 5 ms polling/sleeps.
-
-The agent hit the Codex usage limit before reporting or committing. Treat these edits as unfinished and unverified: inspect the full diff, complete the TDD cycle, run focused tests repeatedly plus `rtk proxy node --test tests/`, then run fresh independent Standards and Spec reviews for the full delivery range `cc64775..HEAD`.
-
-## Remaining implementation
-
-After the delivery gate passes: implement player-local editable recovery and browser-restart coverage; retained Closed/Archived prompt lifecycle, close-time full capture/fallbacks, and the separate library using the registered editor singleton; rendered Tile-bounds/cursor alignment regression; full Foundry verification; Linear reconciliation; then push and open a PR to `dev`. Do not merge, release, tag, or mark Linear issues Done.
+- Human walkthrough sign-off remains required for Recovery reload, Close/reopen, Archive/Restore/Delete, singleton windows, and rendered cursor alignment. Agents must not claim human completion.
+- No dedicated runtime harness currently automates Recovery through a real player-page reload or the lifecycle/library walkthrough; those behaviors are covered by focused unit tests.
+- Linear reconciliation remains pending because no Linear integration was available in this session. Move issues to human review with this commit/runtime evidence; do not mark them Done.
+- Forge timing remains explicitly unverified.
+- Do not merge, release, tag, target `main`, bump the release version, close older PRs, or mark Linear work Done without authorization.
