@@ -5,6 +5,7 @@ import { createMapStorageAdapter, createRecoveryCopyModule } from "../scripts/dr
 
 const identity = Object.freeze({
   worldId: "world-1",
+  gmUserId: "gm-1",
   userId: "user-1",
   assignmentId: "assignment-1",
   promptId: "prompt-1",
@@ -45,7 +46,7 @@ test("Recovery copy isolates world, user, prompt, assignment, and canvas identit
   recovery.saveRecoveryCopy(identity, { ops: [stroke], pointer: 1 });
 
   for ( const mismatch of [
-    { worldId: "world-2" }, { userId: "user-2" }, { assignmentId: "assignment-2" },
+    { worldId: "world-2" }, { gmUserId: "gm-2" }, { userId: "user-2" }, { assignmentId: "assignment-2" },
     { promptId: "prompt-2" }, { width: 641 }, { height: 481 }
   ] ) {
     assert.equal(recovery.resolveRecovery({ ...identity, ...mismatch }, null).kind, "blank");

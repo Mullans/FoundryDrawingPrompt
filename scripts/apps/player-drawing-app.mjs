@@ -469,6 +469,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     const prompt = this.assignmentPayload.prompt;
     return {
       worldId: game.world?.id ?? game.worldId,
+      gmUserId: prompt.gmUserId,
       userId: game.user.id,
       assignmentId: assignment.id,
       promptId: prompt.id,

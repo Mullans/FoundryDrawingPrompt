@@ -230,6 +230,22 @@ test("Delete requires explicit confirmation and removes the Prompt entry", async
   }]);
 });
 
+test("Delete failure preserves the Prompt and does not queue Recovery cleanup", async () => {
+  const FilePicker = foundry.applications.apps.FilePicker;
+  const originalDelete = FilePicker.delete;
+  storedPrompt.assignments["a-saved"].retainedCapture = {
+    kind: "saved-preview", overlayPath: "drawing-prompts/pending/a-saved/preview.webp"
+  };
+  FilePicker.delete = async () => { throw new Error("simulated file deletion failure"); };
+  try {
+    await assert.rejects(() => deletePrompt("p-save", { confirmed: true }), /Could not remove all module-owned Prompt data/);
+    assert.notEqual(storedPrompt, null);
+    assert.deepEqual(game.settings.get("drawing-prompts", "recoveryTombstones"), []);
+  } finally {
+    FilePicker.delete = originalDelete;
+  }
+});
+
 test("Recovery tombstones clear on the player's next connection acknowledgement", async () => {
   await deletePrompt("p-save", { confirmed: true });
   const originalClear = emit.clearRecoveryCopy;

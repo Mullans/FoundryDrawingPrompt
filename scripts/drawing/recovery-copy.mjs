@@ -107,10 +107,16 @@ export function createRecoveryCopyModule({
   function clearRecoveryCopy(identity) {
     const normalizedIdentity = requireIdentity(identity);
     try {
-      storage.removeItem(storageKey(normalizedIdentity));
+      const key = storageKey(normalizedIdentity);
+      const serialized = storage.getItem(key);
+      if ( !serialized ) return true;
+      const record = JSON.parse(serialized);
+      // The authenticated GM is checked against this locally persisted owner, not
+      // merely against the untrusted cleanup payload.
+      if ( !isRecoveryRecord(record, normalizedIdentity) ) return false;
+      storage.removeItem(key);
       return true;
-    } catch (error) {
-      storageFailure(error);
+    } catch (_error) {
       return false;
     }
   }
@@ -150,6 +156,7 @@ function storageKey(identity) {
 function requireIdentity(identity) {
   const normalized = {
     worldId: requiredText(identity?.worldId),
+    gmUserId: requiredText(identity?.gmUserId),
     userId: requiredText(identity?.userId),
     assignmentId: requiredText(identity?.assignmentId),
     promptId: requiredText(identity?.promptId),
@@ -173,7 +180,7 @@ function positiveInteger(value) {
 function isRecoveryRecord(record, identity) {
   return record?.schema === 1
     && Number.isFinite(record.savedAt)
-    && ["worldId", "userId", "assignmentId", "promptId", "width", "height"]
+    && ["worldId", "gmUserId", "userId", "assignmentId", "promptId", "width", "height"]
       .every(field => record[field] === identity[field])
     && isOperationLog(record.opLog)
     && (record.baseSubmission == null || isEligibleFallback(record.baseSubmission, identity));

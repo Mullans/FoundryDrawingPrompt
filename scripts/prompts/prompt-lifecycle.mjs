@@ -362,7 +362,8 @@ export async function deletePrompt(promptId, { confirmed = false } = {}) {
   if ( !confirmed ) return false;
   const prompt = requireOwnedPrompt(promptId);
   const internalPaths = moduleOwnedPromptPaths(prompt);
-  await Promise.all(internalPaths.map(path => deleteDataFile(path)));
+  const deleted = await Promise.all(internalPaths.map(path => deleteDataFile(path)));
+  if ( deleted.some(result => !result) ) throw new Error("Could not remove all module-owned Prompt data.");
   await deletePromptEntry(promptId);
   for ( const assignment of Object.values(prompt.assignments) ) clearPendingSubmission(assignment.id);
   await queueRecoveryTombstones(prompt);
