@@ -205,12 +205,15 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const { hideApplicationForCanvasYield, restoreApplicationAfterCanvasYield } = await import(
       "../foundry/canvas-place-preview.mjs"
     );
-    const app = this.#instance;
-    const hideState = hideApplicationForCanvasYield(app);
+    const apps = [
+      this.#instance,
+      foundry.applications.instances.get("drawing-prompts-library")
+    ].filter(Boolean);
+    const hideStates = apps.map(app => [app, hideApplicationForCanvasYield(app)]);
     try {
       return await work();
     } finally {
-      restoreApplicationAfterCanvasYield(app, hideState);
+      for ( const [app, state] of hideStates.reverse() ) restoreApplicationAfterCanvasYield(app, state);
     }
   }
 
@@ -245,6 +248,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#presentedDeliveryWarningKey = null;
     this.#refreshPromise = null;
     this.#refreshRequested = false;
+    this.#mayAdoptDeliveryCompletion = true;
   }
 
   #expiryTimerId;
@@ -254,6 +258,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #presentedDeliveryWarningKey;
   #refreshPromise;
   #refreshRequested;
+  #mayAdoptDeliveryCompletion;
   #closed;
   #savedDraftSignature;
   #formListenersAttached = false;
@@ -343,7 +348,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
           }
           this.activePrompt = latest;
         }
-        else if ( !this.isSending ) await this.adoptMostRecentActivePrompt();
+        else if ( this.#mayAdoptDeliveryCompletion && !this.isSending ) {
+          await this.adoptMostRecentActivePrompt();
+          if ( this.activePrompt ) this.#mayAdoptDeliveryCompletion = false;
+        }
         if ( this.#closed ) return;
         await this.render({ parts: ["body"] });
       } while ( this.#refreshRequested && !this.#closed );
@@ -446,6 +454,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   #resetToNewDraft(overrides = {}) {
     this.activePrompt = null;
+    this.#mayAdoptDeliveryCompletion = false;
     this.draft = {
       promptText: "",
       promptName: "",

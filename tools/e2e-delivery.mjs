@@ -51,16 +51,14 @@ async function join(page, name) {
 
 async function openSetup() {
   progress("open compose fixture");
+  await gm.evaluate(() => {
+    deliveryTest.openNewPromise = game.modules.get("drawing-prompts").api.openNewPrompt();
+  });
+  const discard = gm.locator("dialog button[data-action='discard']").last();
+  if ( await discard.isVisible({ timeout: 1000 }).catch(() => false) ) await discard.click();
   await gm.evaluate(async () => {
-    await foundry.applications.instances.get("drawing-prompts-manager")?.close();
-    await game.modules.get("drawing-prompts").api.openPromptManager();
-    // The current manager auto-adopts unfinished prompts and has no New action.
-    // Set up compose without deleting any earlier scenario or preexisting prompt.
-    const manager = foundry.applications.instances.get("drawing-prompts-manager");
-    manager.activePrompt = null;
-    manager.selectedAssignmentId = null;
-    manager.draft.selectedUserIds = new Set();
-    await manager.render({ parts: ["body"] });
+    await deliveryTest.openNewPromise;
+    delete deliveryTest.openNewPromise;
     // Opening may have scheduled the prior prompt's warning before the fixture switches
     // to compose mode. Resolve that now-stale modal without mutating the retained prompt.
     for ( const dialog of document.querySelectorAll("dialog.dp-delivery-warning-dialog") ) dialog.close();
@@ -74,7 +72,7 @@ async function send(name, selected) {
   progress(`fill/send ${name}`);
   const manager = gm.locator(".drawing-prompts-manager");
   await manager.locator("textarea[name='promptText']").fill(`${RUN}-${name}`);
-  await manager.locator("input[name='drawingName']").fill(`${RUN}-${name}`);
+  await manager.locator("input[name='promptName']").fill(`${RUN}-${name}`);
   await manager.locator("input[name='canvasWidth']").fill("256");
   await manager.locator("input[name='canvasHeight']").fill("256");
   // Snapshot identifiers, not nth() locators over a shrinking :checked collection.
@@ -145,7 +143,7 @@ async function reloadGM() {
 
 async function openReloadedPrompt(id, { hasRecipients }) {
   await gm.evaluate(async id => {
-    await game.modules.get("drawing-prompts").api.openPromptManager();
+    await game.modules.get("drawing-prompts").api.openPrompt(id);
     const manager = foundry.applications.instances.get("drawing-prompts-manager");
     if ( manager.activePrompt?.id !== id ) throw new Error("Reload fixture was not adopted as the newest active prompt");
     await manager.render({ parts: ["body"] });
@@ -268,7 +266,10 @@ try {
   assert.equal(await gm.locator("textarea[name='promptText']").inputValue(), `${RUN}-zero`);
   assert.equal(await gm.locator(".dp-review-mode").count(), 0);
   await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='back']").last().click();
-  await gm.waitForFunction(text => !game.journal.some(e => e.getFlag("drawing-prompts", "prompt")?.promptText === text), `${RUN}-zero`);
+  await gm.waitForFunction(text => game.journal.some(e => {
+    const prompt = e.getFlag("drawing-prompts", "prompt");
+    return prompt?.promptText === text && prompt.lifecycleStatus === "draft";
+  }), `${RUN}-zero`);
   assert.equal(await gm.locator("textarea[name='promptText']").inputValue(), `${RUN}-zero`);
   await restoreOpen();
 
@@ -320,7 +321,7 @@ try {
   const pendingReload = await gm.evaluate(async ({ text, userId }) => {
     const { DrawingPrompt } = await import("/modules/drawing-prompts/scripts/prompts/prompt-models.mjs");
     const { createPromptEntry } = await import("/modules/drawing-prompts/scripts/prompts/persistence-service.mjs");
-    const prompt = DrawingPrompt.create({ promptText: text, drawingName: text,
+    const prompt = DrawingPrompt.create({ promptText: text, promptName: text,
       canvasWidth: 256, canvasHeight: 256, sentAt: Date.now(), timerStatus: "none" }, [userId]);
     await createPromptEntry(prompt);
     return prompt.toObject();

@@ -54,3 +54,15 @@ The completed product grill is recorded in `docs/design/prompt-lifecycle-and-rec
 3. **Library browser UI.** Make the singleton library the scene-control entry point and keep it open beside the manager. Implement unified searchable rows, status badges, current-row highlighting, archived visibility, grouped field/direction sorting with client defaults, the accessible anchored metadata popover, contextual More-actions menus, all approved empty states, and responsive layout following the stored mockup.
 4. **Lifecycle cleanup and hooks.** Enforce close-first deletion for Open Prompts with the approved exact error, close the manager after deleting its displayed non-Open Prompt, refresh it after Archive/Restore, preserve all selective-cleanup rules, and emit creation/update/send/lifecycle hooks only after their defined persistence and recipient-success boundaries.
 5. **Verification.** Add focused model, comparator, API, manager-transition, singleton, offline-participant, accessibility, and rendered-library tests. Run the complete unit suite and the relevant Foundry 14.364 runtime flows, clear disposable pre-release Prompt data before runtime verification, update this checkpoint with evidence, and perform only the final review gate required by the active effort.
+
+## Prompt Library browser implementation evidence
+
+The approved follow-up is implemented on `codex/prompt-library-browser` in coherent model/persistence, settings/localization, library UI, and manager/API commits. The scene control now opens the retained Prompt Library; the explicit public entry points are `openPromptLibrary()`, `openNewPrompt()`, `openPrompt(id)`, and `openPromptCopy(id)`. Draft persistence, canonical `promptName`, create/update/send separation, unsaved-change handling, unified sorting/filtering, metadata popovers, contextual actions, copy sanitization, and exact lifecycle rules are covered by focused tests.
+
+Integration verification found and fixed two cross-surface issues: a deliberately opened empty Draft could be replaced by an unrelated live delivery refresh, and the library could intercept the canvas while the manager yielded for interactive placement. Delivery-completion ownership transfer remains available only to a newly registered manager that has not explicitly selected a Draft or Prompt. Interactive placement now temporarily yields both singleton windows and restores them afterward.
+
+- Complete repository unit gate: passed on 2026-09-11.
+- Foundry 14.364 `e2e-smoke.mjs`: passed end-to-end through library → compose → send → draw → snapshot → submit → save → place → close, with clean captured GM/player consoles.
+- Foundry 14.364 `e2e-placement-race.mjs`: passed all Tile/Token commit, abandon, and cleanup cases.
+- Foundry 14.364 `e2e-settings-migration.mjs`: passed and restored original settings.
+- The delivery and reliability harnesses were updated to the explicit API and Draft semantics. Their broader legacy scenarios remain independently covered by the repository unit gate; runtime attempts exposed pre-existing timing/focus sensitivity outside the Prompt Library slice and are not claimed as passing evidence for this follow-up.
