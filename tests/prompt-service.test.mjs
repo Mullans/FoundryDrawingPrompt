@@ -211,7 +211,7 @@ test("Close reports incremental retained-capture persistence failure through the
   }
 });
 
-test("Prompt lifecycle only archives Closed Prompts and restores them", async () => {
+test("Prompt lifecycle archives Closed Prompts and restores them", async () => {
   await assert.rejects(() => archivePrompt("p-save"), /Illegal transition/);
   await closePrompt("p-save");
   const archived = await archivePrompt("p-save");
@@ -220,9 +220,20 @@ test("Prompt lifecycle only archives Closed Prompts and restores them", async ()
   assert.equal(restored.lifecycleStatus, PROMPT_STATUS.CLOSED);
 });
 
+test("Prompt lifecycle archives Draft Prompts and restores them as Draft", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.DRAFT;
+  storedPrompt.assignments = {};
+  const archived = await archivePrompt("p-save");
+  assert.equal(archived.lifecycleStatus, PROMPT_STATUS.ARCHIVED);
+  assert.equal(archived.archivedFromStatus, PROMPT_STATUS.DRAFT);
+  const restored = await restorePrompt("p-save");
+  assert.equal(restored.lifecycleStatus, PROMPT_STATUS.DRAFT);
+});
+
 test("Delete requires explicit confirmation and removes the Prompt entry", async () => {
   assert.equal(await deletePrompt("p-save", { confirmed: false }), false);
   assert.notEqual(storedPrompt, null);
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
   assert.equal(await deletePrompt("p-save", { confirmed: true }), true);
   assert.equal(storedPrompt, null);
   assert.deepEqual(game.settings.get("drawing-prompts", "recoveryTombstones"), [{
@@ -231,6 +242,7 @@ test("Delete requires explicit confirmation and removes the Prompt entry", async
 });
 
 test("Delete failure preserves the Prompt and does not queue Recovery cleanup", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
   const FilePicker = foundry.applications.apps.FilePicker;
   const originalDelete = FilePicker.delete;
   storedPrompt.assignments["a-saved"].retainedCapture = {
@@ -246,7 +258,16 @@ test("Delete failure preserves the Prompt and does not queue Recovery cleanup", 
   }
 });
 
+test("Delete rejects Open Prompts with the close-first message", async () => {
+  await assert.rejects(
+    () => deletePrompt("p-save", { confirmed: true }),
+    /Cannot delete an open prompt\. Please close from the Prompt Manager and try again\./
+  );
+  assert.notEqual(storedPrompt, null);
+});
+
 test("Recovery tombstones clear on the player's next connection acknowledgement", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
   await deletePrompt("p-save", { confirmed: true });
   const originalClear = emit.clearRecoveryCopy;
   emit.clearRecoveryCopy = async (_userId, identity) => identity.assignmentId === "a-saved";
@@ -259,6 +280,7 @@ test("Recovery tombstones clear on the player's next connection acknowledgement"
 });
 
 test("Delete removes only recorded internal capture files and preserves exported assets", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
   const assignment = storedPrompt.assignments["a-saved"];
   assignment.pendingSubmission = { staged: {
     overlayPath: "drawing-prompts/pending/a-saved/pending.webp",

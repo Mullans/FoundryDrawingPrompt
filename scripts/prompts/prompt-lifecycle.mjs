@@ -2,7 +2,7 @@
  * Prompt lifecycle — create/send, finish, cancel, reopen, resend, redeliver.
  */
 
-import { FILES_UPLOAD_PERMISSION, INTERNAL, MODULE_ID, STATUS } from "../constants.mjs";
+import { FILES_UPLOAD_PERMISSION, INTERNAL, MODULE_ID, PROMPT_STATUS, STATUS } from "../constants.mjs";
 import { emit } from "../socket.mjs";
 import { deleteDataFile, ensureDir, stagingDir } from "./asset-service.mjs";
 import { clearFramingViewAssets, hasSavedFramingViewAssets } from "./dual-save.mjs";
@@ -50,7 +50,7 @@ export async function createAndSendPrompt(draft) {
   const timerSeconds = Number(draft.timerSeconds || 0);
   const prompt = DrawingPrompt.create({
     promptText: draft.promptText,
-    drawingName: draft.drawingName,
+    promptName: draft.promptName,
     canvasWidth: Number(draft.canvasWidth),
     canvasHeight: Number(draft.canvasHeight),
     background: { ...draft.background },
@@ -58,7 +58,8 @@ export async function createAndSendPrompt(draft) {
     sentAt,
     timerStatus: timerSeconds > 0 ? "paused" : "none",
     deadlineAt: null,
-    remainingMs: timerSeconds > 0 ? timerSeconds * 1000 : null
+    remainingMs: timerSeconds > 0 ? timerSeconds * 1000 : null,
+    selectedUserIds
   }, selectedUserIds);
 
   const storageStarted = performance.now();
@@ -113,7 +114,7 @@ export async function retryPromptDeliveries(promptId) {
   return prompt;
 }
 
-/** Withdraw unconfirmed invitations. Retain successful recipients; discard empty setup. */
+/** Withdraw unconfirmed invitations. Retain successful recipients; return empty setup to Draft. */
 export async function continuePromptDeliveries(promptId) {
   assertGM();
   let prompt = loadPrompt(promptId);
@@ -130,7 +131,15 @@ export async function continuePromptDeliveries(promptId) {
     }
   }
   prompt = loadPrompt(promptId);
-  if ( !prompt.deliverySummary.hasRecipients ) await deletePromptEntry(promptId);
+  if ( !prompt.deliverySummary.hasRecipients ) {
+    prompt.assignments = {};
+    prompt.lifecycleStatus = PROMPT_STATUS.DRAFT;
+    prompt.sentAt = null;
+    prompt.timerState = Number(prompt.timerSeconds || 0) > 0
+      ? { timerStatus: "paused", deadlineAt: null, remainingMs: Number(prompt.timerSeconds) * 1000 }
+      : { timerStatus: "none", deadlineAt: null, remainingMs: null };
+    await savePrompt(prompt);
+  }
   Hooks.callAll("drawing-prompts.deliveryUpdated", prompt, prompt.deliverySummary);
   return prompt;
 }
@@ -160,9 +169,51 @@ export async function invitePromptRecipients(promptId, userIds) {
  * @param {object} options Prompt options.
  * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
  */
-export async function createPrompt(options = {}) {
-  const { awaitDeliveries, ...draft } = options;
-  return createAndSendPrompt({ ...draft, awaitDeliveries });
+export async function createPrompt(draft = {}) {
+  assertGM();
+  const prompt = DrawingPrompt.create({
+    ...draftFields(draft),
+    lifecycleStatus: PROMPT_STATUS.DRAFT,
+    createdAt: null,
+    sentAt: null,
+    timerStatus: Number(draft.timerSeconds || 0) > 0 ? "paused" : "none",
+    deadlineAt: null,
+    remainingMs: Number(draft.timerSeconds || 0) > 0 ? Number(draft.timerSeconds) * 1000 : null,
+    selectedUserIds: draft.selectedUserIds ?? []
+  });
+  await createPromptEntry(prompt);
+  Hooks.callAll("drawing-prompts.promptCreated", prompt);
+  await refreshManager();
+  return prompt;
+}
+
+/** Save editable configuration for an existing Draft. */
+export async function updatePrompt(promptId, draft = {}) {
+  assertGM();
+  const prompt = requireOwnedPrompt(promptId);
+  if ( prompt.lifecycleStatus !== PROMPT_STATUS.DRAFT ) {
+    throw new Error(`Illegal Draft update for ${prompt.lifecycleStatus} Prompt`);
+  }
+  Object.assign(prompt, draftFields(draft));
+  prompt.selectedUserIds = [...new Set(Array.isArray(draft.selectedUserIds) ? draft.selectedUserIds : prompt.selectedUserIds)];
+  prompt.timerState = Number(prompt.timerSeconds || 0) > 0
+    ? { timerStatus: "paused", deadlineAt: null, remainingMs: Number(prompt.timerSeconds) * 1000 }
+    : { timerStatus: "none", deadlineAt: null, remainingMs: null };
+  await savePrompt(prompt, { draftOnly: true });
+  Hooks.callAll("drawing-prompts.promptUpdated", prompt);
+  await refreshManager();
+  return prompt;
+}
+
+function draftFields(draft) {
+  return {
+    promptName: String(draft.promptName ?? "").trim(),
+    promptText: String(draft.promptText ?? ""),
+    canvasWidth: Number(draft.canvasWidth ?? 512),
+    canvasHeight: Number(draft.canvasHeight ?? 512),
+    background: { ...draft.background },
+    timerSeconds: Number(draft.timerSeconds || 0) || null
+  };
 }
 
 /**
@@ -361,6 +412,9 @@ export async function deletePrompt(promptId, { confirmed = false } = {}) {
   assertGM();
   if ( !confirmed ) return false;
   const prompt = requireOwnedPrompt(promptId);
+  if ( prompt.lifecycleStatus === PROMPT_STATUS.OPEN ) {
+    throw new Error("Cannot delete an open prompt. Please close from the Prompt Manager and try again.");
+  }
   const internalPaths = moduleOwnedPromptPaths(prompt);
   const deleted = await Promise.all(internalPaths.map(path => deleteDataFile(path)));
   if ( deleted.some(result => !result) ) throw new Error("Could not remove all module-owned Prompt data.");

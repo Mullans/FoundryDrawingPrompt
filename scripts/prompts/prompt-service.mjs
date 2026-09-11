@@ -47,6 +47,7 @@ export {
   cancelAssignment,
   createAndSendPrompt,
   createPrompt,
+  updatePrompt,
   retryPromptDeliveries,
   continuePromptDeliveries,
   invitePromptRecipients,
@@ -151,7 +152,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
  */
 function resolveDrawingName(prompt, explicitName) {
   return String(explicitName ?? defaultAssignmentAssetName({
-    drawingName: prompt.drawingName,
+    promptName: prompt.promptName,
     promptText: prompt.promptText
   })).trim();
 }

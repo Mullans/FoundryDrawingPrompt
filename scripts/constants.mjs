@@ -12,6 +12,7 @@ export const STATUS = Object.freeze({
 });
 
 export const PROMPT_STATUS = Object.freeze({
+  DRAFT: "draft",
   OPEN: "open",
   CLOSED: "closed",
   ARCHIVED: "archived"

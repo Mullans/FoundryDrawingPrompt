@@ -252,7 +252,7 @@ export class DrawingPrompt {
     this.id = data.id ?? null;
     this.gmUserId = data.gmUserId ?? globalThis.game?.user?.id ?? null;
     this.promptText = data.promptText ?? "";
-    this.drawingName = data.drawingName ?? "";
+    this.promptName = data.promptName ?? "";
     this.assetFolderName = data.assetFolderName ?? null;
     this.canvasWidth = Number(data.canvasWidth ?? 512);
     this.canvasHeight = Number(data.canvasHeight ?? 512);
@@ -267,12 +267,15 @@ export class DrawingPrompt {
       framedPath: data.background?.framedPath ?? null
     };
     this.timerSeconds = data.timerSeconds ?? null;
-    this.createdAt = data.createdAt ?? Date.now();
+    this.createdAt = data.createdAt ?? null;
     this.sentAt = data.sentAt ?? null;
     this.lifecycleStatus = Object.values(PROMPT_STATUS).includes(data.lifecycleStatus)
       ? data.lifecycleStatus : PROMPT_STATUS.OPEN;
     this.closedAt = data.closedAt ?? null;
     this.archivedAt = data.archivedAt ?? null;
+    this.archivedFromStatus = [PROMPT_STATUS.DRAFT, PROMPT_STATUS.CLOSED].includes(data.archivedFromStatus)
+      ? data.archivedFromStatus : null;
+    this.selectedUserIds = [...new Set(Array.isArray(data.selectedUserIds) ? data.selectedUserIds.filter(id => typeof id === "string") : [])];
     this.timerState = data;
     this.assignments = {};
 
@@ -293,7 +296,7 @@ export class DrawingPrompt {
       ...data,
       id: data.id ?? null,
       gmUserId: data.gmUserId ?? game.user.id,
-      createdAt: data.createdAt ?? Date.now(),
+      createdAt: data.createdAt ?? null,
       assignments: {}
     });
 
@@ -328,7 +331,7 @@ export class DrawingPrompt {
       id: this.id,
       gmUserId: this.gmUserId,
       promptText: this.promptText,
-      drawingName: this.drawingName,
+      promptName: this.promptName,
       assetFolderName: this.assetFolderName,
       canvasWidth: this.canvasWidth,
       canvasHeight: this.canvasHeight,
@@ -339,6 +342,8 @@ export class DrawingPrompt {
       lifecycleStatus: this.lifecycleStatus,
       closedAt: this.closedAt,
       archivedAt: this.archivedAt,
+      archivedFromStatus: this.archivedFromStatus,
+      selectedUserIds: [...this.selectedUserIds],
       timerStatus: this.timerStatus,
       deadlineAt: this.deadlineAt,
       remainingMs: this.remainingMs,
@@ -414,18 +419,20 @@ export class DrawingPrompt {
     this.archivedAt = null;
   }
 
-  /** Archive a Closed Prompt. */
+  /** Archive a saved Draft or Closed Prompt. */
   markArchived(ts) {
-    this.#assertLifecycle([PROMPT_STATUS.CLOSED], PROMPT_STATUS.ARCHIVED);
+    this.#assertLifecycle([PROMPT_STATUS.DRAFT, PROMPT_STATUS.CLOSED], PROMPT_STATUS.ARCHIVED);
+    this.archivedFromStatus = this.lifecycleStatus;
     this.lifecycleStatus = PROMPT_STATUS.ARCHIVED;
     this.archivedAt = ts;
   }
 
-  /** Restore an Archived Prompt to the Closed library. */
+  /** Restore an Archived Prompt to its prior Draft or Closed state. */
   markRestored() {
     this.#assertLifecycle([PROMPT_STATUS.ARCHIVED], PROMPT_STATUS.CLOSED);
-    this.lifecycleStatus = PROMPT_STATUS.CLOSED;
+    this.lifecycleStatus = this.archivedFromStatus === PROMPT_STATUS.DRAFT ? PROMPT_STATUS.DRAFT : PROMPT_STATUS.CLOSED;
     this.archivedAt = null;
+    this.archivedFromStatus = null;
   }
 
   /** Reopen a Closed Prompt without resuming its timer. */
@@ -434,6 +441,14 @@ export class DrawingPrompt {
     this.lifecycleStatus = PROMPT_STATUS.OPEN;
     this.closedAt = null;
     this.archivedAt = null;
+    this.archivedFromStatus = null;
+  }
+
+  /** Mark a persisted Draft Open when initial sending begins. */
+  markSent(ts) {
+    this.#assertLifecycle([PROMPT_STATUS.DRAFT], PROMPT_STATUS.OPEN);
+    this.lifecycleStatus = PROMPT_STATUS.OPEN;
+    this.sentAt = ts;
   }
 
   #assertLifecycle(allowed, target) {
