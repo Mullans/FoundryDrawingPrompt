@@ -335,6 +335,10 @@ try {
   await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='retry']").last().click();
   const recoveredRetry = await waitDelivery("reload-pending", ["received"]);
   assert.deepEqual(Object.keys(recoveredRetry.assignments), Object.keys(pendingReload.assignments), "reload Retry keeps the original assignment");
+  const recoveredRetryId = Object.keys(recoveredRetry.assignments)[0];
+  await player.waitForFunction(id => [...foundry.applications.instances.values()].some(app =>
+    app.assignmentPayload?.assignment?.id === id && app.rendered
+  ), recoveredRetryId);
 
   // A real active attempt is lost with the page, not timed out in the fixture.
   // The other client already received its invitation and must stay a recipient.
