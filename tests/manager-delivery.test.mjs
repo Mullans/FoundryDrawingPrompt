@@ -186,8 +186,10 @@ test("Archived Prompt inspection disables assignment mutations", async () => {
     id: "archived",
     gmUserId: "gm",
     lifecycleStatus: "archived",
+    timerStatus: "paused",
     assignments: {
-      submitted: { id: "submitted", userId: "u1", userName: "Ada", status: "submitted", delivery: { status: "received" }, assets: { overlayPath: "drawing.webp" } }
+      submitted: { id: "submitted", userId: "u1", userName: "Ada", status: "submitted", delivery: { status: "received" }, assets: { overlayPath: "drawing.webp" } },
+      cancelled: { id: "cancelled", userId: "u2", userName: "Ben", status: "cancelled", delivery: { status: "received" } }
     }
   });
   manager.selectedAssignmentId = "submitted";
@@ -195,6 +197,9 @@ test("Archived Prompt inspection disables assignment mutations", async () => {
   assert.equal(context.archivedReadOnly, true);
   assert.equal(context.selectedCanSave, false);
   assert.equal(context.selectedCanPlace, false);
+  assert.equal(context.canCancelAll, false);
+  assert.equal(context.canResendAll, false);
+  assert.equal(context.timerControls.disabled, true);
   assert.equal(context.rows[0].canReopen, false);
   assert.equal(context.rows[0].canCancel, false);
   assert.equal(context.rows[0].canResend, false);

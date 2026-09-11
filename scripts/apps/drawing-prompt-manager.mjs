@@ -117,7 +117,6 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const app = this.#instance ??= new this();
     await app.render({ force: true });
     app.bringToFront();
-    void app.showDeliveryWarning();
     return app;
   }
 
@@ -143,7 +142,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   /** Open an unsaved copy of a retained Prompt's reusable configuration. */
   static async openPromptCopy(promptId) {
     const source = loadPrompt(promptId);
-    if ( !source ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+    if ( !source || source.gmUserId !== game.user.id ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
     const app = await this.open();
     if ( !await app.#confirmDraftTransition() ) return app;
     app.#resetToNewDraft({
@@ -453,6 +452,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   #resetToNewDraft(overrides = {}) {
+    this.#dismissDeliveryWarning();
     this.activePrompt = null;
     this.#mayAdoptDeliveryCompletion = false;
     this.draft = {
@@ -471,6 +471,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.latestSnapshots.clear();
     this.latestOverlaySnapshots.clear();
     this.#sourceFramingPreviewCache.clear();
+  }
+
+  #dismissDeliveryWarning() {
+    void this.#deliveryWarningDialog?.close?.();
+    this.#deliveryWarningDialog = null;
+    this.#deliveryWarningPromptId = null;
+    this.#presentedDeliveryWarningKey = null;
   }
 
   async #confirmDraftTransition() {
@@ -536,8 +543,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       setupLocked: this.isSending || Boolean(this.activePrompt && !isDraft),
       deliveryFeedback: null,
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
-      canCancelAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.isActive)),
-      canResendAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
+      canCancelAll: !archivedReadOnly && Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.isActive)),
+      canResendAll: !archivedReadOnly && Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
       canClosePrompt: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.OPEN,
       canOpenPromptToPlayers: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.CLOSED,
       archivedReadOnly,
@@ -807,7 +814,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #timerControlsContext() {
     if ( !this.activePrompt ) return null;
     const paused = this.activePrompt.timerStatus === "paused";
-    const disabled = this.activePrompt.timerStatus === "none";
+    const disabled = this.activePrompt.timerStatus === "none" || this.activePrompt.lifecycleStatus === PROMPT_STATUS.ARCHIVED;
     const extendShort = timerSettingSeconds(SETTINGS.TIMER_EXTEND_SHORT, 30);
     const extendLong = timerSettingSeconds(SETTINGS.TIMER_EXTEND_LONG, 120);
     const reduceShort = timerSettingSeconds(SETTINGS.TIMER_REDUCE_SHORT, 30);
@@ -1600,7 +1607,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onToggleTimer() {
-    if ( !this.activePrompt || this.activePrompt.timerStatus === "none" ) return;
+    if ( !this.activePrompt || this.activePrompt.lifecycleStatus === PROMPT_STATUS.ARCHIVED || this.activePrompt.timerStatus === "none" ) return;
     const service = await import("../prompts/prompt-service.mjs");
     this.activePrompt = this.activePrompt.timerStatus === "paused"
       ? await service.resumePromptTimer(this.activePrompt.id)
@@ -1609,21 +1616,21 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onResetTimer() {
-    if ( !this.activePrompt || this.activePrompt.timerStatus === "none" ) return;
+    if ( !this.activePrompt || this.activePrompt.lifecycleStatus === PROMPT_STATUS.ARCHIVED || this.activePrompt.timerStatus === "none" ) return;
     const service = await import("../prompts/prompt-service.mjs");
     this.activePrompt = await service.resetPromptTimer(this.activePrompt.id);
   }
 
   /** @this {DrawingPromptManager} */
   static async #onStopTimer() {
-    if ( !this.activePrompt || this.activePrompt.timerStatus === "none" ) return;
+    if ( !this.activePrompt || this.activePrompt.lifecycleStatus === PROMPT_STATUS.ARCHIVED || this.activePrompt.timerStatus === "none" ) return;
     const service = await import("../prompts/prompt-service.mjs");
     this.activePrompt = await service.stopPromptTimer(this.activePrompt.id);
   }
 
   /** @this {DrawingPromptManager} */
   static async #onAdjustTimer(_event, target) {
-    if ( !this.activePrompt || this.activePrompt.timerStatus === "none" ) return;
+    if ( !this.activePrompt || this.activePrompt.lifecycleStatus === PROMPT_STATUS.ARCHIVED || this.activePrompt.timerStatus === "none" ) return;
     const deltaMs = Number(target.dataset.deltaMs);
     if ( !Number.isFinite(deltaMs) ) return;
     const service = await import("../prompts/prompt-service.mjs");
@@ -1647,7 +1654,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onCancelAll() {
-    if ( !this.activePrompt ) return;
+    if ( !this.activePrompt || this.activePrompt.lifecycleStatus === PROMPT_STATUS.ARCHIVED ) return;
     const confirmed = await DialogV2.confirm({
       window: { title: "DRAWING-PROMPTS.manager.cancelAllDialog.title", icon: "fa-solid fa-ban" },
       content: game.i18n.localize("DRAWING-PROMPTS.manager.cancelAllDialog.confirm"),
@@ -1662,7 +1669,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onResendAll() {
-    if ( !this.activePrompt ) return;
+    if ( !this.activePrompt || this.activePrompt.lifecycleStatus === PROMPT_STATUS.ARCHIVED ) return;
     const service = await import("../prompts/prompt-service.mjs");
     await service.resendAllAssignments(this.activePrompt.id);
   }
@@ -2025,10 +2032,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    */
   async #switchToPrompt(promptId) {
     if ( !promptId || promptId === this.activePrompt?.id ) return;
-    this.activePrompt = loadPrompt(promptId);
-    if ( !this.activePrompt ) return;
-    this.#deliveryWarningPromptId = null;
-    this.#presentedDeliveryWarningKey = null;
+    const prompt = loadPrompt(promptId);
+    if ( !prompt || prompt.gmUserId !== game.user.id ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+    this.#dismissDeliveryWarning();
+    this.activePrompt = prompt;
     this.#adoptDraftFromPrompt();
     this.#savedDraftSignature = this.#draftSignature();
     this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;

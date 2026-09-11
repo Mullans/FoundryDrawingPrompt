@@ -159,7 +159,7 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
   }
 
   async _prepareContext() {
-    const all = this.loadPrompts();
+    const all = this.loadPrompts().filter(prompt => prompt.gmUserId === game.user.id);
     const filtered = filterAndSortPrompts([...all], { query: this.#query, showArchived: this.#showArchived, sortField: this.#sortField, sortDirection: this.#sortDirection });
     const needle = this.#query.trim().toLocaleLowerCase();
     const hiddenArchivedMatch = !this.#showArchived && all.some(prompt => prompt.lifecycleStatus === "archived"

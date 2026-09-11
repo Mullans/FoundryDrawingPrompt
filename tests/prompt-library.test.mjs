@@ -47,10 +47,10 @@ function libraryWith({ prompts = [], services = {}, openManager = async () => {}
 }
 
 const prompts = [
-  { id: "open", promptName: "Goblin", promptText: "Ambush", lifecycleStatus: "open", createdAt: 10, sentAt: 40 },
-  { id: "draft", promptName: "Clockwork", promptText: "Familiar", lifecycleStatus: "draft", createdAt: 30 },
-  { id: "closed", promptName: "Best Drawing", lifecycleStatus: "closed", createdAt: 20, closedAt: 50 },
-  { id: "archived", promptName: "Old Tavern", lifecycleStatus: "archived", createdAt: 5, closedAt: 25 }
+  { id: "open", gmUserId: "gm", promptName: "Goblin", promptText: "Ambush", lifecycleStatus: "open", createdAt: 10, sentAt: 40 },
+  { id: "draft", gmUserId: "gm", promptName: "Clockwork", promptText: "Familiar", lifecycleStatus: "draft", createdAt: 30 },
+  { id: "closed", gmUserId: "gm", promptName: "Best Drawing", lifecycleStatus: "closed", createdAt: 20, closedAt: 50 },
+  { id: "archived", gmUserId: "gm", promptName: "Old Tavern", lifecycleStatus: "archived", createdAt: 5, closedAt: 25 }
 ];
 
 test("library presents one unified list and hides Archived Prompts by default", async () => {
@@ -60,6 +60,11 @@ test("library presents one unified list and hides Archived Prompts by default", 
   assert.equal(context.rows.find(row => row.id === "draft").canArchive, true);
   assert.equal(context.hiddenArchivedMatch, true);
   assert.equal(context.showArchived, false);
+});
+
+test("library lists only Prompts owned by the current GM", async () => {
+  const context = await libraryWith({ prompts: [...prompts, { ...prompts[0], id: "foreign", gmUserId: "other-gm" }] })._prepareContext();
+  assert.equal(context.rows.some(row => row.id === "foreign"), false);
 });
 
 test("search is case-insensitive across Prompt name and text", () => {
