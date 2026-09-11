@@ -16,9 +16,10 @@ page.on("console", message => {
 try {
   await joinWorld(page, PLAYER_USER);
   const results = await page.evaluate(async () => {
-    const [{ DrawingEngine }, { createIndexedDbRecoveryAdapter, createRecoveryStore, recoveryStore }] = await Promise.all([
+    const [{ DrawingEngine }, { createIndexedDbRecoveryAdapter, createRecoveryStore, recoveryStore }, { createRecoverySaveCoordinator }] = await Promise.all([
       import("/modules/drawing-prompts/scripts/drawing/drawing-engine.mjs"),
-      import("/modules/drawing-prompts/scripts/drawing/recovery-store.mjs")
+      import("/modules/drawing-prompts/scripts/drawing/recovery-store.mjs"),
+      import("/modules/drawing-prompts/scripts/drawing/recovery-save-coordinator.mjs")
     ]);
     const frame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
     const dimensions = [2048, 4096];
@@ -83,8 +84,9 @@ try {
     });
     const reloadIdentity = { ...identity, promptId: `runtime-reload-${Date.now()}`, assignmentId: `runtime-reload-${Date.now()}` };
     await recoveryStore.save(reloadIdentity, snapshot);
-    await recoveryStore.close();
-    return { timings, recoveredKind: recovered?.kind, recoveredCursor: recovered?.snapshot?.cursor, reloadIdentity };
+    const rapidReloadIdentity = { ...identity, promptId: `runtime-rapid-${Date.now()}`, assignmentId: `runtime-rapid-${Date.now()}` };
+    createRecoverySaveCoordinator({ store: recoveryStore }).changed(rapidReloadIdentity, snapshot);
+    return { timings, recoveredKind: recovered?.kind, recoveredCursor: recovered?.snapshot?.cursor, reloadIdentity, rapidReloadIdentity };
   });
 
   assert.equal(results.recoveredKind, "history");
@@ -98,13 +100,19 @@ try {
   assert.deepEqual(errors, []);
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => globalThis.game?.ready === true, null, { timeout: 30000 });
-  const reloaded = await page.evaluate(async identity => {
+  const reloaded = await page.evaluate(async ({ reloadIdentity, rapidReloadIdentity }) => {
     const { recoveryStore } = await import("/modules/drawing-prompts/scripts/drawing/recovery-store.mjs");
-    const value = await recoveryStore.load(identity);
-    await recoveryStore.clear(identity);
-    return { kind: value?.kind, cursor: value?.snapshot?.cursor };
-  }, results.reloadIdentity);
-  assert.deepEqual(reloaded, { kind: "history", cursor: 1 });
+    const normal = await recoveryStore.load(reloadIdentity);
+    const rapid = await recoveryStore.load(rapidReloadIdentity);
+    await recoveryStore.clear(reloadIdentity);
+    await recoveryStore.clear(rapidReloadIdentity);
+    return {
+      normal: { kind: normal?.kind, cursor: normal?.snapshot?.cursor },
+      rapid: { kind: rapid?.kind, current: rapid?.snapshot?.current }
+    };
+  }, results);
+  assert.deepEqual(reloaded.normal, { kind: "history", cursor: 1 });
+  assert.deepEqual(reloaded.rapid.current, [[0, "runtime-history:1"]]);
   console.log(`e2e-history-runtime: PASS ${JSON.stringify(results.timings)}`);
 } finally {
   await browser.close();
