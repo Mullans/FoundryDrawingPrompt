@@ -200,7 +200,7 @@ test("Delete requires explicit confirmation and removes the Prompt entry", async
   assert.equal(await deletePrompt("p-save", { confirmed: true }), true);
   assert.equal(storedPrompt, null);
   assert.deepEqual(game.settings.get("drawing-prompts", "recoveryTombstones"), [{
-    worldId: "test-world", userId: "u1", assignmentId: "a-saved", promptId: "p-save", width: 512, height: 512
+    worldId: "test-world", gmUserId: "gm1", userId: "u1", assignmentId: "a-saved", promptId: "p-save", width: 512, height: 512
   }]);
 });
 

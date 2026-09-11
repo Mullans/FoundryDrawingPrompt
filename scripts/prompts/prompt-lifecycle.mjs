@@ -413,6 +413,7 @@ async function queueRecoveryTombstones(prompt) {
   if ( !game.settings?.get || !game.settings?.set ) return;
   const additions = Object.values(prompt.assignments).map(assignment => ({
     worldId: game.world?.id ?? game.worldId,
+    gmUserId: prompt.gmUserId,
     userId: assignment.userId,
     assignmentId: assignment.id,
     promptId: prompt.id,

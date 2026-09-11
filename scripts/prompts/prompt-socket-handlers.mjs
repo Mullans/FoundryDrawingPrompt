@@ -59,6 +59,7 @@ export function getSocketHandlers() {
 function handleClearRecovery(identity) {
   if ( identity?.userId !== game.user.id ) return false;
   try {
+    assertPromptGmMatchesInitiator(getSocketInitiatorId(this), identity?.gmUserId);
     return clearRecoveryCopy(identity);
   } catch (err) {
     console.debug("drawing-prompts | ignored invalid Recovery cleanup", err);

@@ -253,6 +253,31 @@ test("client cancellation during automatic receipt prevents a late OPEN window",
   } finally { PlayerDrawingApp.open = originalOpen; PlayerDrawingApp.closeAssignment = originalClose; }
 });
 
+test("Recovery cleanup accepts only the Prompt's owning GM", async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { CALLS } = await import("../scripts/socket.mjs");
+  const priorUser = game.user;
+  const priorStorage = globalThis.localStorage;
+  const removed = [];
+  game.user = { id: "u1", isGM: false };
+  globalThis.localStorage = { removeItem: key => removed.push(key) };
+  const identity = {
+    worldId: "world", gmUserId: "gm-owner", userId: "u1",
+    assignmentId: "assignment", promptId: "prompt", width: 512, height: 512
+  };
+  try {
+    const handler = getSocketHandlers()[CALLS.CLEAR_RECOVERY];
+    assert.equal(handler.call({ socketdata: { userId: "gm-other" } }, identity), false);
+    assert.deepEqual(removed, []);
+    assert.equal(handler.call({ socketdata: { userId: "gm-owner" } }, identity), true);
+    assert.equal(removed.length, 1);
+  } finally {
+    game.user = priorUser;
+    if ( priorStorage === undefined ) delete globalThis.localStorage;
+    else globalThis.localStorage = priorStorage;
+  }
+});
+
 test("GM Cancel then Resend advances the invitation and opens the player window without reviving old OPEN", async () => {
   const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
   const { PlayerDrawingApp } = await import("../scripts/apps/player-drawing-app.mjs");
