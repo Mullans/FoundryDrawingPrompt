@@ -176,8 +176,9 @@ export async function placeWithLayerPreview({ layerName, createData, scene = glo
       preview.document.updateSource?.({ x, y });
       preview.document.x = x;
       preview.document.y = y;
-      if ( "x" in preview ) preview.x = x;
-      if ( "y" in preview ) preview.y = y;
+      // Let the placeable's refresh path apply document coordinates. In Foundry v14
+      // Tile renders its mesh at absolute scene coordinates while its container remains
+      // at the origin; also moving that container doubles the rendered offset.
       preview.refresh?.();
     };
 

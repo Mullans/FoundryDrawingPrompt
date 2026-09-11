@@ -327,6 +327,7 @@ async function assertAbandonedPlacementIsSafe(page) {
 
 async function placeSavedTile(page) {
   await page.evaluate(() => { canvas.tiles.activate(); });
+  const tileIdsBefore = await page.evaluate(() => canvas.scene.tiles.map(tile => tile.id));
   const idleListeners = await page.evaluate(() => canvas.stage?.listenerCount?.("pointerdown") ?? 0);
   await page.locator(".drawing-prompts-manager button[data-action='openPlaceDialog']").click();
   const placeDialog = page.locator("#drawing-prompts-place-dialog, .drawing-prompts-place-dialog").last();
@@ -349,6 +350,38 @@ async function placeSavedTile(page) {
   const box = await board.boundingBox();
   assert.ok(box, "Foundry #board has a bounding box for placement click");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+  // Observe the real Foundry preview after its render flags have flushed. A Tile's
+  // document bounds and rendered PIXI bounds must share the cursor center; moving the
+  // Tile container as well as its absolute-positioned shape doubles this offset in v14.
+  const placementGeometry = await page.evaluate(() => {
+    const preview = canvas.tiles.preview.children.find(item => item.document && !item.destroyed);
+    if ( !preview ) return null;
+    const cursor = { x: canvas.mousePosition.x, y: canvas.mousePosition.y };
+    const globalCursor = canvas.stage.toGlobal(new PIXI.Point(cursor.x, cursor.y));
+    const rendered = preview.getBounds();
+    const document = preview.document;
+    return {
+      cursor,
+      globalCursor: { x: globalCursor.x, y: globalCursor.y },
+      rendered: { x: rendered.x, y: rendered.y, width: rendered.width, height: rendered.height },
+      document: { x: document.x, y: document.y, width: document.width, height: document.height }
+    };
+  });
+  assert.ok(placementGeometry, "tile placement preview disappeared before geometry assertion");
+  const documentCenter = {
+    x: placementGeometry.document.x + (placementGeometry.document.width / 2),
+    y: placementGeometry.document.y + (placementGeometry.document.height / 2)
+  };
+  const renderedCenter = {
+    x: placementGeometry.rendered.x + (placementGeometry.rendered.width / 2),
+    y: placementGeometry.rendered.y + (placementGeometry.rendered.height / 2)
+  };
+  assert.ok(Math.abs(documentCenter.x - placementGeometry.cursor.x) <= 1, "preview document is not cursor-centered on x");
+  assert.ok(Math.abs(documentCenter.y - placementGeometry.cursor.y) <= 1, "preview document is not cursor-centered on y");
+  assert.ok(Math.abs(renderedCenter.x - placementGeometry.globalCursor.x) <= 2, "rendered tile preview is not cursor-centered on x");
+  assert.ok(Math.abs(renderedCenter.y - placementGeometry.globalCursor.y) <= 2, "rendered tile preview is not cursor-centered on y");
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 40 });
 
   await page.waitForFunction(playerUser => {
@@ -368,6 +401,12 @@ async function placeSavedTile(page) {
       return tileSrc === src || tileSrc.includes(src) || src.includes(tileSrc) || tileSrc.includes("/drawing-prompts/");
     });
   }, PLAYER_USER, { timeout: 20000 });
+
+  const createdBounds = await page.evaluate(previousIds => {
+    const tile = canvas.scene.tiles.find(item => !previousIds.includes(item.id));
+    return tile ? { x: tile.x, y: tile.y, width: tile.width, height: tile.height } : null;
+  }, tileIdsBefore);
+  assert.deepEqual(createdBounds, placementGeometry.document, "created Tile bounds differ from the committed preview");
 }
 
 async function finishPrompt(page) {

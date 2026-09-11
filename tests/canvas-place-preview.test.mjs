@@ -106,10 +106,15 @@ function installFoundryEnvironment() {
     h: 100,
     x: 0,
     y: 0,
+    mesh: { x: 0, y: 0 },
     refreshCount: 0,
     refresh() {
       if ( this.destroyed ) throw new Error("refresh on destroyed preview");
       this.refreshCount += 1;
+      // Foundry v14 Tile renders its mesh at the document's absolute scene position
+      // while the Tile container itself normally remains at the origin.
+      this.mesh.x = this.document.x;
+      this.mesh.y = this.document.y;
     },
     document: {
       _id: "preview-id",
@@ -124,6 +129,11 @@ function installFoundryEnvironment() {
       }
     }
   };
+  Object.defineProperty(preview, "renderedBounds", {
+    get() {
+      return { x: this.x + this.mesh.x, y: this.y + this.mesh.y, width: this.w, height: this.h };
+    }
+  });
 
   class StubTilesLayer {
     static documentName = "Tile";
@@ -292,6 +302,26 @@ test("placeWithLayerPreview commits on left click and unregisters everything (SC
     assert.equal(env.createCalls[0].data[0].y, 50);
     assert.equal("_id" in env.createCalls[0].data[0], false);
     env.assertFullyUnregistered();
+  } finally {
+    env.restore();
+  }
+});
+
+test("tile preview's rendered bounds are centered on the cursor before commit", async () => {
+  const env = installFoundryEnvironment();
+  try {
+    const pending = placeWithLayerPreview({
+      layerName: "tiles",
+      createData: { width: 100, height: 100, texture: { src: "p.webp" } }
+    });
+    await flush();
+
+    assert.deepEqual(env.preview.renderedBounds, { x: 50, y: 50, width: 100, height: 100 });
+
+    env.stage.emit("pointerdown", leftClick());
+    await pending;
+    assert.equal(env.createCalls[0].data[0].x, 50);
+    assert.equal(env.createCalls[0].data[0].y, 50);
   } finally {
     env.restore();
   }
