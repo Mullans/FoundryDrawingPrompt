@@ -249,6 +249,7 @@
   "DRAWING-PROMPTS.player.errors.engineUnavailable": "The drawing surface is not ready yet.",
   "DRAWING-PROMPTS.player.errors.exportFailed": "The drawing could not be exported.",
   "DRAWING-PROMPTS.player.warnings.wireScaled": "Connection-size limit reached; the GM receives a reduced-resolution copy.",
+  "DRAWING-PROMPTS.player.warnings.recoveryStorage": "Drawing recovery could not be saved in this browser.",
   "DRAWING-PROMPTS.player.notifications.received": "You received a drawing prompt.",
   "DRAWING-PROMPTS.player.notifications.reopened": "A drawing prompt was reopened.",
 

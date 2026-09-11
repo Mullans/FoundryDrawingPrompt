@@ -114,7 +114,7 @@ test("stagedFetchUrl appends the cache-buster with & when the URL already has a 
   assert.equal(url, `${forgeUrl}&ts=999`);
 });
 
-test("buildRestorationSubmissionFromSavedAssets returns staged path-only payload", async () => {
+test("buildRestorationSubmissionFromSavedAssets returns full-quality image paths without a GM operation log", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async url => {
     assert.match(String(url), /griffin\.json$/);
@@ -139,9 +139,11 @@ test("buildRestorationSubmissionFromSavedAssets returns staged path-only payload
     assert.equal(submission.staged.overlayPath, "drawings/griffin.webp");
     assert.equal(submission.staged.mergedPath, "drawings/griffin-merged.webp");
     assert.equal(submission.formats.overlay, "webp");
-    assert.deepEqual(submission.opLog, { ops: [{ type: "stroke" }] });
+    assert.equal(submission.opLog, undefined);
     assert.equal(submission.width, 800);
     assert.equal(submission.height, 600);
+    assert.equal(submission.recoveryKind, "full-submission");
+    assert.equal(submission.assignmentId, "a-saved");
     assert.equal(submission.overlay, undefined);
   } finally {
     globalThis.fetch = originalFetch;
@@ -174,6 +176,9 @@ test("reopenAssignment does not persist pendingSubmission to JournalEntry", asyn
     assert.equal(storedPrompt.assignments["a-saved"].pendingSubmission, null);
     assert.equal(storedPrompt.assignments["a-saved"].status, STATUS.OPENED);
     assert.equal(reopenPayload?.restorationSubmission?.mode, "staged");
+    assert.equal(reopenPayload?.restorationSubmission?.recoveryKind, "full-submission");
+    assert.equal(reopenPayload?.restorationSubmission?.assignmentId, "a-saved");
+    assert.equal(reopenPayload?.restorationSubmission?.opLog, undefined);
     assert.equal(reopenPayload?.restorationSubmission?.staged?.overlayPath, "drawings/griffin.webp");
     assert.equal(reopenPayload?.assignment?.pendingSubmission, undefined);
   } finally {
