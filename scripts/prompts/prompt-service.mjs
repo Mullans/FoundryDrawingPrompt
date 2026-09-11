@@ -46,6 +46,7 @@ export {
   cancelAllAssignments,
   cancelAssignment,
   createAndSendPrompt,
+  sendPrompt,
   createPrompt,
   updatePrompt,
   retryPromptDeliveries,
@@ -57,7 +58,6 @@ export {
   archivePrompt,
   restorePrompt,
   deletePrompt,
-  finishPrompt,
   redeliverAssignmentsForUser,
   reopenAssignment,
   resendAllAssignments,
@@ -73,17 +73,31 @@ export {
   stopPromptTimer
 } from "./prompt-timer-bridge.mjs";
 
-/**
- * Open the GM prompt manager.
- * @returns {Promise<void>}
- */
-export async function openPromptManager() {
+async function requireGMManager() {
   if ( !game.user.isGM ) {
     ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
-    return;
+    return null;
   }
   const { DrawingPromptManager } = await import("../apps/drawing-prompt-manager.mjs");
-  await DrawingPromptManager.open();
+  return DrawingPromptManager;
+}
+
+/** Open an empty, unsaved Prompt Draft. */
+export async function openNewPrompt() {
+  const Manager = await requireGMManager();
+  return Manager?.openNewPrompt();
+}
+
+/** Open an exact retained Prompt in the singleton manager. */
+export async function openPrompt(promptId) {
+  const Manager = await requireGMManager();
+  return Manager?.openPrompt(promptId);
+}
+
+/** Open an unsaved reusable copy of a retained Prompt. */
+export async function openPromptCopy(promptId) {
+  const Manager = await requireGMManager();
+  return Manager?.openPromptCopy(promptId);
 }
 
 /** Open the singleton Closed/Archived Prompt library. */

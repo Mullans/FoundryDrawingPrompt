@@ -64,6 +64,22 @@ test("default awaited delivery resolves on automatic receipt without waiting for
   assert.equal(stored.assignments.a1.delivery.status, "received");
 });
 
+test("sendPrompt opens a saved Draft in place and emits promptSent only after receipt", async () => {
+  const hooks = [];
+  globalThis.Hooks = { callAll: name => hooks.push(name) };
+  const saved = await lifecycle.createPrompt({ ...draft, promptName: "Saved for later" });
+  assert.equal(saved.lifecycleStatus, "draft");
+  assert.deepEqual(saved.assignments, {});
+  emit.openDrawingPrompt = async (_user, payload) => {
+    await delivery.acknowledgePromptDelivery("u1", payload.assignment.id, "u1");
+  };
+  const sent = await lifecycle.sendPrompt(saved.id);
+  assert.equal(sent.id, saved.id);
+  assert.equal(sent.lifecycleStatus, "open");
+  assert.equal(Object.keys(sent.assignments).length, 1);
+  assert.ok(hooks.indexOf("drawing-prompts.promptCreated") < hooks.indexOf("drawing-prompts.promptSent"));
+});
+
 test("initial receipts wait for every delivery to settle and the timer starts at release", async () => {
   let firstReceipt;
   let firstReceiptResolved = false;
@@ -168,20 +184,25 @@ test("Continue withdraws missing invitation, late authenticated contact fails, r
   assert.equal(reinvited.deadlineAt, deadline);
 });
 
-test("zero-success Continue removes the orphan prompt and rejects late receipt", async () => {
+test("zero-success Continue retains a saved Draft and rejects late receipt", async () => {
   emit.openDrawingPrompt = async () => { throw new Error("transport unavailable"); };
   emit.cancelDrawingPrompt = async () => {};
   const prompt = await lifecycle.createAndSendPrompt(draft);
   const continued = await lifecycle.continuePromptDeliveries(prompt.id);
   assert.equal(continued.deliverySummary.hasRecipients, false);
-  assert.equal(entries.size, 0);
+  assert.equal(entries.size, 1);
+  assert.equal(continued.lifecycleStatus, "draft");
+  assert.deepEqual(continued.assignments, {});
   assert.deepEqual(await delivery.acknowledgePromptDelivery("u1", "a1", "u1"), { accepted: false, reason: "invalid-invitation" });
 });
 
-test("new offline/GM invitations fail before persistence while received membership survives disconnect", async () => {
+test("offline invitations enter the standard delivery warning flow while GM recipients remain invalid", async () => {
   game.users.get("u1").active = false;
-  await assert.rejects(lifecycle.createAndSendPrompt(draft), /onlineRecipientsRequired/);
-  assert.equal(entries.size, 0);
+  const offline = await lifecycle.createAndSendPrompt(draft);
+  assert.equal(offline.deliverySummary.failed[0].status, "failed");
+  assert.equal(Object.values(offline.assignments)[0].delivery.error, "offline");
+  assert.equal(entries.size, 1);
+  entries.clear(); stored = null;
   game.users.get("u1").active = true;
   game.users.get("u1").isGM = true;
   await assert.rejects(lifecycle.createAndSendPrompt(draft), /onlineRecipientsRequired/);

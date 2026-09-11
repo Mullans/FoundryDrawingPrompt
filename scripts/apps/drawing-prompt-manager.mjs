@@ -1,4 +1,4 @@
-import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, FRAMING_VIEW, INTERNAL, MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
+import { BG_SOURCE, FILES_UPLOAD_PERMISSION, FIT_MODE, FRAMING_VIEW, INTERNAL, MODULE_ID, PROMPT_STATUS, SETTINGS, STATUS } from "../constants.mjs";
 import {
   FRAMING_ZOOM_STEP,
   drawFramingEditor,
@@ -71,6 +71,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       useTileBackground: DrawingPromptManager.#onUseTileBackground,
       useSceneBackground: DrawingPromptManager.#onUseSceneBackground,
       clearBackground: DrawingPromptManager.#onClearBackground,
+      savePrompt: DrawingPromptManager.#onSavePrompt,
       sendPrompt: DrawingPromptManager.#onSendPrompt,
       retryDeliveries: DrawingPromptManager.#onRetryDeliveries,
       continueDeliveries: DrawingPromptManager.#onContinueDeliveries,
@@ -90,7 +91,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       saveAssignment: DrawingPromptManager.#onSaveAssignment,
       openPlaceDialog: DrawingPromptManager.#onOpenPlaceDialog,
       applyTransform: DrawingPromptManager.#onApplyTransform,
-      finishPrompt: DrawingPromptManager.#onFinishPrompt,
+      closePrompt: DrawingPromptManager.#onClosePrompt,
+      openPromptToPlayers: DrawingPromptManager.#onOpenPromptToPlayers,
       openPromptLibrary: DrawingPromptManager.#onOpenPromptLibrary,
       switchPrompt: DrawingPromptManager.#onSwitchPrompt,
       setFramingView: DrawingPromptManager.#onSetFramingView,
@@ -113,23 +115,52 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   static async open() {
     if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
     const app = this.#instance ??= new this();
-    const adoption = await app.adoptMostRecentActivePrompt();
     await app.render({ force: true });
     app.bringToFront();
-    if ( adoption.total > 1 ) {
-      ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.unfinishedPrompts", { count: adoption.total }));
-    }
     void app.showDeliveryWarning();
+    return app;
+  }
+
+  /** Open an empty, unsaved Draft in the singleton manager. */
+  static async openNewPrompt() {
+    const app = await this.open();
+    if ( !await app.#confirmDraftTransition() ) return app;
+    app.#resetToNewDraft();
+    await app.render({ parts: ["body"] });
+    app.bringToFront();
     return app;
   }
 
   /** Open the singleton manager and select an exact retained Prompt. */
   static async openPrompt(promptId) {
     const app = await this.open();
-    await app.#switchToPrompt(promptId);
+    if ( await app.#confirmDraftTransition() ) await app.#switchToPrompt(promptId);
+    app.bringToFront();
+    void app.showDeliveryWarning();
+    return app;
+  }
+
+  /** Open an unsaved copy of a retained Prompt's reusable configuration. */
+  static async openPromptCopy(promptId) {
+    const source = loadPrompt(promptId);
+    if ( !source ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
+    const app = await this.open();
+    if ( !await app.#confirmDraftTransition() ) return app;
+    app.#resetToNewDraft({
+      promptName: source.promptName,
+      promptText: source.promptText,
+      canvasWidth: source.canvasWidth,
+      canvasHeight: source.canvasHeight,
+      timerSeconds: source.timerSeconds ?? 0,
+      background: { ...source.background, framedPath: null }
+    });
+    await app.render({ parts: ["body"] });
     app.bringToFront();
     return app;
   }
+
+  /** Prompt currently displayed by the singleton manager. */
+  static activePromptId() { return this.#instance?.activePrompt?.id ?? null; }
 
   /**
    * Refresh the open manager, if any.
@@ -187,7 +218,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     super();
     this.draft = {
       promptText: "",
-      drawingName: "",
+      promptName: "",
       selectedUserIds: new Set(),
       canvasWidth: setting(SETTINGS.DEFAULT_CANVAS_WIDTH, 512),
       canvasHeight: setting(SETTINGS.DEFAULT_CANVAS_HEIGHT, 512),
@@ -195,6 +226,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       background: blankBackground()
     };
     this.activePrompt = null;
+    this.#savedDraftSignature = this.#draftSignature();
     this.isSending = false;
     this.#closed = false;
     this.latestSnapshots = new Map();
@@ -223,6 +255,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #refreshPromise;
   #refreshRequested;
   #closed;
+  #savedDraftSignature;
   #formListenersAttached = false;
   #sourceFramingPreviewCache;
   /**
@@ -389,6 +422,58 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     };
   }
 
+  #draftSignature() {
+    const draft = this.draft;
+    return JSON.stringify({
+      promptName: draft.promptName?.trim() ?? "",
+      promptText: draft.promptText ?? "",
+      selectedUserIds: [...(draft.selectedUserIds ?? [])].sort(),
+      canvasWidth: Number(draft.canvasWidth),
+      canvasHeight: Number(draft.canvasHeight),
+      timerSeconds: Number(draft.timerSeconds || 0),
+      background: draft.background
+    });
+  }
+
+  #resetToNewDraft(overrides = {}) {
+    this.activePrompt = null;
+    this.draft = {
+      promptText: "",
+      promptName: "",
+      selectedUserIds: new Set(),
+      canvasWidth: setting(SETTINGS.DEFAULT_CANVAS_WIDTH, 512),
+      canvasHeight: setting(SETTINGS.DEFAULT_CANVAS_HEIGHT, 512),
+      timerSeconds: setting(SETTINGS.DEFAULT_TIMER_SECONDS, 0),
+      background: blankBackground(),
+      ...overrides
+    };
+    this.draft.selectedUserIds = new Set(overrides.selectedUserIds ?? []);
+    this.#savedDraftSignature = this.#draftSignature();
+    this.selectedAssignmentId = null;
+    this.latestSnapshots.clear();
+    this.latestOverlaySnapshots.clear();
+    this.#sourceFramingPreviewCache.clear();
+  }
+
+  async #confirmDraftTransition() {
+    if ( this.activePrompt?.lifecycleStatus !== PROMPT_STATUS.DRAFT && this.activePrompt ) return true;
+    this.#syncDraftFromForm();
+    if ( this.#draftSignature() === this.#savedDraftSignature ) return true;
+    const choice = await DialogV2.wait({
+      window: { title: "Unsaved prompt changes" },
+      content: "<p>Save changes to this Prompt before continuing?</p>",
+      buttons: [
+        { action: "save", label: game.i18n.localize("DRAWING-PROMPTS.manager.actions.save"), callback: () => "save" },
+        { action: "discard", label: "Discard", callback: () => "discard" },
+        { action: "cancel", label: "Cancel", callback: () => "cancel" }
+      ],
+      rejectClose: false,
+      modal: true
+    });
+    if ( choice === "save" ) return Boolean(await this.#saveDraft());
+    return choice === "discard";
+  }
+
   /** @override */
   async _prepareContext(options) {
     const users = userValues().filter(user => !user.isGM);
@@ -407,7 +492,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       lastPaintedSrc: this.#lastPaintedSrcForSelection()
     });
     const delivery = this.activePrompt?.deliverySummary;
-    const hasActivePrompt = Boolean(this.activePrompt && (!delivery || delivery.hasRecipients));
+    const isDraft = this.activePrompt?.lifecycleStatus === PROMPT_STATUS.DRAFT;
+    const hasActivePrompt = Boolean(this.activePrompt && !isDraft && (!delivery || delivery.hasRecipients));
     const viewAssetPath = resolveFramingViewAssetPath(selectedAssignment, framingView);
     const savedAndGateOpen = isSaveGateOpen(selectedAssignment);
     return {
@@ -422,17 +508,20 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       selectedSnapshot: reviewContext.src,
       selectedPreviewHeading: reviewContext.heading,
       selectedAssignmentId: this.selectedAssignmentId,
-      canSend: !this.activePrompt && !this.isSending,
+      canSavePrompt: !this.isSending && (!this.activePrompt || isDraft),
+      canSend: !this.isSending && (!this.activePrompt || isDraft),
       isSending: this.isSending || Boolean(delivery?.isSending),
       sendLabel: game.i18n.localize(this.isSending
         ? "DRAWING-PROMPTS.manager.actions.sending"
         : "DRAWING-PROMPTS.manager.actions.sendPrompt"),
-      setupLocked: this.isSending || Boolean(this.activePrompt),
+      setupLocked: this.isSending || Boolean(this.activePrompt && !isDraft),
       deliveryFeedback: null,
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
       canCancelAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.isActive)),
       canResendAll: Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
-      canFinishPrompt: Boolean(this.activePrompt),
+      canFinishPrompt: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.OPEN,
+      canOpenPromptToPlayers: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.CLOSED,
+      archivedReadOnly: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.ARCHIVED,
       promptQueue: this.#promptQueueContext(),
       selectedCanSave: selectedAssignment?.status === STATUS.SUBMITTED && !savedAndGateOpen,
       selectedIsSaved: savedAndGateOpen,
@@ -511,6 +600,12 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /** @override */
+  async close(options) {
+    if ( !await this.#confirmDraftTransition() ) return this;
+    return super.close(options);
+  }
+
+  /** @override */
   _onClose(options) {
     this.#closed = true;
     this.#refreshRequested = false;
@@ -530,17 +625,19 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #syncDraftFromForm() {
-    if ( this.activePrompt ) return;
+    if ( this.activePrompt && this.activePrompt.lifecycleStatus !== PROMPT_STATUS.DRAFT ) return;
     const form = this.#formElement();
     if ( !form ) return;
     const data = new FormData(form);
     this.draft.promptText = String(data.get("promptText") ?? "");
-    this.draft.drawingName = String(data.get("drawingName") ?? "");
+    this.draft.promptName = String(data.get("promptName") ?? "");
     this.draft.canvasWidth = normalizeNumber(data.get("canvasWidth"));
     this.draft.canvasHeight = normalizeNumber(data.get("canvasHeight"));
     this.draft.timerSeconds = Number(data.get("timerSeconds"));
     this.draft.background.fitMode = String(data.get("fitMode") ?? this.draft.background.fitMode);
-    this.draft.selectedUserIds = new Set(data.getAll("selectedUserIds").map(String));
+    this.draft.selectedUserIds = new Set(Array.from(
+      form.querySelectorAll('input[name="selectedUserIds"]:checked'), input => String(input.value)
+    ));
   }
 
   /**
@@ -551,7 +648,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#syncDraftFromForm();
     return {
       promptText: this.draft.promptText.trim(),
-      drawingName: this.draft.drawingName.trim(),
+      promptName: this.draft.promptName.trim(),
       selectedUserIds: Array.from(this.draft.selectedUserIds),
       canvasWidth: this.draft.canvasWidth,
       canvasHeight: this.draft.canvasHeight,
@@ -568,8 +665,10 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     if ( !this.activePrompt ) return;
     this.draft = {
       promptText: this.activePrompt.promptText,
-      drawingName: this.activePrompt.drawingName,
-      selectedUserIds: new Set(Object.values(this.activePrompt.assignments).map(assignment => assignment.userId)),
+      promptName: this.activePrompt.promptName,
+      selectedUserIds: new Set(this.activePrompt.selectedUserIds?.length
+        ? this.activePrompt.selectedUserIds
+        : Object.values(this.activePrompt.assignments).map(assignment => assignment.userId)),
       canvasWidth: this.activePrompt.canvasWidth,
       canvasHeight: this.activePrompt.canvasHeight,
       timerSeconds: this.activePrompt.timerSeconds ?? 0,
@@ -583,16 +682,19 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {boolean}
    */
   #validateDraft(draft) {
-    if ( !draft.drawingName ) {
-      ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.manager.validation.drawingName"));
+    if ( !draft.promptName ) {
+      ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.manager.validation.promptName"));
       return false;
     }
-    if ( !draft.selectedUserIds.length ) return warn("DRAWING-PROMPTS.manager.validation.users");
     if ( !validTimerSeconds(draft.timerSeconds) ) return warn("DRAWING-PROMPTS.manager.validation.timerSeconds");
     if ( !validDimension(draft.canvasWidth) || !validDimension(draft.canvasHeight) ) {
       return warn("DRAWING-PROMPTS.manager.validation.dimensions", { max: INTERNAL.MAX_CANVAS_DIM });
     }
     return true;
+  }
+
+  #validateSendDraft(draft) {
+    return this.#validateDraft(draft) && (draft.selectedUserIds.length || warn("DRAWING-PROMPTS.manager.validation.users"));
   }
 
   /**
@@ -665,7 +767,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       promptText,
       promptPreview: truncated.text,
       promptTruncated: truncated.truncated,
-      drawingName: this.activePrompt.drawingName || game.i18n.localize("DRAWING-PROMPTS.player.untitled"),
+      promptName: this.activePrompt.promptName || game.i18n.localize("DRAWING-PROMPTS.player.untitled"),
       hasTimer: this.activePrompt.timerStatus !== "none",
       timerDuration: formatClock(timerSeconds * 1000),
       timerCountdownText: timerCountdown.text,
@@ -1323,14 +1425,35 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onSendPrompt() {
-    if ( this.isSending || this.activePrompt ) return;
+    if ( this.isSending || (this.activePrompt && this.activePrompt.lifecycleStatus !== PROMPT_STATUS.DRAFT) ) return;
     const draft = this.#serviceDraft();
-    if ( !this.#validateDraft(draft) ) return;
+    if ( !this.#validateSendDraft(draft) ) return;
     this.#warnSelectedUsersWithoutFileUpload(draft.selectedUserIds);
     await this.#runDeliveryAttempt(async () => {
       const service = await import("../prompts/prompt-lifecycle.mjs");
-      return service.createAndSendPrompt({ ...draft, awaitDeliveries: true });
+      return service.sendPrompt(this.activePrompt?.id ?? { ...draft, awaitDeliveries: true });
     });
+  }
+
+  /** @this {DrawingPromptManager} */
+  static async #onSavePrompt() { await this.#saveDraft(); }
+
+  async #saveDraft() {
+    const draft = this.#serviceDraft();
+    if ( !this.#validateDraft(draft) ) return null;
+    try {
+      const service = await import("../prompts/prompt-lifecycle.mjs");
+      this.activePrompt = this.activePrompt
+        ? await service.updatePrompt(this.activePrompt.id, draft)
+        : await service.createPrompt(draft);
+      this.#adoptDraftFromPrompt();
+      this.#savedDraftSignature = this.#draftSignature();
+      await this.render({ parts: ["body"] });
+      return this.activePrompt;
+    } catch (error) {
+      ui.notifications.error(error.message);
+      return null;
+    }
   }
 
   /** Render receipt feedback before storage/framing, and release controls on every exit. */
@@ -1538,7 +1661,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
         id: "preview",
         gmUserId: game.user.id,
         promptText: this.draft.promptText,
-        drawingName: this.draft.drawingName,
+        promptName: this.draft.promptName,
         canvasWidth: this.draft.canvasWidth,
         canvasHeight: this.draft.canvasHeight,
         background,
@@ -1646,7 +1769,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   /** @this {DrawingPromptManager} */
-  static async #onFinishPrompt() {
+  static async #onClosePrompt() {
     if ( !this.activePrompt ) return;
     const assignmentIds = Object.keys(this.activePrompt.assignments);
     const service = await import("../prompts/prompt-service.mjs");
@@ -1666,7 +1789,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
           close: () => null,
           modal: true
         });
-        if ( choice === "retry" ) return DrawingPromptManager.#onFinishPrompt.call(this);
+        if ( choice === "retry" ) return DrawingPromptManager.#onClosePrompt.call(this);
         if ( choice === "previews" ) {
           await service.closePrompt(this.activePrompt.id, {
             closeWithoutCaptures: true,
@@ -1684,17 +1807,21 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     }
   }
 
+  /** Reopen Prompt lifecycle without reopening any player windows. */
+  static async #onOpenPromptToPlayers() {
+    if ( this.activePrompt?.lifecycleStatus !== PROMPT_STATUS.CLOSED ) return;
+    const service = await import("../prompts/prompt-lifecycle.mjs");
+    this.activePrompt = await service.reopenPrompt(this.activePrompt.id);
+    await this.render({ parts: ["body"] });
+  }
+
   async #completePromptClose(assignmentIds) {
     for ( const assignmentId of assignmentIds ) this.#clearCachedSnapshot(assignmentId);
-    this.activePrompt = null;
+    this.activePrompt = this.activePrompt?.id ? loadPrompt(this.activePrompt.id) : null;
     this.selectedAssignmentId = null;
     this.latestSnapshots.clear();
     this.latestOverlaySnapshots.clear();
-    const adoption = await this.adoptMostRecentActivePrompt();
     await this.render({ parts: ["body"] });
-    if ( adoption.adopted ) {
-      ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.manager.notifications.adoptedNext", { count: adoption.remaining }));
-    }
   }
 
   /** @this {DrawingPromptManager} */
@@ -1712,7 +1839,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     const assignment = this.activePrompt?.getAssignment(assignmentId);
     if ( !assignment ) return null;
     const fallback = assignment.assets?.name || defaultAssignmentAssetName({
-      drawingName: this.activePrompt.drawingName,
+      promptName: this.activePrompt.promptName,
       promptText: this.activePrompt.promptText
     });
     const state = {
@@ -1867,7 +1994,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     return {
       options: prompts.map(prompt => ({
         id: prompt.id,
-        label: prompt.drawingName || prompt.promptText || prompt.id,
+        label: prompt.promptName || prompt.promptText || prompt.id,
         selected: prompt.id === this.activePrompt?.id
       }))
     };
@@ -1885,6 +2012,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#deliveryWarningPromptId = null;
     this.#presentedDeliveryWarningKey = null;
     this.#adoptDraftFromPrompt();
+    this.#savedDraftSignature = this.#draftSignature();
     this.selectedAssignmentId = Object.keys(this.activePrompt.assignments)[0] ?? null;
     this.latestSnapshots.clear();
     this.latestOverlaySnapshots.clear();

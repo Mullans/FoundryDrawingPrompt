@@ -78,7 +78,7 @@ test("withdrawn invitations cannot enable Resend All while cancelled recipients 
 
 test("Send paints busy feedback before storage, prevents duplicate creation, and recovers from failure", async () => {
   const manager = new DrawingPromptManager();
-  Object.assign(manager.draft, { promptText: "Draw a bird", drawingName: "Bird", canvasWidth: 512, canvasHeight: 512,
+  Object.assign(manager.draft, { promptText: "Draw a bird", promptName: "Bird", canvasWidth: 512, canvasHeight: 512,
     timerSeconds: 0, selectedUserIds: new Set(["u1"]) });
   const contexts = [];
   manager.render = async () => { contexts.push(await manager._prepareContext({})); return manager; };
@@ -105,9 +105,9 @@ test("Send paints busy feedback before storage, prevents duplicate creation, and
   assert.equal(contexts.at(-1).canSend, true, "storage failure must release Send");
 });
 
-test("drawing name appears before optional prompt text and a name-only prompt sends", async () => {
+test("prompt name appears before optional prompt text and a name-only prompt sends", async () => {
   const template = readFileSync(new URL("../templates/drawing-prompt-manager.hbs", import.meta.url), "utf8");
-  assert.ok(template.indexOf('name="drawingName"') < template.indexOf('name="promptText"'));
+  assert.ok(template.indexOf('name="promptName"') < template.indexOf('name="promptText"'));
 
   const entries = new Map();
   game.journal = { get: id => entries.get(id), [Symbol.iterator]: function* () { yield* entries.values(); } };
@@ -122,14 +122,14 @@ test("drawing name appears before optional prompt text and a name-only prompt se
   const { acknowledgePromptDelivery } = await import("../scripts/prompts/prompt-delivery.mjs");
   emit.openDrawingPrompt = (userId, payload) => acknowledgePromptDelivery(userId, payload.assignment.id, userId);
   const manager = new DrawingPromptManager();
-  Object.assign(manager.draft, { drawingName: "crab", promptText: "", canvasWidth: 512, canvasHeight: 512,
+  Object.assign(manager.draft, { promptName: "crab", promptText: "", canvasWidth: 512, canvasHeight: 512,
     timerSeconds: 0, selectedUserIds: new Set(["u1"]) });
   manager.render = async () => manager;
 
   await DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(manager);
 
   assert.equal(entries.size, 1);
-  assert.equal(manager.activePrompt.drawingName, "crab");
+  assert.equal(manager.activePrompt.promptName, "crab");
   assert.equal(manager.activePrompt.promptText, "");
   assert.equal(manager.activePrompt.deliverySummary.received.length, 1);
 });
@@ -151,7 +151,7 @@ test("zero receipts use a separate modal with disabled Continue and Back to setu
   emit.openDrawingPrompt = async () => { throw new Error("unreachable"); };
   emit.cancelDrawingPrompt = async () => {};
   const manager = new DrawingPromptManager();
-  Object.assign(manager.draft, { promptText: "Keep this prompt", drawingName: "Birds", canvasWidth: 640,
+  Object.assign(manager.draft, { promptText: "Keep this prompt", promptName: "Birds", canvasWidth: 640,
     canvasHeight: 480, timerSeconds: 120, selectedUserIds: new Set(["u1"]) });
   manager.render = async () => manager;
   await DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(manager);
@@ -168,9 +168,9 @@ test("zero receipts use a separate modal with disabled Continue and Back to setu
   ]);
   assert.equal(setup.canSend, true);
   assert.equal(setup.deliveryFeedback, null);
-  assert.equal(entries.size, 0);
+  assert.equal(entries.size, 1, "Back retains the auto-saved Draft in the library");
   assert.equal(manager.draft.promptText, "Keep this prompt");
-  assert.equal(manager.draft.drawingName, "Birds");
+  assert.equal(manager.draft.promptName, "Birds");
   assert.equal(manager.draft.canvasWidth, 640);
   assert.equal(manager.draft.canvasHeight, 480);
   assert.equal(manager.draft.timerSeconds, 120);
@@ -231,7 +231,7 @@ test("closing during delivery prevents completion render and warning resurrectio
   const { emit } = await import("../scripts/socket.mjs");
   emit.openDrawingPrompt = async () => { throw new Error("offline"); };
   const manager = new DrawingPromptManager();
-  Object.assign(manager.draft, { promptText: "", drawingName: "Close race", canvasWidth: 512,
+  Object.assign(manager.draft, { promptText: "", promptName: "Close race", canvasWidth: 512,
     canvasHeight: 512, timerSeconds: 0, selectedUserIds: new Set(["u1"]) });
   let renders = 0;
   manager.render = async () => { renders++; return manager; };
@@ -274,7 +274,7 @@ test("closing and reopening before create resolves makes the registered manager 
     : Promise.reject(new Error("offline"));
 
   const managerA = await DrawingPromptManager.open();
-  Object.assign(managerA.draft, { promptText: "", drawingName: "Close and reopen", canvasWidth: 512,
+  Object.assign(managerA.draft, { promptText: "", promptName: "Close and reopen", canvasWidth: 512,
     canvasHeight: 512, timerSeconds: 0, selectedUserIds: new Set(["u1", "u2"]) });
   const sending = DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(managerA);
   await createStarted.promise;
@@ -288,7 +288,7 @@ test("closing and reopening before create resolves makes the registered manager 
 
   try {
     assert.notStrictEqual(managerB, managerA);
-    assert.equal(managerB.activePrompt?.drawingName, "Close and reopen");
+    assert.equal(managerB.activePrompt?.promptName, "Close and reopen");
     assert.equal(managerB.activePrompt?.deliverySummary.received.length, 1);
     assert.equal(managerB.activePrompt?.deliverySummary.failed.length, 1);
     assert.equal(managerA.renderCalls, managerARendersAtClose, "the closed manager must never render again");
@@ -312,7 +312,7 @@ test("opening a persisted zero-receipt prompt renders before showing Retry and B
   game.users = new Map([["u1", { id: "u1", name: "Ada", active: true, can: () => false }]]);
   game.journal = journalCollection(new Map([[prompt.id, entry]]));
 
-  const manager = await DrawingPromptManager.open();
+  const manager = await DrawingPromptManager.openPrompt(prompt.id);
   try {
     const dialog = TestDialogV2.calls[0];
     assert.ok(manager.renderCalls > 0, "the adopted prompt must render before the warning resolves");
@@ -338,7 +338,7 @@ test("opening a persisted partial-delivery prompt renders before showing Retry a
   ]);
   game.journal = journalCollection(new Map([[prompt.id, entry]]));
 
-  const manager = await DrawingPromptManager.open();
+  const manager = await DrawingPromptManager.openPrompt(prompt.id);
   try {
     assert.ok(manager.renderCalls > 0);
     assert.equal(TestDialogV2.calls.length, 1, "opening must show the unresolved persisted delivery once");
@@ -358,7 +358,7 @@ test("opening a persisted partial-delivery prompt renders before showing Retry a
 test("new delivery UI copy is localized with exact English values", () => {
   const expected = {
     "DRAWING-PROMPTS.manager.actions.sending": "Sending...",
-    "DRAWING-PROMPTS.manager.validation.drawingName": "Drawing name is required.",
+    "DRAWING-PROMPTS.manager.validation.promptName": "Prompt name is required.",
     "DRAWING-PROMPTS.manager.delivery.title": "Delivery warning",
     "DRAWING-PROMPTS.manager.delivery.noResponse": "No response from:",
     "DRAWING-PROMPTS.manager.delivery.continueWithoutPlayers": "Continue to start the drawing without these players.",

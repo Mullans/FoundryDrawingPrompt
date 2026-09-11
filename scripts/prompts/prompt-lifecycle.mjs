@@ -39,16 +39,30 @@ import { pauseTimer } from "./timer-service.mjs";
  * @param {object} draft Prompt draft.
  * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
  */
-export async function createAndSendPrompt(draft) {
+export async function sendPrompt(draftOrId) {
   assertGM();
+  const savedDraft = typeof draftOrId === "string" ? requireOwnedPrompt(draftOrId) : null;
+  if ( savedDraft && savedDraft.lifecycleStatus !== PROMPT_STATUS.DRAFT ) {
+    throw new Error(`Illegal Send for ${savedDraft.lifecycleStatus} Prompt`);
+  }
+  const draft = savedDraft ? {
+    promptName: savedDraft.promptName,
+    promptText: savedDraft.promptText,
+    canvasWidth: savedDraft.canvasWidth,
+    canvasHeight: savedDraft.canvasHeight,
+    background: savedDraft.background,
+    timerSeconds: savedDraft.timerSeconds,
+    selectedUserIds: savedDraft.selectedUserIds,
+    awaitDeliveries: true
+  } : draftOrId;
   const started = performance.now();
   const selectedUserIds = [...new Set(draft.selectedUserIds ?? [])];
-  if ( !selectedUserIds.length || selectedUserIds.some(id => !game.users.get(id)?.active || game.users.get(id)?.isGM) ) {
+  if ( !selectedUserIds.length || selectedUserIds.some(id => !game.users.get(id) || game.users.get(id)?.isGM) ) {
     throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.onlineRecipientsRequired"));
   }
   const sentAt = Date.now();
   const timerSeconds = Number(draft.timerSeconds || 0);
-  const prompt = DrawingPrompt.create({
+  const prompt = savedDraft ?? DrawingPrompt.create({
     promptText: draft.promptText,
     promptName: draft.promptName,
     canvasWidth: Number(draft.canvasWidth),
@@ -62,8 +76,22 @@ export async function createAndSendPrompt(draft) {
     selectedUserIds
   }, selectedUserIds);
 
+  if ( savedDraft ) {
+    prompt.lifecycleStatus = PROMPT_STATUS.OPEN;
+    prompt.sentAt = sentAt;
+    prompt.assignments = {};
+    for ( const userId of selectedUserIds ) {
+      const user = game.users.get(userId);
+      const assignment = DrawingAssignment.create({ promptId: prompt.id, userId, userName: user.name });
+      prompt.assignments[assignment.id] = assignment;
+    }
+    prompt.timerState = timerSeconds > 0
+      ? { timerStatus: "paused", deadlineAt: null, remainingMs: timerSeconds * 1000 }
+      : { timerStatus: "none", deadlineAt: null, remainingMs: null };
+  }
+
   const storageStarted = performance.now();
-  await createPromptEntry(prompt);
+  if ( !savedDraft ) await createPromptEntry(prompt);
   Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "storage-create", elapsedMs: performance.now() - storageStarted });
   try {
     const framingStarted = performance.now();
@@ -76,13 +104,19 @@ export async function createAndSendPrompt(draft) {
   } catch (err) {
     // Compensate: a failed Send must not leave a sticky undelivered prompt (retry would duplicate).
     try {
-      await deletePromptEntry(prompt.id);
+      if ( !savedDraft ) await deletePromptEntry(prompt.id);
+      else {
+        prompt.assignments = {};
+        prompt.lifecycleStatus = PROMPT_STATUS.DRAFT;
+        prompt.sentAt = null;
+        await savePrompt(prompt);
+      }
     } catch (cleanupError) {
       console.warn("drawing-prompts | could not remove prompt after failed send prep", cleanupError);
     }
     throw err;
   }
-  Hooks.callAll("drawing-prompts.promptCreated", prompt);
+  if ( !savedDraft ) Hooks.callAll("drawing-prompts.promptCreated", prompt);
 
   if ( Object.values(prompt.assignments).some(a => game.users.get(a.userId)?.can(FILES_UPLOAD_PERMISSION)) ) {
     try {
@@ -97,8 +131,12 @@ export async function createAndSendPrompt(draft) {
   // Attach a rejection handler even in nonblocking API mode.
   if ( draft.awaitDeliveries !== false ) await deliveries;
   else void deliveries.catch(err => console.warn("drawing-prompts | background delivery failed", err));
+  if ( prompt.deliverySummary.hasRecipients ) Hooks.callAll("drawing-prompts.promptSent", prompt);
   return prompt;
 }
+
+/** @deprecated Internal compatibility for the pre-library test suite. */
+export const createAndSendPrompt = sendPrompt;
 
 /** Retry only unresolved invitations, preserving their assignment identities. */
 export async function retryPromptDeliveries(promptId) {
@@ -364,11 +402,6 @@ async function retainFullCaptures(prompt) {
     }
   }
   return failures;
-}
-
-/** @deprecated Finish now retains the Prompt using Close semantics. */
-export async function finishPrompt(promptId) {
-  return closePrompt(promptId);
 }
 
 /** Reopen a Closed Prompt with its remaining timer paused. */
