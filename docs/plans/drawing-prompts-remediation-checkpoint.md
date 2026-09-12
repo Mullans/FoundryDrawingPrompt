@@ -74,4 +74,4 @@ The five verified review findings are addressed on `codex/prompt-library-browser
 - Focused delivery/service/manager tests: passed.
 - Full `node --test tests/*.test.mjs` unit suite: 469 passed, 0 failed.
 - Foundry runtime gate: not yet verified. The local 14.364 data directory had a stale empty `Config/options.json.lock` (removed after verifying no Foundry desktop process and no port-30000 listener). A fresh server start then failed opening the `effects` database and reported `EADDRINUSE` despite no listener; this needs environment resolution before smoke and saved-Draft runtime can be claimed.
-- GitHub push and review-thread replies remain pending while sandbox network access is unavailable.
+- Commit `d263806` was pushed to PR #9. All six inline comments covering the five unique findings received evidence replies. One final integrated read-only review found no substantive issues; its minor explicit-null framing edge was tightened before the final 469-test unit run.
