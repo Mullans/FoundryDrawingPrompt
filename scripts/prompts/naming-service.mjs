@@ -9,12 +9,12 @@ const MAX_EXTENSION_LENGTH = 10;
 /**
  * Build the default saved drawing name.
  * @param {object} options Options.
- * @param {string} [options.drawingName] Prompt drawing name.
+ * @param {string} [options.promptName] Prompt name.
  * @param {string} [options.promptText] Prompt text.
  * @returns {string} Default saved drawing name.
  */
-export function defaultAssignmentAssetName({ drawingName = "", promptText = "" } = {}) {
-  const base = String(drawingName || truncatePromptText(promptText)).trim();
+export function defaultAssignmentAssetName({ promptName = "", promptText = "" } = {}) {
+  const base = String(promptName || truncatePromptText(promptText)).trim();
   return base || "Drawing";
 }
 

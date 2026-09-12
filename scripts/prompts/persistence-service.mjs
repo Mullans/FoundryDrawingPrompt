@@ -84,8 +84,10 @@ export async function ensureJournalFolder() {
  */
 export async function createPromptEntry(prompt) {
   assertGM();
+  if ( prompt.id ) throw new Error("Cannot create a Prompt that already has an id.");
+  prompt.createdAt ??= Date.now();
   const folder = await ensureJournalFolder();
-  const name = game.i18n.format("DRAWING-PROMPTS.journal.entryName", { name: prompt.drawingName || prompt.promptText || prompt.id || "" });
+  const name = game.i18n.format("DRAWING-PROMPTS.journal.entryName", { name: prompt.promptName || prompt.promptText || "" });
   const entry = await JournalEntry.create({
     name,
     folder: folder.id,
@@ -111,12 +113,14 @@ export async function createPromptEntry(prompt) {
  * @param {DrawingPrompt} prompt Prompt model to save.
  * @param {object} [options] Save options.
  * @param {boolean} [options.timerOnly=false] Persist only the timer state.
+ * @param {boolean} [options.draftOnly=false] Persist editable Draft configuration.
  * @param {string|null} [options.assignmentOnly=null] Persist only this assignment and the asset folder name.
  * @returns {Promise<JournalEntry>}
  */
 export async function savePrompt(prompt, {
   timerOnly = false,
   lifecycleOnly = false,
+  draftOnly = false,
   assignmentOnly = null,
   deliveryOnly = null,
   restartInvitation = false
@@ -128,7 +132,22 @@ export async function savePrompt(prompt, {
     const persisted = entry.getFlag(MODULE_ID, FLAG_PROMPT);
     const latest = persisted ? DrawingPrompt.fromObject(persisted) : null;
     let savedPrompt = prompt;
-    if ( latest && deliveryOnly ) {
+    if ( latest && draftOnly ) {
+      if ( latest.lifecycleStatus !== "draft" || prompt.lifecycleStatus !== "draft" ) {
+        throw new Error(`Illegal Draft update for ${latest.lifecycleStatus} Prompt`);
+      }
+      latest.promptName = prompt.promptName;
+      latest.promptText = prompt.promptText;
+      latest.canvasWidth = prompt.canvasWidth;
+      latest.canvasHeight = prompt.canvasHeight;
+      latest.background = { ...prompt.background };
+      latest.timerSeconds = prompt.timerSeconds;
+      latest.timerState = prompt.timerState;
+      latest.selectedUserIds = [...prompt.selectedUserIds];
+      savedPrompt = latest;
+      prompt.createdAt = latest.createdAt;
+      prompt.assignments = latest.assignments;
+    } else if ( latest && deliveryOnly ) {
       const current = latest.getAssignment(deliveryOnly);
       const requested = prompt.getAssignment(deliveryOnly);
       if ( !current || !requested ) throw new Error(`Assignment not found: ${deliveryOnly}`);
@@ -146,6 +165,7 @@ export async function savePrompt(prompt, {
       latest.lifecycleStatus = prompt.lifecycleStatus;
       latest.closedAt = prompt.closedAt;
       latest.archivedAt = prompt.archivedAt;
+      latest.archivedFromStatus = prompt.archivedFromStatus;
       latest.timerState = prompt.timerState;
       savedPrompt = latest;
       prompt.assignments = latest.assignments;

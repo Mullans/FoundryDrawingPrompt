@@ -31,7 +31,7 @@ function sampleSaveContext(overrides = {}) {
   const prompt = {
     id: "p1",
     promptText: "Draw a griffin",
-    drawingName: "Griffin",
+    promptName: "Griffin",
     canvasWidth: 64,
     canvasHeight: 64,
     assetFolderName: "2026-01-01-draw-a-griffin-p1",

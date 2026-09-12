@@ -189,7 +189,7 @@ try {
     }
     const { DrawingPrompt } = await import("/modules/drawing-prompts/scripts/prompts/prompt-models.mjs");
     const { createPromptEntry, savePrompt } = await import("/modules/drawing-prompts/scripts/prompts/persistence-service.mjs");
-    const prompt = DrawingPrompt.create({ gmUserId: game.user.id, promptText: name, drawingName: name, canvasWidth: 256, canvasHeight: 256, sentAt: Date.now() }, [f.userId]);
+    const prompt = DrawingPrompt.create({ gmUserId: game.user.id, promptText: name, promptName: name, canvasWidth: 256, canvasHeight: 256, sentAt: Date.now() }, [f.userId]);
     await createPromptEntry(prompt);
     f.promptId = prompt.id;
     const assignment = Object.values(prompt.assignments)[0];

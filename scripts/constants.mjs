@@ -12,6 +12,7 @@ export const STATUS = Object.freeze({
 });
 
 export const PROMPT_STATUS = Object.freeze({
+  DRAFT: "draft",
   OPEN: "open",
   CLOSED: "closed",
   ARCHIVED: "archived"
@@ -86,5 +87,7 @@ export const SETTINGS = Object.freeze({
   CANVAS_CHROME: "canvasChrome",
   AUTO_OPEN_PLAYER_WINDOW: "autoOpenPlayerWindow",
   NOTIFY_PLAYER: "notifyPlayer",
-  LIVE_PREVIEW: "livePreview"
+  LIVE_PREVIEW: "livePreview",
+  DEFAULT_LIBRARY_SORT_FIELD: "defaultLibrarySortField",
+  DEFAULT_LIBRARY_SORT_DIRECTION: "defaultLibrarySortDirection"
 });

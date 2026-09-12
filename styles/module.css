@@ -1286,29 +1286,89 @@
 
 .drawing-prompts .dp-library-shell {
   display: grid;
-  gap: 18px;
-  padding: 12px;
+  gap: 14px;
+  padding: 16px;
 }
 
-.drawing-prompts .dp-library-section {
+.drawing-prompts .dp-library-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.drawing-prompts .dp-library-heading h1 {
+  margin: 0;
+  flex: 1;
+}
+
+.drawing-prompts .dp-library-new {
+  border-color: #8f70bd;
+  background: #58427c;
+}
+
+.drawing-prompts .dp-library-toolbar {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) auto auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.drawing-prompts .dp-library-search { width: 100%; }
+
+.drawing-prompts .dp-library-sort-group {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 4px 6px;
+}
+
+.drawing-prompts .dp-library-sort-group label {
+  grid-column: 1 / -1;
+  color: var(--dp-text-muted);
+  font-size: var(--font-size-11);
+  font-weight: 600;
+}
+
+.drawing-prompts .dp-library-archive-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.drawing-prompts .dp-library-list {
   display: grid;
   gap: 8px;
   min-width: 0;
 }
 
-.drawing-prompts .dp-library-section h2 {
-  margin: 0;
+.drawing-prompts .dp-library-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--dp-panel-border-soft);
+  border-left: 3px solid color-mix(in srgb, var(--dp-text-muted) 60%, transparent);
+  border-radius: 5px;
+  min-height: 54px;
+  padding: 9px 10px;
+  background: var(--dp-panel-bg-raised);
 }
 
-.drawing-prompts .dp-library-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+.drawing-prompts .dp-library-row.is-current {
+  border-color: color-mix(in srgb, #a98cda 38%, var(--dp-panel-border-soft));
+  border-left-color: #a98cda;
+  background: color-mix(in srgb, #a98cda 11%, var(--dp-panel-bg-raised));
+}
+
+.drawing-prompts .dp-library-row--archived .dp-library-identity,
+.drawing-prompts .dp-library-row--archived .dp-library-info { opacity: 0.58; }
+
+.drawing-prompts .dp-library-identity {
+  display: flex;
   align-items: center;
-  gap: 10px;
-  border: 1px solid var(--dp-panel-border-soft);
-  border-radius: 4px;
-  padding: 8px;
-  background: var(--dp-panel-bg-raised);
+  gap: 8px;
+  min-width: 0;
 }
 
 .drawing-prompts .dp-library-name {
@@ -1318,21 +1378,92 @@
   white-space: nowrap;
 }
 
+.drawing-prompts .dp-library-status {
+  flex: 0 0 auto;
+  min-width: 64px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 2px 8px;
+  text-align: center;
+  font-size: var(--font-size-11);
+  font-weight: 700;
+}
+
+.drawing-prompts .dp-library-status--draft { border-color: #4e83bd; background: rgb(43 84 131 / 27%); color: #bcd7ff; }
+.drawing-prompts .dp-library-status--open { border-color: #4a9a66; background: rgb(40 98 61 / 33%); color: #c7f4d2; }
+.drawing-prompts .dp-library-status--closed,
+.drawing-prompts .dp-library-status--archived { border-color: #77747f; background: rgb(102 99 110 / 27%); color: #d3d1d8; }
+
+.drawing-prompts .dp-library-info,
+.drawing-prompts .dp-library-more { position: relative; }
+
+.drawing-prompts .dp-library-info > summary,
+.drawing-prompts .dp-library-more > summary {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.drawing-prompts .dp-library-info > summary::-webkit-details-marker,
+.drawing-prompts .dp-library-more > summary::-webkit-details-marker { display: none; }
+
+.drawing-prompts .dp-library-info > summary { border: 0; border-radius: 50%; color: var(--dp-text-muted); }
+.drawing-prompts .dp-library-info > summary:hover,
+.drawing-prompts .dp-library-info > summary:focus-visible { color: #d9c8ff; outline: 2px solid #8f70bd; outline-offset: 1px; }
+
+.drawing-prompts .dp-library-popover,
+.drawing-prompts .dp-library-menu {
+  position: absolute;
+  right: 0;
+  top: 34px;
+  z-index: 10;
+  border: 1px solid var(--dp-panel-border);
+  border-radius: 5px;
+  background: var(--dp-panel-bg-raised);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 60%);
+}
+
+.drawing-prompts .dp-library-popover { width: min(330px, calc(100vw - 48px)); padding: 12px; }
+.drawing-prompts .dp-library-popover dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 10px; margin: 0; }
+.drawing-prompts .dp-library-popover dt { font-weight: 700; }
+.drawing-prompts .dp-library-popover dd { margin: 0; overflow-wrap: anywhere; }
+
 .drawing-prompts .dp-library-actions {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 6px;
 }
 
-@media (max-width: 560px) {
+.drawing-prompts .dp-library-open { border-color: color-mix(in srgb, #a98cda 60%, var(--dp-panel-border-soft)); background: color-mix(in srgb, #a98cda 14%, var(--dp-control-bg)); }
+.drawing-prompts .dp-library-more > summary { height: var(--input-height, 32px); border: 1px solid var(--dp-panel-border-soft); border-radius: 4px; background: var(--dp-control-bg); }
+.drawing-prompts .dp-library-menu { display: grid; gap: 3px; min-width: 145px; padding: 5px; }
+.drawing-prompts .dp-library-menu button { width: 100%; border-color: transparent; background: transparent; text-align: left; }
+.drawing-prompts .dp-library-empty { display: grid; justify-items: start; gap: 8px; color: var(--dp-text-muted); }
+.drawing-prompts .dp-library-empty p { margin: 0; }
+
+@media (max-width: 680px) {
+  .drawing-prompts .dp-library-toolbar { grid-template-columns: 1fr auto; }
+  .drawing-prompts .dp-library-search { grid-column: 1 / -1; }
+
   .drawing-prompts .dp-library-row {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 28px;
   }
 
   .drawing-prompts .dp-library-actions {
+    grid-column: 1 / -1;
     justify-content: flex-start;
   }
+}
+
+@media (max-width: 460px) {
+  .drawing-prompts .dp-library-heading { display: grid; align-items: stretch; }
+  .drawing-prompts .dp-library-toolbar { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .drawing-prompts .dp-library-sort-group { grid-template-columns: minmax(0, 1fr); }
+  .drawing-prompts .dp-library-sort-group label { grid-column: auto; }
 }
 
 .drawing-prompts .dp-place-shell,

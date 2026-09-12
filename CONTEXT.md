@@ -8,6 +8,10 @@ A Foundry VTT module where the GM sends drawing prompts to players, watches them
 A GM-authored drawing request, optionally sent to one or more players, with background, framing, dimensions, and timer configuration.
 _Avoid_: Drawing request (alone)
 
+**Prompt name**:
+The required human-readable name of a Prompt across composition, browsing, player display, persistence, and integrations.
+_Avoid_: Drawing name, title (when naming the stored field)
+
 **Assignment**:
 One player's individual instance of a Prompt. Three targeted players means three Assignments.
 
@@ -92,7 +96,11 @@ The token HUD action that restores a Transformed token's original art and clears
 The Beautiful corpse period in which initial Invitations and the participant arrangement are being resolved, before drawing is available and before drawing time begins.
 
 **Draft**:
-A Prompt that exists and may be configured but has not been opened to players.
+A Prompt that has been explicitly saved but has not been opened to players. It retains its configuration and selected players, but has no Assignments or player drawings until Send. A newly composed or copied prompt remains unsaved until Save or Send.
+
+**Prompt Library**:
+The GM's primary Drawing Prompts entry point and persistent browser for Draft, Open, Closed, and optionally visible Archived Prompts. Opening a Prompt for inspection does not change its lifecycle.
+_Avoid_: Archive (when meaning the whole library), Prompt Manager (when meaning the browser)
 
 **Open**:
 A Prompt that has been sent and still has work in flight (active Assignments or attention-needing Submissions). Multiple Prompts may be Open at once.
