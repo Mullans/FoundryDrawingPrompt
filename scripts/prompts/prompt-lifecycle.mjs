@@ -33,6 +33,10 @@ import { DrawingAssignment, DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM } from "./socket-auth.mjs";
 import { refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
 import { pauseTimer } from "./timer-service.mjs";
+import { validateDraft } from "./draft-validation.mjs";
+import { TimerUpdateQueue } from "./timer-update-queue.mjs";
+
+const draftLifecycleQueue = new TimerUpdateQueue();
 
 /**
  * Create, persist, and send a prompt. Inactive users remain pending for later resend.
@@ -41,28 +45,65 @@ import { pauseTimer } from "./timer-service.mjs";
  */
 export async function sendPrompt(draftOrId) {
   assertGM();
-  const savedDraft = typeof draftOrId === "string" ? requireOwnedPrompt(draftOrId) : null;
-  if ( savedDraft && savedDraft.lifecycleStatus !== PROMPT_STATUS.DRAFT ) {
-    throw new Error(`Illegal Send for ${savedDraft.lifecycleStatus} Prompt`);
+  const savedId = typeof draftOrId === "string" ? draftOrId : draftOrId?.id ?? null;
+  const requested = typeof draftOrId === "string" ? null : draftOrId;
+  const prepared = savedId
+    ? await draftLifecycleQueue.enqueue(savedId, () => prepareSavedDraftSend(savedId, requested))
+    : await prepareNewDraftSend(requested);
+  const { prompt, awaitDeliveries, started } = prepared;
+  if ( Object.values(prompt.assignments).some(a => game.users.get(a.userId)?.can(FILES_UPLOAD_PERMISSION)) ) {
+    try { await ensureDir(stagingDir()); }
+    catch (err) { console.warn("drawing-prompts | could not pre-create staging directory", err); }
   }
-  const draft = savedDraft ? {
-    promptName: savedDraft.promptName,
-    promptText: savedDraft.promptText,
-    canvasWidth: savedDraft.canvasWidth,
-    canvasHeight: savedDraft.canvasHeight,
-    background: savedDraft.background,
-    timerSeconds: savedDraft.timerSeconds,
-    selectedUserIds: savedDraft.selectedUserIds,
-    awaitDeliveries: true
-  } : draftOrId;
+  Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "preparation", elapsedMs: performance.now() - started });
+  const completion = deliverPromptAssignments(prompt, { initial: true }).then(() => {
+    if ( prompt.deliverySummary.hasRecipients ) Hooks.callAll("drawing-prompts.promptSent", prompt);
+    return prompt;
+  });
+  if ( awaitDeliveries ) return completion;
+  void completion.catch(err => console.warn("drawing-prompts | background delivery failed", err));
+  return prompt;
+}
+
+async function prepareSavedDraftSend(savedId, requested) {
+  const savedDraft = requireOwnedPrompt(savedId);
+  if ( savedDraft.lifecycleStatus !== PROMPT_STATUS.DRAFT ) throw new Error(`Illegal Send for ${savedDraft.lifecycleStatus} Prompt`);
+  const draft = validateDraft(requested ? { ...savedDraft.toObject(), ...requested,
+    background: requested.background ? { ...savedDraft.background, ...requested.background } : savedDraft.background }
+    : savedDraft.toObject(), { forSend: true });
   const started = performance.now();
-  const selectedUserIds = [...new Set(draft.selectedUserIds ?? [])];
-  if ( !selectedUserIds.length || selectedUserIds.some(id => !game.users.get(id) || game.users.get(id)?.isGM) ) {
-    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.onlineRecipientsRequired"));
+  Object.assign(savedDraft, draft);
+  savedDraft.background = { ...draft.background, framedPath: null };
+  savedDraft.selectedUserIds = draft.selectedUserIds;
+  savedDraft.timerState = draft.timerSeconds > 0
+    ? { timerStatus: "paused", deadlineAt: null, remainingMs: draft.timerSeconds * 1000 }
+    : { timerStatus: "none", deadlineAt: null, remainingMs: null };
+  // Preserve the GM's latest edits as a retryable Draft before any fallible framing work.
+  await savePrompt(savedDraft, { draftOnly: true });
+  const prompt = loadPrompt(savedId);
+  const framingStarted = performance.now();
+  await prepareFramedBackgroundForSend(prompt);
+  Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "framing", elapsedMs: performance.now() - framingStarted });
+  const sentAt = Date.now();
+  prompt.lifecycleStatus = PROMPT_STATUS.OPEN;
+  prompt.sentAt = sentAt;
+  prompt.assignments = {};
+  for ( const userId of draft.selectedUserIds ) {
+    const user = game.users.get(userId);
+    const assignment = DrawingAssignment.create({ promptId: prompt.id, userId, userName: user.name });
+    prompt.assignments[assignment.id] = assignment;
   }
+  await savePrompt(prompt);
+  return { prompt, awaitDeliveries: requested?.awaitDeliveries !== false, started };
+}
+
+async function prepareNewDraftSend(requested) {
+  const draft = validateDraft(requested, { forSend: true });
+  const started = performance.now();
+  const selectedUserIds = draft.selectedUserIds;
   const sentAt = Date.now();
   const timerSeconds = Number(draft.timerSeconds || 0);
-  const prompt = savedDraft ?? DrawingPrompt.create({
+  const prompt = DrawingPrompt.create({
     promptText: draft.promptText,
     promptName: draft.promptName,
     canvasWidth: Number(draft.canvasWidth),
@@ -76,22 +117,8 @@ export async function sendPrompt(draftOrId) {
     selectedUserIds
   }, selectedUserIds);
 
-  if ( savedDraft ) {
-    prompt.lifecycleStatus = PROMPT_STATUS.OPEN;
-    prompt.sentAt = sentAt;
-    prompt.assignments = {};
-    for ( const userId of selectedUserIds ) {
-      const user = game.users.get(userId);
-      const assignment = DrawingAssignment.create({ promptId: prompt.id, userId, userName: user.name });
-      prompt.assignments[assignment.id] = assignment;
-    }
-    prompt.timerState = timerSeconds > 0
-      ? { timerStatus: "paused", deadlineAt: null, remainingMs: timerSeconds * 1000 }
-      : { timerStatus: "none", deadlineAt: null, remainingMs: null };
-  }
-
   const storageStarted = performance.now();
-  if ( !savedDraft ) await createPromptEntry(prompt);
+  await createPromptEntry(prompt);
   Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "storage-create", elapsedMs: performance.now() - storageStarted });
   try {
     const framingStarted = performance.now();
@@ -104,35 +131,14 @@ export async function sendPrompt(draftOrId) {
   } catch (err) {
     // Compensate: a failed Send must not leave a sticky undelivered prompt (retry would duplicate).
     try {
-      if ( !savedDraft ) await deletePromptEntry(prompt.id);
-      else {
-        prompt.assignments = {};
-        prompt.lifecycleStatus = PROMPT_STATUS.DRAFT;
-        prompt.sentAt = null;
-        await savePrompt(prompt);
-      }
+      await deletePromptEntry(prompt.id);
     } catch (cleanupError) {
       console.warn("drawing-prompts | could not remove prompt after failed send prep", cleanupError);
     }
     throw err;
   }
-  if ( !savedDraft ) Hooks.callAll("drawing-prompts.promptCreated", prompt);
-
-  if ( Object.values(prompt.assignments).some(a => game.users.get(a.userId)?.can(FILES_UPLOAD_PERMISSION)) ) {
-    try {
-      await ensureDir(stagingDir());
-    } catch (err) {
-      console.warn("drawing-prompts | could not pre-create staging directory", err);
-    }
-  }
-
-  Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "preparation", elapsedMs: performance.now() - started });
-  const deliveries = deliverPromptAssignments(prompt, { initial: true });
-  // Attach a rejection handler even in nonblocking API mode.
-  if ( draft.awaitDeliveries !== false ) await deliveries;
-  else void deliveries.catch(err => console.warn("drawing-prompts | background delivery failed", err));
-  if ( prompt.deliverySummary.hasRecipients ) Hooks.callAll("drawing-prompts.promptSent", prompt);
-  return prompt;
+  Hooks.callAll("drawing-prompts.promptCreated", prompt);
+  return { prompt, awaitDeliveries: requested?.awaitDeliveries !== false, started };
 }
 
 /** Retry only unresolved invitations, preserving their assignment identities. */
@@ -206,15 +212,16 @@ export async function invitePromptRecipients(promptId, userIds) {
  */
 export async function createPrompt(draft = {}) {
   assertGM();
+  const fields = validateDraft(draft);
   const prompt = DrawingPrompt.create({
-    ...draftFields(draft),
+    ...fields,
     lifecycleStatus: PROMPT_STATUS.DRAFT,
     createdAt: null,
     sentAt: null,
-    timerStatus: Number(draft.timerSeconds || 0) > 0 ? "paused" : "none",
+    timerStatus: Number(fields.timerSeconds || 0) > 0 ? "paused" : "none",
     deadlineAt: null,
-    remainingMs: Number(draft.timerSeconds || 0) > 0 ? Number(draft.timerSeconds) * 1000 : null,
-    selectedUserIds: draft.selectedUserIds ?? []
+    remainingMs: Number(fields.timerSeconds || 0) > 0 ? Number(fields.timerSeconds) * 1000 : null,
+    selectedUserIds: fields.selectedUserIds
   });
   await createPromptEntry(prompt);
   Hooks.callAll("drawing-prompts.promptCreated", prompt);
@@ -225,30 +232,22 @@ export async function createPrompt(draft = {}) {
 /** Save editable configuration for an existing Draft. */
 export async function updatePrompt(promptId, draft = {}) {
   assertGM();
-  const prompt = requireOwnedPrompt(promptId);
-  if ( prompt.lifecycleStatus !== PROMPT_STATUS.DRAFT ) {
-    throw new Error(`Illegal Draft update for ${prompt.lifecycleStatus} Prompt`);
-  }
-  Object.assign(prompt, draftFields(draft));
-  prompt.selectedUserIds = [...new Set(Array.isArray(draft.selectedUserIds) ? draft.selectedUserIds : prompt.selectedUserIds)];
-  prompt.timerState = Number(prompt.timerSeconds || 0) > 0
-    ? { timerStatus: "paused", deadlineAt: null, remainingMs: Number(prompt.timerSeconds) * 1000 }
-    : { timerStatus: "none", deadlineAt: null, remainingMs: null };
-  await savePrompt(prompt, { draftOnly: true });
-  Hooks.callAll("drawing-prompts.promptUpdated", prompt);
-  await refreshManager();
-  return prompt;
-}
-
-function draftFields(draft) {
-  return {
-    promptName: String(draft.promptName ?? "").trim(),
-    promptText: String(draft.promptText ?? ""),
-    canvasWidth: Number(draft.canvasWidth ?? 512),
-    canvasHeight: Number(draft.canvasHeight ?? 512),
-    background: { ...draft.background },
-    timerSeconds: Number(draft.timerSeconds || 0) || null
-  };
+  return draftLifecycleQueue.enqueue(promptId, async () => {
+    const prompt = requireOwnedPrompt(promptId);
+    if ( prompt.lifecycleStatus !== PROMPT_STATUS.DRAFT ) {
+      throw new Error(`Illegal Draft update for ${prompt.lifecycleStatus} Prompt`);
+    }
+    const fields = validateDraft({ ...prompt.toObject(), ...draft,
+      background: draft.background ? { ...prompt.background, ...draft.background } : prompt.background });
+    Object.assign(prompt, fields);
+    prompt.timerState = Number(prompt.timerSeconds || 0) > 0
+      ? { timerStatus: "paused", deadlineAt: null, remainingMs: Number(prompt.timerSeconds) * 1000 }
+      : { timerStatus: "none", deadlineAt: null, remainingMs: null };
+    await savePrompt(prompt, { draftOnly: true });
+    Hooks.callAll("drawing-prompts.promptUpdated", prompt);
+    await refreshManager();
+    return prompt;
+  });
 }
 
 /**
@@ -575,6 +574,7 @@ export async function resendAssignment(assignmentId) {
   assertGM();
   const { prompt, assignment } = requirePromptAssignment(assignmentId);
   assertPromptOwner(prompt);
+  if ( prompt.lifecycleStatus !== PROMPT_STATUS.OPEN ) throw new Error(`Cannot resend an Assignment on a ${prompt.lifecycleStatus} Prompt`);
   if ( assignment.delivery.status === "withdrawn" ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.invalidInvitation"));
   if ( assignment.status === STATUS.CANCELLED ) {
     assignment.markResent();
@@ -617,6 +617,7 @@ export async function resendAllAssignments(promptId) {
   const prompt = loadPrompt(promptId);
   if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
   assertPromptOwner(prompt);
+  if ( prompt.lifecycleStatus !== PROMPT_STATUS.OPEN ) throw new Error(`Cannot resend Assignments on a ${prompt.lifecycleStatus} Prompt`);
   for ( const assignmentId of Object.keys(prompt.assignments) ) {
     const assignment = prompt.getAssignment(assignmentId);
     if ( assignment.delivery.status !== "withdrawn" && assignment.status === STATUS.CANCELLED ) {

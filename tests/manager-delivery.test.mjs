@@ -205,6 +205,54 @@ test("Archived Prompt inspection disables assignment mutations", async () => {
   assert.equal(context.rows[0].canResend, false);
 });
 
+test("Resend controls are available only for Open Prompts", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  for ( const status of ["draft", "open", "closed", "archived"] ) {
+    const manager = new DrawingPromptManager();
+    manager.activePrompt = new DrawingPrompt({
+      id: `resend-${status}`,
+      gmUserId: "gm",
+      lifecycleStatus: status,
+      assignments: {
+        cancelled: { id: `cancelled-${status}`, userId: "u1", status: "cancelled", delivery: { status: "received" } }
+      }
+    });
+    const context = await manager._prepareContext({});
+    assert.equal(context.canResendAll, status === "open", `${status} Resend All`);
+    assert.equal(context.rows[0].canResend, status === "open", `${status} row Resend`);
+  }
+});
+
+test("saved Draft framing actions remain editable, while sent Prompt framing is locked", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  const background = {
+    path: "background.webp", naturalWidth: 400, naturalHeight: 200,
+    fitMode: "fit-canvas", framing: { x: 0, y: 0, width: 400, height: 200 }
+  };
+  manager.activePrompt = new DrawingPrompt({ id: "saved-framing", gmUserId: "gm", lifecycleStatus: "draft" });
+  Object.assign(manager.draft, { canvasWidth: 400, canvasHeight: 200, background: structuredClone(background) });
+  const plate = {
+    width: 400, height: 200, clientWidth: 400, clientHeight: 200,
+    toggleAttribute() {},
+    getBoundingClientRect: () => ({ left: 0, top: 0 })
+  };
+  manager.element = {
+    querySelector: selector => selector === "[data-dp-framing-plate]" ? plate : null,
+    querySelectorAll: () => []
+  };
+
+  DrawingPromptManager.DEFAULT_OPTIONS.actions.framingZoomIn.call(manager);
+  assert.equal(manager.draft.background.fitMode, "placed");
+  assert.ok(manager.draft.background.framing.width < 400);
+  DrawingPromptManager.DEFAULT_OPTIONS.actions.framingReset.call(manager);
+  assert.deepEqual(manager.draft.background.framing, background.framing);
+
+  manager.activePrompt.lifecycleStatus = "open";
+  DrawingPromptManager.DEFAULT_OPTIONS.actions.framingZoomIn.call(manager);
+  assert.deepEqual(manager.draft.background.framing, background.framing);
+});
+
 test("partial delivery modal uses the requested Continue explanation", async () => {
   TestDialogV2.results = ["dismissed-test-dialog"];
   const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");

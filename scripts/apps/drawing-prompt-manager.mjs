@@ -34,6 +34,7 @@ import {
 import { resolveAssignmentReview, resolveReviewContextSrc } from "../prompts/assignment-review.mjs";
 import { resolveReviewPlateAspect } from "../prompts/review-preview.mjs";
 import { loadAllPrompts, loadPrompt } from "../prompts/persistence-service.mjs";
+import { validateDraft } from "../prompts/draft-validation.mjs";
 import { isSaveGateOpen } from "../prompts/transitions.mjs";
 import { emit, isSocketReady } from "../socket.mjs";
 import { formatClock, formatTimerAdjustment, formatTimerState } from "../utils/timer-chip.mjs";
@@ -260,6 +261,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   #mayAdoptDeliveryCompletion;
   #closed;
   #savedDraftSignature;
+  get #canEditDraft() {
+    return !this.activePrompt || this.activePrompt.lifecycleStatus === PROMPT_STATUS.DRAFT;
+  }
+
+  get #canResendAssignments() {
+    return this.activePrompt?.lifecycleStatus === PROMPT_STATUS.OPEN;
+  }
   #formListenersAttached = false;
   #sourceFramingPreviewCache;
   /**
@@ -517,8 +525,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       lastPaintedSrc: this.#lastPaintedSrcForSelection()
     });
     const delivery = this.activePrompt?.deliverySummary;
-    const isDraft = this.activePrompt?.lifecycleStatus === PROMPT_STATUS.DRAFT;
-    const hasActivePrompt = Boolean(this.activePrompt && !isDraft && (!delivery || delivery.hasRecipients));
+    const hasActivePrompt = Boolean(this.activePrompt && !this.#canEditDraft && (!delivery || delivery.hasRecipients));
     const viewAssetPath = resolveFramingViewAssetPath(selectedAssignment, framingView);
     const savedAndGateOpen = isSaveGateOpen(selectedAssignment);
     const archivedReadOnly = this.activePrompt?.lifecycleStatus === PROMPT_STATUS.ARCHIVED;
@@ -534,17 +541,17 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       selectedSnapshot: reviewContext.src,
       selectedPreviewHeading: reviewContext.heading,
       selectedAssignmentId: this.selectedAssignmentId,
-      canSavePrompt: !this.isSending && (!this.activePrompt || isDraft),
-      canSend: !this.isSending && (!this.activePrompt || isDraft),
+      canSavePrompt: !this.isSending && this.#canEditDraft,
+      canSend: !this.isSending && this.#canEditDraft,
       isSending: this.isSending || Boolean(delivery?.isSending),
       sendLabel: game.i18n.localize(this.isSending
         ? "DRAWING-PROMPTS.manager.actions.sending"
         : "DRAWING-PROMPTS.manager.actions.sendPrompt"),
-      setupLocked: this.isSending || Boolean(this.activePrompt && !isDraft),
+      setupLocked: this.isSending || !this.#canEditDraft,
       deliveryFeedback: null,
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
       canCancelAll: !archivedReadOnly && Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.isActive)),
-      canResendAll: !archivedReadOnly && Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status))),
+      canResendAll: this.#canResendAssignments && Object.values(this.activePrompt.assignments).some(a => a.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(a.status)),
       canClosePrompt: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.OPEN,
       canOpenPromptToPlayers: this.activePrompt?.lifecycleStatus === PROMPT_STATUS.CLOSED,
       archivedReadOnly,
@@ -707,20 +714,18 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @param {object} draft Serializable draft.
    * @returns {boolean}
    */
-  #validateDraft(draft) {
-    if ( !draft.promptName ) {
-      ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.manager.validation.promptName"));
-      return false;
+  #validateDraft(draft, forSend = false) {
+    try {
+      validateDraft(draft, { forSend });
+      return true;
+    } catch (error) {
+      return warn(error.message === "DRAWING-PROMPTS.errors.onlineRecipientsRequired"
+        ? "DRAWING-PROMPTS.manager.validation.users" : error.message, { max: INTERNAL.MAX_CANVAS_DIM });
     }
-    if ( !validTimerSeconds(draft.timerSeconds) ) return warn("DRAWING-PROMPTS.manager.validation.timerSeconds");
-    if ( !validDimension(draft.canvasWidth) || !validDimension(draft.canvasHeight) ) {
-      return warn("DRAWING-PROMPTS.manager.validation.dimensions", { max: INTERNAL.MAX_CANVAS_DIM });
-    }
-    return true;
   }
 
   #validateSendDraft(draft) {
-    return this.#validateDraft(draft) && (draft.selectedUserIds.length || warn("DRAWING-PROMPTS.manager.validation.users"));
+    return this.#validateDraft(draft, true);
   }
 
   /**
@@ -870,7 +875,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #layoutFramingPlate() {
-    if ( this.activePrompt ) return;
+    if ( !this.#canEditDraft ) return;
     const stage = this.element?.querySelector("[data-dp-framing-stage]");
     const plate = stage?.querySelector(".dp-framing-plate");
     if ( !stage || !plate ) return;
@@ -934,7 +939,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #updateFramingEditor() {
-    if ( this.activePrompt ) return;
+    if ( !this.#canEditDraft ) return;
     const canvasEl = this.element?.querySelector("[data-dp-framing-plate]");
     if ( !canvasEl ) return;
     const emptyEl = this.element?.querySelector("[data-dp-framing-empty]");
@@ -989,7 +994,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #applyDraftFraming(framing, { fromPanZoom = false } = {}) {
-    if ( this.activePrompt || !this.draft.background.path ) return;
+    if ( !this.#canEditDraft || !this.draft.background.path ) return;
     let next = { ...framing };
     if ( fromPanZoom ) {
       const canvasWidth = this.draft.canvasWidth;
@@ -1073,7 +1078,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {void}
    */
   #ensureFramingEditor() {
-    if ( this.activePrompt || this.#framingEditorAttached ) return;
+    if ( !this.#canEditDraft || this.#framingEditorAttached ) return;
     const root = this.element?.querySelector("[data-dp-framing-editor]");
     const stage = root?.querySelector("[data-dp-framing-stage]");
     const plate = root?.querySelector(".dp-framing-plate");
@@ -1259,7 +1264,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
    * @returns {Promise<void>}
    */
   async #ensurePreviewBackgroundImage() {
-    if ( this.activePrompt ) return;
+    if ( !this.#canEditDraft ) return;
     const path = this.draft.background.path;
     if ( !path || this.#previewBackgroundImage?.path === path ) return;
     if ( this.#previewBackgroundLoad?.path === path ) return this.#previewBackgroundLoad.promise;
@@ -1329,7 +1334,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       overtimeLabel: assignment?.overtimeMs ? formatClock(assignment.overtimeMs) : "",
       windowOpen: assignment ? Boolean(this.windowOpenByAssignment.get(assignment.id)) : false,
       canSelectPreview: Boolean(assignment),
-      canResend: !archivedReadOnly && Boolean(assignment && assignment.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(assignment.status)),
+      canResend: this.#canResendAssignments && Boolean(assignment && assignment.delivery.status !== "withdrawn" && [STATUS.PENDING, STATUS.OPENED, STATUS.CANCELLED].includes(assignment.status)),
       canCancel: !archivedReadOnly && Boolean(assignment?.isActive),
       canReopen: !archivedReadOnly && Boolean(assignment && [STATUS.SUBMITTED, STATUS.REJECTED].includes(assignment.status)),
       canShow: !archivedReadOnly && Boolean(assignment?.isActive),
@@ -1458,7 +1463,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     this.#warnSelectedUsersWithoutFileUpload(draft.selectedUserIds);
     await this.#runDeliveryAttempt(async () => {
       const service = await import("../prompts/prompt-lifecycle.mjs");
-      return service.sendPrompt(this.activePrompt?.id ?? { ...draft, awaitDeliveries: true });
+      return service.sendPrompt({ ...draft, ...(this.activePrompt ? { id: this.activePrompt.id } : {}), awaitDeliveries: true });
     });
   }
 
@@ -1669,7 +1674,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onResendAll() {
-    if ( !this.activePrompt || this.activePrompt.lifecycleStatus === PROMPT_STATUS.ARCHIVED ) return;
+    if ( !this.#canResendAssignments ) return;
     const service = await import("../prompts/prompt-service.mjs");
     await service.resendAllAssignments(this.activePrompt.id);
   }
@@ -1706,6 +1711,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onResendAssignment(_event, target) {
+    if ( !this.#canResendAssignments ) return;
     const service = await import("../prompts/prompt-service.mjs");
     await service.resendAssignment(target.dataset.assignmentId);
   }
@@ -2362,16 +2368,6 @@ function timerSettingSeconds(key, fallback) {
 }
 
 /**
- * Test whether a draft timer is a nonnegative whole number of seconds.
- * @param {*} value Draft timer value.
- * @returns {boolean}
- */
-function validTimerSeconds(value) {
-  const seconds = Number(value);
-  return Number.isFinite(seconds) && Number.isInteger(seconds) && seconds >= 0;
-}
-
-/**
  * Escape text for use in a small dialog HTML attribute.
  * @param {string} value Value.
  * @returns {string} Escaped value.
@@ -2472,15 +2468,6 @@ function framingMatchesCanvasAspect(framing, canvasWidth, canvasHeight) {
 function warn(key, data = {}) {
   ui.notifications.warn(game.i18n.format(key, data));
   return false;
-}
-
-/**
- * Test a canvas dimension.
- * @param {number} value Dimension.
- * @returns {boolean}
- */
-function validDimension(value) {
-  return Number.isFinite(Number(value)) && Number(value) >= 1 && Number(value) <= INTERNAL.MAX_CANVAS_DIM;
 }
 
 /**

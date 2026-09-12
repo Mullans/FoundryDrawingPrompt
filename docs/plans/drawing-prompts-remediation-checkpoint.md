@@ -66,3 +66,12 @@ Integration verification found and fixed two cross-surface issues: a deliberatel
 - Foundry 14.364 `e2e-placement-race.mjs`: passed all Tile/Token commit, abandon, and cleanup cases.
 - Foundry 14.364 `e2e-settings-migration.mjs`: passed and restored original settings.
 - The delivery and reliability harnesses were updated to the explicit API and Draft semantics. Their broader legacy scenarios remain independently covered by the repository unit gate; runtime attempts exposed pre-existing timing/focus sensitivity outside the Prompt Library slice and are not claimed as passing evidence for this follow-up.
+
+## PR #9 review remediation — 2026-09-11
+
+The five verified review findings are addressed on `codex/prompt-library-browser`: service-level Draft validation, exact current-form saved-Draft Send, settled-initial-delivery `promptSent` in both awaited and nonblocking modes, shared Draft framing editability, and Open-only resend at UI and service boundaries. Saved-Draft Send persists edits before fallible framing preparation, then commits Open and assignments; per-Prompt Draft operations are queued. Regressions cover invalid partial updates, preparation failure, concurrent Send/update, mixed and zero receipts, framing controls, and resend status guards.
+
+- Focused delivery/service/manager tests: passed.
+- Full `node --test tests/*.test.mjs` unit suite: 469 passed, 0 failed.
+- Foundry runtime gate: not yet verified. The local 14.364 data directory had a stale empty `Config/options.json.lock` (removed after verifying no Foundry desktop process and no port-30000 listener). A fresh server start then failed opening the `effects` database and reported `EADDRINUSE` despite no listener; this needs environment resolution before smoke and saved-Draft runtime can be claimed.
+- GitHub push and review-thread replies remain pending while sandbox network access is unavailable.

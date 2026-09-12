@@ -39,7 +39,7 @@ beforeEach(() => {
     entries.set(entry.id, entry); return entry;
   } };
 });
-const draft = { canvasWidth: 512, canvasHeight: 512, selectedUserIds: ["u1"], timerSeconds: 60 };
+const draft = { promptName: "Delivery Test", canvasWidth: 512, canvasHeight: 512, selectedUserIds: ["u1"], timerSeconds: 60 };
 
 test("awaitDeliveries false returns while the actual OPEN transport is unresolved", async () => {
   let release;
@@ -78,6 +78,110 @@ test("sendPrompt opens a saved Draft in place and emits promptSent only after re
   assert.equal(sent.lifecycleStatus, "open");
   assert.equal(Object.keys(sent.assignments).length, 1);
   assert.ok(hooks.indexOf("drawing-prompts.promptCreated") < hooks.indexOf("drawing-prompts.promptSent"));
+});
+
+test("saved Draft Send persists current edits and delivers the same snapshot", async () => {
+  const saved = await lifecycle.createPrompt({ ...draft, selectedUserIds: [] });
+  let delivered;
+  emit.openDrawingPrompt = async (_user, payload) => {
+    delivered = payload;
+    await delivery.acknowledgePromptDelivery("u2", payload.assignment.id, "u2");
+  };
+  const sent = await lifecycle.sendPrompt({ id: saved.id, promptName: "Revised", promptText: "Draw a fox",
+    selectedUserIds: ["u2"], timerSeconds: 90, canvasWidth: 640, canvasHeight: 384,
+    background: { sourceType: "blank" } });
+  assert.equal(sent.id, saved.id);
+  assert.equal(stored.promptName, "Revised");
+  assert.equal(stored.promptText, "Draw a fox");
+  assert.equal(stored.timerSeconds, 90);
+  assert.deepEqual(stored.selectedUserIds, ["u2"]);
+  assert.equal(stored.canvasWidth, 640);
+  assert.equal(stored.canvasHeight, 384);
+  assert.equal(delivered.prompt.promptName, "Revised");
+  assert.equal(delivered.prompt.promptText, "Draw a fox");
+  assert.equal(delivered.assignment.userId, "u2");
+});
+
+test("invalid partial Draft update does not persist and valid partial update retains other fields", async () => {
+  const saved = await lifecycle.createPrompt({ ...draft, selectedUserIds: [] });
+  const before = structuredClone(stored);
+  await assert.rejects(lifecycle.updatePrompt(saved.id, { canvasWidth: 99999 }), /dimensions/);
+  assert.deepEqual(stored, before);
+  const updated = await lifecycle.updatePrompt(saved.id, { promptText: "Updated" });
+  assert.equal(updated.promptName, draft.promptName);
+  assert.equal(stored.promptText, "Updated");
+  assert.deepEqual(stored.selectedUserIds, []);
+});
+
+test("failed saved-Draft framing preparation leaves edited Draft retryable", async () => {
+  const saved = await lifecycle.createPrompt(draft);
+  await assert.rejects(lifecycle.sendPrompt({ id: saved.id, promptName: "Edited before failure",
+    background: { sourceType: "file", path: "missing-image.webp" } }));
+  assert.equal(stored.lifecycleStatus, "draft");
+  assert.equal(stored.promptName, "Edited before failure");
+  assert.equal(stored.background.path, "missing-image.webp");
+  assert.deepEqual(stored.assignments, {});
+});
+
+test("Draft update queued during Send cannot overwrite committed Open snapshot", async () => {
+  const saved = await lifecycle.createPrompt(draft);
+  emit.openDrawingPrompt = async (_user, payload) => {
+    void delivery.acknowledgePromptDelivery("u1", payload.assignment.id, "u1");
+  };
+  const sending = lifecycle.sendPrompt({ id: saved.id, promptName: "Send snapshot" });
+  const lateUpdate = lifecycle.updatePrompt(saved.id, { promptName: "Late edit" });
+  const sent = await sending;
+  await assert.rejects(lateUpdate, /Illegal Draft update/);
+  assert.equal(sent.promptName, "Send snapshot");
+  assert.equal(stored.promptName, "Send snapshot");
+  assert.equal(stored.lifecycleStatus, "open");
+});
+
+test("resend service rejects Draft, Closed, and Archived before mutation", async () => {
+  const draftPrompt = await lifecycle.createPrompt(draft);
+  await assert.rejects(lifecycle.resendAllAssignments(draftPrompt.id), /draft Prompt/);
+  emit.openDrawingPrompt = async (_user, payload) => {
+    void delivery.acknowledgePromptDelivery("u1", payload.assignment.id, "u1");
+  };
+  const open = await lifecycle.sendPrompt(draftPrompt.id);
+  const assignmentId = Object.keys(open.assignments)[0];
+  const originalAssignments = structuredClone(stored.assignments);
+  for ( const status of ["closed", "archived"] ) {
+    stored.lifecycleStatus = status;
+    await assert.rejects(lifecycle.resendAssignment(assignmentId), new RegExp(`${status} Prompt`));
+    await assert.rejects(lifecycle.resendAllAssignments(open.id), new RegExp(`${status} Prompt`));
+    assert.deepEqual(stored.assignments, originalAssignments);
+  }
+});
+
+test("nonblocking promptSent waits for settled mixed deliveries and fires once", async () => {
+  const hooks = [];
+  globalThis.Hooks = { callAll: name => hooks.push(name) };
+  const second = deferred();
+  emit.openDrawingPrompt = async (userId, payload) => {
+    if ( userId === "u1" ) {
+      void delivery.acknowledgePromptDelivery("u1", payload.assignment.id, "u1");
+      return;
+    }
+    return second.promise;
+  };
+  const prompt = await lifecycle.sendPrompt({ ...draft, selectedUserIds: ["u1", "u2"], awaitDeliveries: false });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(hooks.filter(name => name === "drawing-prompts.promptSent").length, 0);
+  second.reject(new Error("transport failed"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(hooks.filter(name => name === "drawing-prompts.promptSent").length, 1);
+  assert.equal(prompt.deliverySummary.received.length, 1);
+  assert.equal(prompt.deliverySummary.failed.length, 1);
+});
+
+test("zero successful receipts never emit promptSent", async () => {
+  const hooks = [];
+  globalThis.Hooks = { callAll: name => hooks.push(name) };
+  game.users.get("u1").active = false;
+  const prompt = await lifecycle.sendPrompt(draft);
+  assert.equal(prompt.deliverySummary.received.length, 0);
+  assert.equal(hooks.filter(name => name === "drawing-prompts.promptSent").length, 0);
 });
 
 test("initial receipts wait for every delivery to settle and the timer starts at release", async () => {
