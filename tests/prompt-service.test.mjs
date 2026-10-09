@@ -8,6 +8,7 @@ let stagedFetchUrl;
 let buildRestorationSubmissionFromSavedAssets;
 let reopenAssignment;
 let closePrompt;
+let sendPrompt;
 let reopenPrompt;
 let archivePrompt;
 let restorePrompt;
@@ -44,6 +45,7 @@ before(async () => {
     buildRestorationSubmissionFromSavedAssets,
     reopenAssignment,
     closePrompt,
+    sendPrompt,
     reopenPrompt,
     archivePrompt,
     restorePrompt,
@@ -119,6 +121,81 @@ beforeEach(() => {
     removeItem(key) { this.store.delete(key); }
   };
 });
+
+test("Archive cannot override Send while its Open flag write is pending", async () => {
+  storedPrompt = { ...storedPrompt, lifecycleStatus: PROMPT_STATUS.DRAFT,
+    assignments: {}, selectedUserIds: ["u1"] };
+  game.users.get("u1").can = () => false;
+  const entry = game.journal.get("p-save");
+  const originalSetFlag = entry.setFlag;
+  let release;
+  let signal;
+  const blocked = new Promise(resolve => { signal = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  entry.setFlag = async (...args) => {
+    if ( args[2].lifecycleStatus === PROMPT_STATUS.OPEN ) {
+      signal();
+      await gate;
+    }
+    return originalSetFlag(...args);
+  };
+  const sending = sendPrompt("p-save");
+  await blocked;
+  const archiving = archivePrompt("p-save");
+  const rejected = assert.rejects(archiving, /open Prompt/);
+  release();
+  await sending;
+  await rejected;
+  assert.equal(storedPrompt.lifecycleStatus, PROMPT_STATUS.OPEN);
+  assert.equal(Object.keys(storedPrompt.assignments).length, 1);
+  assert.equal(storedPrompt.assignments["capture-request"].status, STATUS.PENDING);
+});
+
+for ( const [firstAction, staleAction, source, target] of [
+  ["reopenPrompt", "archivePrompt", PROMPT_STATUS.CLOSED, PROMPT_STATUS.OPEN],
+  ["archivePrompt", "reopenPrompt", PROMPT_STATUS.CLOSED, PROMPT_STATUS.ARCHIVED],
+  ["archivePrompt", "reopenAssignment", PROMPT_STATUS.CLOSED, PROMPT_STATUS.ARCHIVED],
+  ["restorePrompt", "restorePrompt", PROMPT_STATUS.ARCHIVED, PROMPT_STATUS.CLOSED],
+  ["reopenPrompt", "reopenPrompt", PROMPT_STATUS.CLOSED, PROMPT_STATUS.OPEN]
+] ) {
+  test(`${staleAction} rechecks lifecycle after concurrent ${firstAction} commits`, async () => {
+    storedPrompt.lifecycleStatus = source;
+    const actions = { reopenPrompt, archivePrompt, restorePrompt,
+      reopenAssignment: () => reopenAssignment("a-saved") };
+    const entry = game.journal.get("p-save");
+    const originalSetFlag = entry.setFlag;
+    let release;
+    let signal;
+    const blocked = new Promise(resolve => { signal = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    let first = true;
+    entry.setFlag = async (...args) => {
+      if ( first ) { first = false; signal(); await gate; }
+      return originalSetFlag(...args);
+    };
+    const committing = actions[firstAction]("p-save");
+    await blocked;
+    const stale = actions[staleAction]("p-save");
+    const rejected = assert.rejects(stale, new RegExp(`${target} Prompt`));
+    release();
+    await committing;
+    await rejected;
+    assert.equal(storedPrompt.lifecycleStatus, target);
+    assert.equal(setFlagCalls, 1, "stale transitions perform no second flag write");
+  });
+}
+
+for ( const lifecycleStatus of [PROMPT_STATUS.DRAFT, PROMPT_STATUS.CLOSED, PROMPT_STATUS.ARCHIVED] ) {
+  test(`Close rejects ${lifecycleStatus} before freezing the timer or retaining artwork`, async () => {
+    storedPrompt.lifecycleStatus = lifecycleStatus;
+    storedPrompt.timerStatus = "running";
+    storedPrompt.deadlineAt = Date.now() + 30_000;
+    const previous = structuredClone(storedPrompt);
+    await assert.rejects(closePrompt("p-save"), new RegExp(`${lifecycleStatus} Prompt`));
+    assert.deepEqual(structuredClone(storedPrompt), previous);
+    assert.equal(setFlagCalls, 0);
+  });
+}
 
 test("Prompt lifecycle closes with a frozen timer and reopens paused", async () => {
   storedPrompt.timerSeconds = 60;

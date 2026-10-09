@@ -302,9 +302,10 @@ export async function closePrompt(promptId, { closeWithoutCaptures = false, avai
   const prompt = loadPrompt(promptId);
   if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
   assertPromptOwner(prompt);
+  if ( prompt.lifecycleStatus !== PROMPT_STATUS.OPEN ) throw new Error(`Cannot close a ${prompt.lifecycleStatus} Prompt`);
   const now = Date.now();
   prompt.timerState = pauseTimer(prompt.timerState, now);
-  await savePrompt(prompt, { lifecycleOnly: true });
+  await savePrompt(prompt, { lifecycleOnly: true, expectedLifecycle: PROMPT_STATUS.OPEN });
   if ( availablePreviews ) await retainAvailablePreviews(prompt, availablePreviews);
   if ( !closeWithoutCaptures ) {
     const failures = await retainFullCaptures(prompt);
@@ -332,7 +333,7 @@ export async function closePrompt(promptId, { closeWithoutCaptures = false, avai
     await setManagerWindowOpen(assignment.id, false);
   }
   prompt.markClosed(now);
-  await savePrompt(prompt, { lifecycleOnly: true });
+  await savePrompt(prompt, { lifecycleOnly: true, expectedLifecycle: PROMPT_STATUS.OPEN });
   Hooks.callAll("drawing-prompts.promptClosed", prompt);
   await refreshManager();
   return prompt;
@@ -409,7 +410,7 @@ export async function reopenPrompt(promptId) {
   if ( prompt.timerStatus !== "none" ) {
     prompt.timerState = { timerStatus: "paused", deadlineAt: null, remainingMs: prompt.remainingMs };
   }
-  await savePrompt(prompt, { lifecycleOnly: true });
+  await savePrompt(prompt, { lifecycleOnly: true, expectedLifecycle: PROMPT_STATUS.CLOSED });
   Hooks.callAll("drawing-prompts.promptReopened", prompt);
   await refreshManager();
   return prompt;
@@ -419,8 +420,9 @@ export async function reopenPrompt(promptId) {
 export async function archivePrompt(promptId) {
   assertGM();
   const prompt = requireOwnedPrompt(promptId);
+  const sourceLifecycle = prompt.lifecycleStatus;
   prompt.markArchived(Date.now());
-  await savePrompt(prompt, { lifecycleOnly: true });
+  await savePrompt(prompt, { lifecycleOnly: true, expectedLifecycle: sourceLifecycle });
   Hooks.callAll("drawing-prompts.promptArchived", prompt);
   await refreshManager();
   return prompt;
@@ -431,7 +433,7 @@ export async function restorePrompt(promptId) {
   assertGM();
   const prompt = requireOwnedPrompt(promptId);
   prompt.markRestored();
-  await savePrompt(prompt, { lifecycleOnly: true });
+  await savePrompt(prompt, { lifecycleOnly: true, expectedLifecycle: PROMPT_STATUS.ARCHIVED });
   Hooks.callAll("drawing-prompts.promptRestored", prompt);
   await refreshManager();
   return prompt;
@@ -549,7 +551,7 @@ export async function reopenAssignment(assignmentId, userId = null) {
     if ( prompt.timerStatus !== "none" ) {
       prompt.timerState = { timerStatus: "paused", deadlineAt: null, remainingMs: prompt.remainingMs };
     }
-    await savePrompt(prompt, { lifecycleOnly: true });
+    await savePrompt(prompt, { lifecycleOnly: true, expectedLifecycle: PROMPT_STATUS.CLOSED });
     Hooks.callAll("drawing-prompts.promptReopened", prompt);
     assignment = prompt.getAssignment(assignmentId);
   }

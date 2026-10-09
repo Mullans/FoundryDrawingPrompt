@@ -47,11 +47,13 @@ test("Recovery publishes artwork before attaching coherent history", async () =>
 
 test("Interrupted optional history publication leaves recoverable artwork without failing the save", async () => {
   const base = createMapRecoveryAdapter();
-  let puts = 0;
-  const adapter = { ...base, putGeneration: async value => {
-    puts++;
-    if ( puts === 3 ) throw new Error("history interrupted");
-    return base.putGeneration(value);
+  let interrupted = false;
+  const adapter = { ...base, replaceGeneration: async value => {
+    if ( value.complete && value.stagingIds.length && !interrupted ) {
+      interrupted = true;
+      throw new Error("history interrupted");
+    }
+    return base.replaceGeneration(value);
   } };
   const store = createRecoveryStore({ adapter, writerId: "tab-a", now: () => 10 });
 
@@ -124,6 +126,109 @@ test("quota pressure drops optional history before the current artwork", async (
   assert.equal((await store.load(identity)).kind, "artwork");
 });
 
+for ( const phase of ["artwork", "history"] ) {
+  test(`quota eviction preserves a concurrent ${phase} staging writer`, async () => {
+    const base = createMapRecoveryAdapter();
+    const gate = deferred();
+    const started = deferred();
+    const snapshot = generationSnapshot();
+    snapshot.versions.push({ id: "history-a:2", kind: "uniform", rgba: [6, 6, 6, 255] });
+    snapshot.entries[0].changes = [[0, "history-a:2"]];
+    const adapter = { ...base, async putTiles(versions) {
+      await base.putTiles(versions);
+      const matching = versions.some(value => value.id === `history-a:${phase === "artwork" ? 1 : 2}`);
+      if ( matching ) { started.resolve(); await gate.promise; }
+    } };
+    const first = createRecoveryStore({ adapter, writerId: "tab-a" });
+    const second = createRecoveryStore({ adapter: base, writerId: "tab-b", quotaBytes: 1 });
+    const saving = first.save(identity, snapshot, { artworkOnly: phase === "artwork" });
+    await started.promise;
+    await second.save({ ...identity, promptId: "other", assignmentId: "other" }, generationSnapshot(9, "history-b"));
+    gate.resolve();
+    await saving;
+    const restored = await first.load(identity);
+    assert.equal(restored?.kind, phase === "artwork" ? "artwork" : "history");
+    assert.equal(restored.snapshot.versions.find(value => value.id === "history-a:1").rgba[0], 7);
+    if ( phase === "history" ) assert.equal(restored.snapshot.versions.find(value => value.id === "history-a:2").rgba[0], 6);
+  });
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+for ( const phase of ["artwork", "history"] ) {
+  test(`an expired ${phase} writer is reclaimed and cannot resurrect its generation`, async () => {
+    let time = 0;
+    const base = createMapRecoveryAdapter();
+    const gate = deferred();
+    const started = deferred();
+    const snapshot = generationSnapshot();
+    snapshot.versions.push({ id: "history-a:2", kind: "uniform", rgba: [6, 6, 6, 255] });
+    snapshot.entries[0].changes = [[0, "history-a:2"]];
+    const adapter = { ...base, async putTiles(versions) {
+      await base.putTiles(versions);
+      if ( versions.some(value => value.id === `history-a:${phase === "artwork" ? 1 : 2}`) ) {
+        started.resolve(); await gate.promise;
+      }
+    } };
+    const first = createRecoveryStore({ adapter, writerId: "tab-a", now: () => time });
+    const saving = first.save(identity, snapshot, { artworkOnly: phase === "artwork" });
+    await started.promise;
+    time = 60_001;
+    const second = createRecoveryStore({ adapter: base, writerId: "tab-b", now: () => time, quotaBytes: 1 });
+    await second.save({ ...identity, promptId: "other", assignmentId: "other" }, generationSnapshot(9, "history-b"));
+    const rejected = assert.rejects(saving, /evicted before its save completed/);
+    gate.resolve();
+    await rejected;
+    assert.equal(await first.load(identity), null);
+    assert.equal((await base.getAllTiles()).some(value => value.id.startsWith("history-a:")), false);
+  });
+}
+
+test("quota eviction rechecks a lease renewed after its candidate snapshot", async () => {
+  const base = createMapRecoveryAdapter();
+  const first = createRecoveryStore({ adapter: base, writerId: "tab-a", now: () => 0 });
+  await first.save(identity, generationSnapshot(), { artworkOnly: true });
+  let reads = 0;
+  let renewed = false;
+  const adapter = { ...base, async getGenerations() {
+    const records = await base.getGenerations();
+    if ( ++reads === 2 ) {
+      const record = records.find(value => value.writerId === "tab-a");
+      await base.replaceGeneration({ ...record, leaseUntil: 60_000, stagingIds: ["history-a:1"] });
+      renewed = true;
+    }
+    return records;
+  } };
+  const second = createRecoveryStore({ adapter, writerId: "tab-b", now: () => 0, quotaBytes: 1 });
+  await second.save({ ...identity, promptId: "other", assignmentId: "other" }, generationSnapshot(9, "history-b"));
+  assert.equal(renewed, true);
+  assert.equal((await first.load(identity))?.kind, "artwork");
+});
+
+test("an empty artwork generation is protected through publication and finalization", async () => {
+  const base = createMapRecoveryAdapter();
+  const gate = deferred();
+  const started = deferred();
+  const adapter = { ...base, async replaceGeneration(record) {
+    const replaced = await base.replaceGeneration(record);
+    if ( record.complete ) { started.resolve(); await gate.promise; }
+    return replaced;
+  } };
+  const first = createRecoveryStore({ adapter, writerId: "tab-a" });
+  const snapshot = { ...generationSnapshot(), current: [], entries: [], versions: [], cursor: 0 };
+  const saving = first.save(identity, snapshot, { artworkOnly: true });
+  await started.promise;
+  const second = createRecoveryStore({ adapter: base, writerId: "tab-b", quotaBytes: 1 });
+  await second.save({ ...identity, promptId: "other", assignmentId: "other" }, generationSnapshot(9, "history-b"));
+  gate.resolve();
+  await saving;
+  assert.equal((await first.load(identity))?.kind, "artwork");
+});
+
 test("corrupt tile records are removed and never block artwork fallback", async () => {
   const records = new Map();
   const adapter = createMapRecoveryAdapter(records);
@@ -135,6 +240,36 @@ test("corrupt tile records are removed and never block artwork fallback", async 
 
   assert.equal(await store.load(identity), null);
   assert.equal(records.size, 0);
+});
+
+test("corrupt-history repair preserves a concurrently renewed lease and cannot resurrect eviction", async () => {
+  const records = new Map();
+  const base = createMapRecoveryAdapter(records);
+  const writer = createRecoveryStore({ adapter: base, writerId: "tab-a", now: () => 0 });
+  await writer.save(identity, generationSnapshot());
+  const [id, record] = records.entries().next().value;
+  record.history.current = [[9, "history-a:1"]];
+  records.set(id, record);
+  const gate = deferred();
+  const started = deferred();
+  let reads = 0;
+  const adapter = { ...base, async getTiles(ids) {
+    const tiles = await base.getTiles(ids);
+    if ( ++reads === 1 ) { started.resolve(); await gate.promise; }
+    return tiles;
+  } };
+  const reader = createRecoveryStore({ adapter, writerId: "tab-b", now: () => 0 });
+  const loading = reader.load(identity);
+  await started.promise;
+  await base.replaceGeneration({ ...record, leaseUntil: 60_000, stagingIds: ["history-a:1"] });
+  gate.resolve();
+  assert.equal((await loading).kind, "artwork");
+  const repaired = records.get(id);
+  assert.equal(repaired.leaseUntil, 60_000);
+  assert.deepEqual(repaired.stagingIds, ["history-a:1"]);
+  await base.deleteGeneration(id);
+  assert.equal(await base.clearHistoryIfMatches(id, record.history), false);
+  assert.equal(records.has(id), false);
 });
 
 test("each tab prefers its own complete generation while a new tab chooses the newest", async () => {
@@ -159,6 +294,39 @@ test("consecutive generations reuse stable tile records", async () => {
   const second = await store.save(identity, snapshot);
   assert.equal(first.tilesWritten, 1);
   assert.equal(second.tilesWritten, 0);
+});
+
+test("a superseded writer cannot prune the newer generation returned by its cleanup read", async () => {
+  const base = createMapRecoveryAdapter();
+  const gate = deferred();
+  const started = deferred();
+  let trigger = true;
+  let newer;
+  let store;
+  const next = generationSnapshot(9, "new-history");
+  const adapter = { ...base,
+    async putTiles(versions) {
+      await base.putTiles(versions);
+      if ( versions.some(value => value.id === "new-history:1") ) {
+        started.resolve(); await gate.promise;
+      }
+    },
+    async getGenerations() {
+      if ( trigger ) {
+        trigger = false;
+        newer = store.save(identity, next, { artworkOnly: true });
+        await started.promise;
+      }
+      return base.getGenerations();
+    }
+  };
+  store = createRecoveryStore({ adapter, writerId: "tab-a" });
+  const older = await store.save(identity, generationSnapshot(), { artworkOnly: true });
+  gate.resolve();
+  await newer;
+  assert.equal(older.stale, true);
+  const loaded = await store.load(identity);
+  assert.equal(loaded.snapshot.versions.find(value => value.id === "new-history:1").rgba[0], 9);
 });
 
 test("deletion during a staged save prevents resurrection and removes orphan tiles", async () => {
