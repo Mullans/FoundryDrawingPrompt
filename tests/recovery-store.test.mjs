@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createMapRecoveryAdapter, createRecoveryStore } from "../scripts/drawing/recovery-store.mjs";
+import { createRecoverySaveCoordinator } from "../scripts/drawing/recovery-save-coordinator.mjs";
 
 const identity = Object.freeze({
   worldId: "world", gmUserId: "gm", userId: "player", promptId: "prompt", assignmentId: "assignment", width: 1, height: 1
@@ -96,6 +97,36 @@ test("a newer edit preempts optional history while preserving published artwork"
   assert.equal(loaded.kind, "artwork");
   assert.equal(loaded.snapshot.entries.length, 0);
 });
+
+for ( const phase of ["artwork", "history"] ) {
+  test(`a completed newer save supersedes an older ${phase} writer without a storage warning`, async () => {
+    const base = createMapRecoveryAdapter();
+    const gate = deferred();
+    const started = deferred();
+    const snapshot = generationSnapshot();
+    snapshot.versions.push({ id: "history-a:2", kind: "uniform", rgba: [6, 6, 6, 255] });
+    snapshot.entries[0].changes = [[0, "history-a:2"]];
+    const adapter = { ...base, async putTiles(versions) {
+      await base.putTiles(versions);
+      if ( versions.some(value => value.id === `history-a:${phase === "artwork" ? 1 : 2}`) ) {
+        started.resolve(); await gate.promise;
+      }
+    } };
+    const store = createRecoveryStore({ adapter, writerId: "tab-a" });
+    const warnings = [];
+    const coordinator = createRecoverySaveCoordinator({ store, warn: error => warnings.push(error), schedule: () => 1, cancel: () => {} });
+    const older = phase === "artwork" ? coordinator.changed(identity, snapshot) : coordinator.flush(identity, snapshot);
+    await started.promise;
+    await store.save(identity, generationSnapshot(9, "new-history"), { artworkOnly: true });
+    gate.resolve();
+    const superseded = await older;
+    await coordinator.settled();
+    assert.deepEqual(warnings, []);
+    assert.equal(superseded.stale, true);
+    const restored = await store.load(identity);
+    assert.equal(restored.snapshot.versions.find(value => value.id === "new-history:1").rgba[0], 9);
+  });
+}
 
 test("Recovery records are isolated by complete identity and dimensions", async () => {
   const adapter = createMapRecoveryAdapter();

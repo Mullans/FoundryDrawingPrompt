@@ -89,6 +89,11 @@ export function createRecoveryStore({ adapter = createIndexedDbRecoveryAdapter()
         if ( !await adapter.releaseGenerationLease(generationId) ) throw evictedGenerationError();
         completed = true;
         return { generationId, historySaved, tilesWritten };
+      } catch (error) {
+        // Newer edits may have already removed this generation. That is normal
+        // preemption, whereas eviction of the current writer is a storage failure.
+        if ( !isCurrent() ) return { generationId, historySaved: false, tilesWritten, stale: true };
+        throw error;
       } finally {
         if ( !completed ) {
           await adapter.releaseGenerationLease(generationId);
