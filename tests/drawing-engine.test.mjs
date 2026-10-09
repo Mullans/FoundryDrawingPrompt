@@ -3,6 +3,28 @@ import { test } from "node:test";
 
 import { DrawingEngine, mapClientPointToLogical } from "../scripts/drawing/drawing-engine.mjs";
 
+test("retained engine cost includes foreground and background canvases", () => {
+  installFakeCanvas();
+  const engine = new DrawingEngine({ width: 4096, height: 4096 });
+  assert.ok(engine.retainedBytes >= 4096 * 4096 * 8);
+});
+
+test("successful Undo and Redo emit recovery changes independently of visible previews", () => {
+  installFakeCanvas();
+  globalThis.requestAnimationFrame = callback => { callback(); return 1; };
+  const engine = new DrawingEngine({ width: 16, height: 16 });
+  engine.beginStroke("stroke", { x: 1, y: 1 });
+  engine.commitStroke({ x: 5, y: 5 });
+  const changes = [];
+  engine.onHistoryChange(() => changes.push(engine.getRecoverySnapshot().cursor));
+  assert.equal(engine.undo(), true);
+  assert.equal(engine.redo(), true);
+  assert.deepEqual(changes, [0, 1]);
+  engine.undo();
+  engine.undo();
+  assert.deepEqual(changes, [0, 1, 0]);
+});
+
 test("mapClientPointToLogical maps CSS-scaled display coordinates to logical pixels", () => {
   const point = mapClientPointToLogical({
     clientX: 250,

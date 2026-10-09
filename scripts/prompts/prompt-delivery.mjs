@@ -7,7 +7,7 @@ import { PlayerPromptList } from "../apps/player-prompt-list.mjs";
 import { emit } from "../socket.mjs";
 import { getAssignment as getClientAssignment } from "./client-store.mjs";
 import { prepareFramedBackgroundForSend, serializeBackgroundForPlayer } from "./framed-delivery.mjs";
-import { loadAllPrompts, loadPrompt, savePrompt } from "./persistence-service.mjs";
+import { loadAllPrompts, loadPrompt, savePrompt, settleInitialPromptDelivery } from "./persistence-service.mjs";
 import { assertGM, assertSenderOwnsAssignment } from "./socket-auth.mjs";
 import { requirePromptAssignment } from "./prompt-context.mjs";
 import { refreshManager } from "./ui-bridge.mjs";
@@ -265,20 +265,25 @@ async function runDeliveries(prompt, { assignmentIds, timeoutMs, initial }) {
     }
     Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, assignmentId: assignment.id, stage: "receipt", elapsedMs: performance.now() - start, error: error ?? null });
   }));
-  let latest = loadPrompt(prompt.id);
-  if ( initial && latest?.deliverySummary.hasRecipients && latest.timerStatus === "paused" ) {
-    const remainingMs = Number(latest.remainingMs ?? (latest.timerSeconds * 1000));
-    latest.timerState = {
-      timerStatus: "running",
-      deadlineAt: Date.now() + remainingMs,
-      remainingMs: null
-    };
-    await savePrompt(latest, { timerOnly: true });
-    latest = loadPrompt(prompt.id) ?? latest;
-  }
-  if ( latest ) { prompt.assignments = latest.assignments; prompt.timerState = latest.timerState; }
+  await finishInitialDelivery(prompt);
   Hooks.callAll("drawing-prompts.deliveryUpdated", prompt, prompt.deliverySummary);
   return prompt.deliverySummary;
+}
+
+/** Complete initial delivery once, including Retry/Continue after an owning-GM reload. */
+export async function finishInitialDelivery(prompt) {
+  const { prompt: latest, completed } = await settleInitialPromptDelivery(prompt.id);
+  if ( latest ) {
+    prompt.assignments = latest.assignments;
+    prompt.timerState = latest.timerState;
+    prompt.initialDeliveryPending = latest.initialDeliveryPending;
+    prompt.initialTimerHeld = latest.initialTimerHeld;
+  }
+  if ( !completed ) return;
+  Hooks.callAll("drawing-prompts.promptSent", prompt);
+  await Promise.allSettled(Object.values(prompt.assignments)
+    .filter(assignment => assignment.delivery.status === "received" && game.users.get(assignment.userId)?.active)
+    .map(assignment => Promise.resolve().then(() => emit.timerUpdated(assignment.userId, assignment.id, prompt.timerState))));
 }
 
 /**

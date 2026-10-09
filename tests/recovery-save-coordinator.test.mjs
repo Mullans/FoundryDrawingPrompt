@@ -3,6 +3,22 @@ import { test } from "node:test";
 
 import { createRecoverySaveCoordinator } from "../scripts/drawing/recovery-save-coordinator.mjs";
 
+test("pagehide does not replace an unchanged coherent history generation with artwork", async () => {
+  const calls = [];
+  let deferred;
+  const coordinator = createRecoverySaveCoordinator({
+    store: { save: async (...args) => calls.push(args) },
+    schedule: callback => { deferred = callback; return 1; }, cancel: () => {}
+  });
+  coordinator.changed({ assignmentId: "assignment" }, { cursor: 1 });
+  deferred();
+  await coordinator.settled();
+  coordinator.pagehide();
+  await coordinator.settled();
+  assert.equal(calls.length, 2);
+  assert.equal(calls.at(-1)[2].artworkOnly, false);
+});
+
 test("a committed action starts artwork publication before deferred history", async () => {
   const calls = [];
   let deferred;

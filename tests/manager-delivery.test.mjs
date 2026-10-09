@@ -61,6 +61,79 @@ globalThis.game = {
 };
 const { DrawingPromptManager } = await import("../scripts/apps/drawing-prompt-manager.mjs");
 
+for (const concurrentAction of ["savePrompt", "sendPrompt"]) {
+  test(`Draft Save prevents duplicate creation during concurrent ${concurrentAction}`, async () => {
+    const manager = new DrawingPromptManager();
+    Object.assign(manager.draft, { promptName: "One Draft", selectedUserIds: new Set(["u1"]) });
+    const contexts = [];
+    manager.render = async () => { contexts.push(await manager._prepareContext({})); return manager; };
+    const started = deferred();
+    const release = deferred();
+    const entries = new Map();
+    game.journal = journalCollection(entries);
+    let creates = 0;
+    globalThis.JournalEntry = { create: async () => {
+      creates++;
+      started.resolve();
+      await release.promise;
+      let stored;
+      const entry = { id: `saved${++sequence}`, getFlag: () => stored,
+        setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; } };
+      entries.set(entry.id, entry);
+      return entry;
+    } };
+    const { emit } = await import("../scripts/socket.mjs");
+    const { acknowledgePromptDelivery } = await import("../scripts/prompts/prompt-delivery.mjs");
+    emit.openDrawingPrompt = (userId, payload) => acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+    const first = DrawingPromptManager.DEFAULT_OPTIONS.actions.savePrompt.call(manager);
+    await Promise.race([started.promise, first.then(() => assert.fail("Save completed before reaching storage"))]);
+    const pendingContext = await manager._prepareContext({});
+    const second = DrawingPromptManager.DEFAULT_OPTIONS.actions[concurrentAction].call(manager);
+    await new Promise(resolve => setImmediate(resolve));
+    release.resolve();
+    await Promise.all([first, second]);
+    assert.equal(creates, 1, "Save and competing clicks must share one persisted identity");
+    assert.equal(entries.size, 1);
+    assert.equal(pendingContext.canSavePrompt, false);
+    assert.equal(pendingContext.canSend, false);
+    assert.equal(pendingContext.setupLocked, true);
+    assert.ok(contexts.some(context => !context.canSavePrompt && context.setupLocked));
+    assert.equal((await manager._prepareContext({})).canSavePrompt, true);
+  });
+}
+
+test("failed Draft Save releases setup controls and permits a new save", async () => {
+  const manager = new DrawingPromptManager();
+  manager.draft.promptName = "Retry Draft";
+  const contexts = [];
+  manager.render = async () => { contexts.push(await manager._prepareContext({})); return manager; };
+  let creates = 0;
+  globalThis.JournalEntry = { create: async () => { creates++; throw new Error("save unavailable"); } };
+  await DrawingPromptManager.DEFAULT_OPTIONS.actions.savePrompt.call(manager);
+  assert.equal(manager.activePrompt, null);
+  assert.equal(manager.draft.promptName, "Retry Draft");
+  assert.ok(contexts.some(context => context.setupLocked));
+  assert.equal(contexts.at(-1).canSavePrompt, true);
+  assert.equal(contexts.at(-1).canSend, true);
+  await DrawingPromptManager.DEFAULT_OPTIONS.actions.savePrompt.call(manager);
+  assert.equal(creates, 2);
+});
+
+test("Closed Prompt manager displays retained Saved preview without session snapshots", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({
+    id: "closed-preview", gmUserId: "gm", promptName: "Retained", lifecycleStatus: "closed",
+    assignments: { a1: { id: "a1", userId: "u1", status: "cancelled", retainedCapture: {
+      kind: "saved-preview", overlayPath: "retained.webp", receiptTs: 42, width: 512, height: 512
+    } } }
+  });
+  manager.selectedAssignmentId = "a1";
+  const context = await manager._prepareContext({});
+  assert.equal(context.selectedSnapshot, "retained.webp?ts=42");
+  assert.equal(context.selectedPreviewHeading, "Saved preview");
+});
+
 test("withdrawn invitations cannot enable Resend All while cancelled recipients can", async () => {
   const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
   const manager = new DrawingPromptManager();
@@ -94,9 +167,10 @@ test("Send paints busy feedback before storage, prevents duplicate creation, and
   await createStarted.promise;
   const paintedBeforeStorage = contexts.some(context => context.isSending && !context.canSend);
   const duplicate = action.call(manager).catch(() => {});
+  const conflictingSave = DrawingPromptManager.DEFAULT_OPTIONS.actions.savePrompt.call(manager);
   const createCount = creates;
   storageFailure.reject(new Error("storage unavailable"));
-  await Promise.all([sending, duplicate]);
+  await Promise.all([sending, duplicate, conflictingSave]);
   assert.ok(paintedBeforeStorage, "Sending must be rendered before JournalEntry.create can stall");
   assert.equal(contexts.find(context => context.isSending)?.sendLabel, "Sending...");
   assert.equal(createCount, 1, "a second click must not create another prompt");

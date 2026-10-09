@@ -97,7 +97,7 @@ try {
     await player.mouse.click(box.x + box.width * 0.25, box.y + box.height * 0.25);
     await player.mouse.click(box.x + box.width * 0.65, box.y + box.height * 0.65);
   }
-  const counts = () => player.evaluate(ids => ids.map(id => reliabilityTest.engines.get(id).getOpLog().ops.length), appIds);
+  const counts = () => player.evaluate(ids => ids.map(id => reliabilityTest.engines.get(id).getRecoverySnapshot({ copyPixels: false }).cursor), appIds);
   await lineDraft(0);
   await lineDraft(1);
   assert.deepEqual(await counts(), [0, 0]);

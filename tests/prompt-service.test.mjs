@@ -20,6 +20,7 @@ let emit;
 let deletedFiles;
 let failSetFlagAt;
 let setFlagCalls;
+let clearPendingSubmission;
 
 before(async () => {
   class ApplicationV2 {}
@@ -50,9 +51,12 @@ before(async () => {
     processRecoveryTombstonesForUser
   } = await import("../scripts/prompts/prompt-service.mjs"));
   ({ emit } = await import("../scripts/socket.mjs"));
+  ({ clearPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs"));
 });
 
 beforeEach(() => {
+  clearPendingSubmission("a-saved");
+  clearPendingSubmission("a-second");
   deletedFiles = [];
   failSetFlagAt = null;
   setFlagCalls = 0;
@@ -166,7 +170,7 @@ test("Close accepts only a correlated full-quality retained capture and persists
   emit.cancelDrawingPrompt = async () => {};
   emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
     requestId: `${requestId}-stale`, assignmentId,
-    submission: { mode: "staged", staged: { overlayPath: "pending/full.webp", mergedPath: null },
+    submission: { mode: "staged", formats: { overlay: "webp" }, staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp", mergedPath: null },
       width: 512, height: 512 }
   });
   try {
@@ -176,15 +180,15 @@ test("Close accepts only a correlated full-quality retained capture and persists
 
     emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
       requestId, assignmentId,
-      submission: { mode: "staged", staged: { overlayPath: "pending/full.webp", mergedPath: null },
+      submission: { mode: "staged", formats: { overlay: "webp" }, staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp", mergedPath: null },
         width: 512, height: 512 }
     });
     const closed = await closePrompt("p-save");
     assert.deepEqual(closed.getAssignment("a-saved").retainedCapture, {
       kind: "full-submission", receiptTs: closed.getAssignment("a-saved").retainedCapture.receiptTs,
-      width: 512, height: 512, overlayPath: "pending/full.webp", mergedPath: null
+      width: 512, height: 512, overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp", mergedPath: null
     });
-    assert.equal(storedPrompt.assignments["a-saved"].retainedCapture.overlayPath, "pending/full.webp");
+    assert.equal(storedPrompt.assignments["a-saved"].retainedCapture.overlayPath, "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp");
   } finally {
     emit.requestRetainedCapture = originalCapture;
     emit.cancelDrawingPrompt = originalCancel;
@@ -200,7 +204,7 @@ test("Close reports incremental retained-capture persistence failure through the
   const originalCapture = emit.requestRetainedCapture;
   emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
     requestId, assignmentId,
-    submission: { mode: "staged", staged: { overlayPath: "pending/full.webp", mergedPath: null }, width: 512, height: 512 }
+    submission: { mode: "staged", formats: { overlay: "webp" }, staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp", mergedPath: null }, width: 512, height: 512 }
   });
   failSetFlagAt = 2;
   try {
@@ -252,19 +256,68 @@ test("Close captures reopened online work before reusing old saved or retained i
   emit.requestRetainedCapture = async (userId, assignmentId, requestId) => {
     requests.push([userId, assignmentId]);
     return { requestId, assignmentId, submission: {
-      mode: "staged", staged: { overlayPath: "pending/new-work.webp", mergedPath: null },
+      mode: "staged", formats: { overlay: "webp" }, staged: { overlayPath: "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp", mergedPath: null },
       width: 512, height: 512, receiptTs: 999_999
     } };
   };
   try {
     const closed = await closePrompt("p-save");
     assert.deepEqual(requests, [["u1", "a-saved"]]);
-    assert.equal(closed.getAssignment("a-saved").retainedCapture.overlayPath, "pending/new-work.webp");
+    assert.equal(closed.getAssignment("a-saved").retainedCapture.overlayPath, "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp");
     assert.equal(storedPrompt.assignments["a-saved"].retainedCapture.receiptTs, 999_999);
   } finally {
     emit.requestRetainedCapture = originalCapture;
     emit.cancelDrawingPrompt = originalCancel;
   }
+});
+
+test("Close rejects a correlated capture pointing outside its assignment folder", async () => {
+  storedPrompt.assignments["a-saved"].status = STATUS.OPENED;
+  game.users.get("u1").active = true;
+  const originalCapture = emit.requestRetainedCapture;
+  const originalCancel = emit.cancelDrawingPrompt;
+  emit.cancelDrawingPrompt = async () => {};
+  emit.requestRetainedCapture = async (_user, assignmentId, requestId) => ({
+    requestId, assignmentId, submission: { mode: "staged", width: 512, height: 512,
+      formats: { overlay: "webp" }, staged: { overlayPath: "worlds/test-world/unrelated.webp" } }
+  });
+  try {
+    await assert.rejects(closePrompt("p-save"), error => error.code === "RETAINED_CAPTURE_FAILED");
+    assert.equal(storedPrompt.assignments["a-saved"].retainedCapture, null);
+    assert.deepEqual(deletedFiles, []);
+  } finally {
+    emit.requestRetainedCapture = originalCapture;
+    emit.cancelDrawingPrompt = originalCancel;
+  }
+});
+
+test("Close retains the newest full-quality pending work when its player is offline", async () => {
+  const { setPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");
+  storedPrompt.assignments["a-saved"].retainedCapture = {
+    kind: "full-submission", receiptTs: 1, width: 512, height: 512,
+    overlayPath: "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp"
+  };
+  setPendingSubmission("a-saved", { mode: "staged", formats: { overlay: "webp" },
+    width: 512, height: 512, receiptTs: 999_999,
+    staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp" } });
+  await closePrompt("p-save");
+  assert.equal(storedPrompt.assignments["a-saved"].retainedCapture.receiptTs, 999_999);
+});
+
+test("Delete never removes a recorded capture outside assignment-owned paths", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  storedPrompt.assignments["a-saved"].retainedCapture = {
+    kind: "full-submission", overlayPath: "worlds/test-world/unrelated.webp"
+  };
+  await deletePrompt("p-save", { confirmed: true });
+  assert.deepEqual(deletedFiles, []);
+});
+
+test("Archived assignment cannot reopen before Restore", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.ARCHIVED;
+  const before = structuredClone(storedPrompt);
+  await assert.rejects(reopenAssignment("a-saved"), /archived Prompt/);
+  assert.deepEqual(structuredClone(storedPrompt), before);
 });
 
 test("Prompt lifecycle archives Closed Prompts and restores them", async () => {
@@ -302,7 +355,7 @@ test("Delete failure preserves the Prompt and does not queue Recovery cleanup", 
   const FilePicker = foundry.applications.apps.FilePicker;
   const originalDelete = FilePicker.delete;
   storedPrompt.assignments["a-saved"].retainedCapture = {
-    kind: "saved-preview", overlayPath: "drawing-prompts/pending/a-saved/preview.webp"
+    kind: "saved-preview", overlayPath: "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp"
   };
   FilePicker.delete = async () => { throw new Error("simulated file deletion failure"); };
   try {
@@ -339,21 +392,21 @@ test("Delete removes only recorded internal capture files and preserves exported
   storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
   const assignment = storedPrompt.assignments["a-saved"];
   assignment.pendingSubmission = { staged: {
-    overlayPath: "drawing-prompts/pending/a-saved/pending.webp",
-    mergedPath: "drawing-prompts/pending/a-saved/pending-merged.webp"
+    overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp",
+    mergedPath: "worlds/test-world/drawing-prompts/staging/a-saved-merged.webp"
   } };
   assignment.retainedCapture = {
-    kind: "saved-preview", overlayPath: "drawing-prompts/pending/a-saved/preview.webp"
+    kind: "saved-preview", overlayPath: "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp"
   };
   assignment.assets.overlayPath = "drawings/exported.webp";
 
   await deletePrompt("p-save", { confirmed: true });
 
   assert.deepEqual(deletedFiles.sort(), [
-    "drawing-prompts/pending/a-saved/pending-merged.webp",
-    "drawing-prompts/pending/a-saved/pending.webp",
-    "drawing-prompts/pending/a-saved/preview.webp"
-  ]);
+    "worlds/test-world/drawing-prompts/staging/a-saved-merged.webp",
+    "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp",
+    "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp"
+  ].sort());
   assert.equal(deletedFiles.includes("drawings/exported.webp"), false);
 });
 

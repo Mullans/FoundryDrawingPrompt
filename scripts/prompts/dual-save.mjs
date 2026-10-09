@@ -73,7 +73,24 @@ export function resolveFramingViewAssetPath(assignment, framingView) {
  * @returns {boolean}
  */
 export function canPlaceFramingView(assignment, framingView) {
+  if ( hasCurrentRetainedSavedPreview(assignment) ) return false;
   return isSaveGateOpen(assignment) && Boolean(resolveFramingViewAssetPath(assignment, framingView));
+}
+
+/** A qualified newer Save supersedes a preview left behind by an earlier Close. */
+export function hasCurrentRetainedSavedPreview(assignment) {
+  const capture = assignment?.retainedCapture;
+  if ( capture?.kind !== "saved-preview" ) return false;
+  return !isRetainedCaptureSuperseded(assignment, { includeEqual: true });
+}
+
+/** Compare retained artwork against a qualified saved version, leaving unknown dates eligible. */
+export function isRetainedCaptureSuperseded(assignment, { includeEqual = false } = {}) {
+  const receiptTs = assignment?.retainedCapture?.receiptTs;
+  return isSaveGateOpen(assignment) && hasSavedFramingViewAssets(assignment)
+    && Number.isFinite(receiptTs) && (includeEqual
+      ? assignment.savedSubmissionTs >= receiptTs
+      : assignment.savedSubmissionTs > receiptTs);
 }
 
 /**
@@ -455,6 +472,16 @@ export async function buildSourceFramingPreviewDataUrl({ src, prompt, submission
     sourceUnderlay
   });
   return blobToDataUrl(baked.blob);
+}
+
+/** Compose a retained ink-only capture over the same framed background players saw. */
+export async function buildPromptCanvasPreviewDataUrl({ src, prompt, submission = null } = {}) {
+  if ( !src ) return null;
+  if ( !hasPromptCanvasBackground(prompt) ) return src;
+  const size = resolveSubmissionOverlaySize(submission, prompt);
+  const overlay = await decodeImageToRgba(src, size.width, size.height);
+  const baked = await bakeAndEncodePromptCanvasMerged({ overlay, prompt });
+  return baked ? blobToDataUrl(baked.blob) : src;
 }
 
 /**

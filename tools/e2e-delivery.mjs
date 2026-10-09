@@ -51,20 +51,43 @@ async function join(page, name) {
 
 async function openSetup() {
   progress("open compose fixture");
-  await gm.evaluate(() => {
-    deliveryTest.openNewPromise = game.modules.get("drawing-prompts").api.openNewPrompt();
+  // Persisted receipt/lifecycle changes can precede the action's final render.
+  // Opening a new Draft during that interval is deliberately rejected by the manager.
+  await gm.waitForFunction(() => {
+    const manager = foundry.applications.instances.get("drawing-prompts-manager");
+    return !manager || !manager.isSending;
+  }, null, { timeout: 20000 });
+  await gm.evaluate(async () => {
+    const manager = foundry.applications.instances.get("drawing-prompts-manager");
+    if ( manager?.rendered ) await manager.render({ parts: ["body"] });
   });
+  await gm.evaluate(() => {
+    deliveryTest.openNewFinished = false;
+    deliveryTest.openNewPromise = game.modules.get("drawing-prompts").api.openNewPrompt()
+      .finally(() => { deliveryTest.openNewFinished = true; });
+  });
+  await gm.waitForFunction(() => deliveryTest.openNewFinished
+    || [...document.querySelectorAll("dialog button[data-action='discard']")]
+      .some(button => button.getBoundingClientRect().width > 0), null, { timeout: 20000 });
   const discard = gm.locator("dialog button[data-action='discard']").last();
   if ( await discard.isVisible({ timeout: 1000 }).catch(() => false) ) await discard.click();
   await gm.evaluate(async () => {
     await deliveryTest.openNewPromise;
     delete deliveryTest.openNewPromise;
+    delete deliveryTest.openNewFinished;
     // Opening may have scheduled the prior prompt's warning before the fixture switches
     // to compose mode. Resolve that now-stale modal without mutating the retained prompt.
     for ( const dialog of document.querySelectorAll("dialog.dp-delivery-warning-dialog") ) dialog.close();
   });
   await gm.locator("dialog.dp-delivery-warning-dialog").waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
   await gm.locator("textarea[name='promptText']").waitFor({ state: "visible" });
+  await gm.waitForFunction(() => {
+    const manager = foundry.applications.instances.get("drawing-prompts-manager");
+    const text = manager?.element?.querySelector("textarea[name='promptText']");
+    const send = manager?.element?.querySelector("button[data-action='sendPrompt']");
+    return manager?.activePrompt === null && !manager.isSending && manager.rendered
+      && manager.draft.promptText === "" && text?.value === "" && send && !send.disabled;
+  }, null, { timeout: 20000 });
 }
 
 async function send(name, selected) {
@@ -270,6 +293,15 @@ try {
     const prompt = e.getFlag("drawing-prompts", "prompt");
     return prompt?.promptText === text && prompt.lifecycleStatus === "draft";
   }), `${RUN}-zero`);
+  await gm.waitForFunction(text => {
+    const manager = foundry.applications.instances.get("drawing-prompts-manager");
+    const send = manager?.element?.querySelector("button[data-action='sendPrompt']");
+    return manager?.activePrompt?.lifecycleStatus === "draft" && !manager.isSending
+      && manager.activePrompt.promptText === text && manager.rendered && send && !send.disabled;
+  }, `${RUN}-zero`, { timeout: 20000 });
+  await gm.evaluate(async () => {
+    await foundry.applications.instances.get("drawing-prompts-manager").render({ parts: ["body"] });
+  });
   assert.equal(await gm.locator("textarea[name='promptText']").inputValue(), `${RUN}-zero`);
   await restoreOpen();
 

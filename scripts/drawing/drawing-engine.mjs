@@ -29,6 +29,7 @@ export class DrawingEngine {
   #tools;
   #history;
   #changeCallbacks = new Set();
+  #historyChangeCallbacks = new Set();
   #committedActionCallbacks = new Set();
   #colorCallbacks = new Set();
   #warningCallbacks = new Set();
@@ -122,6 +123,7 @@ export class DrawingEngine {
     this.#rafId = null;
     this.#strokeRafId = null;
     this.#changeCallbacks.clear();
+    this.#historyChangeCallbacks.clear();
     this.#committedActionCallbacks.clear();
     this.#colorCallbacks.clear();
     this.#warningCallbacks.clear();
@@ -287,6 +289,7 @@ export class DrawingEngine {
     this.#discardLineDraft();
     if ( !this.#history.undo(this.#drawCtx) ) return false;
     this.#emitChange();
+    for ( const callback of this.#historyChangeCallbacks ) callback();
     return true;
   }
 
@@ -298,6 +301,7 @@ export class DrawingEngine {
     this.#discardLineDraft();
     if ( !this.#history.redo(this.#drawCtx) ) return false;
     this.#emitChange();
+    for ( const callback of this.#historyChangeCallbacks ) callback();
     return true;
   }
 
@@ -336,6 +340,12 @@ export class DrawingEngine {
   onChange(callback) {
     this.#changeCallbacks.add(callback);
     return () => this.#changeCallbacks.delete(callback);
+  }
+
+  /** Subscribe to successful history traversal, excluding transient previews. */
+  onHistoryChange(callback) {
+    this.#historyChangeCallbacks.add(callback);
+    return () => this.#historyChangeCallbacks.delete(callback);
   }
 
   /** Subscribe to completed, pixel-changing drawing actions. */
@@ -451,6 +461,11 @@ export class DrawingEngine {
 
   get recoveryBytes() {
     return this.#history.allocatedBytes;
+  }
+
+  /** Cost of a detached retained session: two full RGBA layers plus history. */
+  get retainedBytes() {
+    return this.recoveryBytes + this.width * this.height * 8;
   }
 
   /** Install a validated foreground generation and its coherent Undo/Redo history. */
@@ -576,7 +591,7 @@ export class DrawingEngine {
   #renderCurrentStroke() {
     if ( !this.#currentStroke ) return;
     const points = this.#currentStroke.points;
-    const tail = this.#currentStroke.straight
+    const tail = this.#currentStroke.straight && this.#renderedPointCount > 0
       ? points.slice(-2)
       : points.slice(Math.max(0, this.#renderedPointCount - 2));
     const newTailTiles = tilesForStroke(tail, this.#currentStroke.size, this.width, this.height);

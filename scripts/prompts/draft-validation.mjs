@@ -7,7 +7,7 @@ export function validateDraft(draft, { forSend = false } = {}) {
   if ( !promptName ) throw new Error("DRAWING-PROMPTS.manager.validation.promptName");
   const canvasWidth = Number(draft.canvasWidth ?? 512);
   const canvasHeight = Number(draft.canvasHeight ?? 512);
-  if ( ![canvasWidth, canvasHeight].every(value => Number.isFinite(value) && value >= 1 && value <= INTERNAL.MAX_CANVAS_DIM) ) {
+  if ( ![canvasWidth, canvasHeight].every(value => Number.isInteger(value) && value >= 1 && value <= INTERNAL.MAX_CANVAS_DIM) ) {
     throw new Error("DRAWING-PROMPTS.manager.validation.dimensions");
   }
   const timerSeconds = Number(draft.timerSeconds ?? 0);

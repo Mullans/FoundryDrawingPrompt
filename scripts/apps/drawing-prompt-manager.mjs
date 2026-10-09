@@ -269,6 +269,8 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
     return this.activePrompt?.lifecycleStatus === PROMPT_STATUS.OPEN;
   }
   #formListenersAttached = false;
+  /** Share a pending Draft save and lock competing setup mutations before storage. */
+  #draftSavePromise = null;
   #sourceFramingPreviewCache;
   /**
    * Loaded (and taint-checked) `<img>` for the current draft background, cached
@@ -489,6 +491,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   }
 
   async #confirmDraftTransition() {
+    if ( this.#draftSavePromise || this.isSending ) return false;
     if ( this.activePrompt?.lifecycleStatus !== PROMPT_STATUS.DRAFT && this.activePrompt ) return true;
     this.#syncDraftFromForm();
     if ( this.#draftSignature() === this.#savedDraftSignature ) return true;
@@ -541,13 +544,13 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
       selectedSnapshot: reviewContext.src,
       selectedPreviewHeading: reviewContext.heading,
       selectedAssignmentId: this.selectedAssignmentId,
-      canSavePrompt: !this.isSending && this.#canEditDraft,
-      canSend: !this.isSending && this.#canEditDraft,
+      canSavePrompt: !this.isSending && !this.#draftSavePromise && this.#canEditDraft,
+      canSend: !this.isSending && !this.#draftSavePromise && this.#canEditDraft,
       isSending: this.isSending || Boolean(delivery?.isSending),
       sendLabel: game.i18n.localize(this.isSending
         ? "DRAWING-PROMPTS.manager.actions.sending"
         : "DRAWING-PROMPTS.manager.actions.sendPrompt"),
-      setupLocked: this.isSending || !this.#canEditDraft,
+      setupLocked: this.isSending || Boolean(this.#draftSavePromise) || !this.#canEditDraft,
       deliveryFeedback: null,
       hasAssignments: Boolean(this.activePrompt && Object.keys(this.activePrompt.assignments).length),
       canCancelAll: !archivedReadOnly && Boolean(this.activePrompt && Object.values(this.activePrompt.assignments).some(a => a.isActive)),
@@ -1457,7 +1460,7 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
 
   /** @this {DrawingPromptManager} */
   static async #onSendPrompt() {
-    if ( this.isSending || (this.activePrompt && this.activePrompt.lifecycleStatus !== PROMPT_STATUS.DRAFT) ) return;
+    if ( this.isSending || this.#draftSavePromise || (this.activePrompt && this.activePrompt.lifecycleStatus !== PROMPT_STATUS.DRAFT) ) return;
     const draft = this.#serviceDraft();
     if ( !this.#validateSendDraft(draft) ) return;
     this.#warnSelectedUsersWithoutFileUpload(draft.selectedUserIds);
@@ -1471,20 +1474,33 @@ export class DrawingPromptManager extends HandlebarsApplicationMixin(Application
   static async #onSavePrompt() { await this.#saveDraft(); }
 
   async #saveDraft() {
+    if ( this.#draftSavePromise ) return this.#draftSavePromise;
+    if ( this.isSending || !this.#canEditDraft ) return null;
     const draft = this.#serviceDraft();
     if ( !this.#validateDraft(draft) ) return null;
+    this.#draftSavePromise = (async () => {
+      try {
+        // Let the promise attach before rendering, so template context sees the lock.
+        await Promise.resolve();
+        await this.render({ parts: ["body"] });
+        if ( this.#closed ) return null;
+        const service = await import("../prompts/prompt-lifecycle.mjs");
+        this.activePrompt = this.activePrompt
+          ? await service.updatePrompt(this.activePrompt.id, draft)
+          : await service.createPrompt(draft);
+        this.#adoptDraftFromPrompt();
+        this.#savedDraftSignature = this.#draftSignature();
+        return this.activePrompt;
+      } catch (error) {
+        if ( !this.#closed ) ui.notifications.error(error.message);
+        return null;
+      }
+    })();
     try {
-      const service = await import("../prompts/prompt-lifecycle.mjs");
-      this.activePrompt = this.activePrompt
-        ? await service.updatePrompt(this.activePrompt.id, draft)
-        : await service.createPrompt(draft);
-      this.#adoptDraftFromPrompt();
-      this.#savedDraftSignature = this.#draftSignature();
-      await this.render({ parts: ["body"] });
-      return this.activePrompt;
-    } catch (error) {
-      ui.notifications.error(error.message);
-      return null;
+      return await this.#draftSavePromise;
+    } finally {
+      this.#draftSavePromise = null;
+      if ( !this.#closed ) await this.render({ parts: ["body"] });
     }
   }
 

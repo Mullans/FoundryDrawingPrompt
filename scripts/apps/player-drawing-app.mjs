@@ -162,7 +162,8 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
   /** Permanently invalidate player-local state for an authenticated Prompt deletion. */
   static async clearRecoveryForIdentity(identity) {
     const app = this.#registry.get(identity?.assignmentId);
-    if ( app ) {
+    if ( app && ["worldId", "gmUserId", "userId", "promptId", "assignmentId", "width", "height"]
+      .every(field => app.#recoveryIdentity()[field] === identity[field]) ) {
       app.#closeReason = "remote";
       await app.close();
     }
@@ -468,6 +469,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
         this.#maybeRecordDrawnColor(action);
         this.#queueRecoveryCopy();
       }),
+      engine.onHistoryChange(() => this.#queueRecoveryCopy()),
       engine.onColorSampled(hex => this.#applyColor(hex)),
       engine.onWarning(key => ui.notifications.warn(game.i18n.localize(key)))
     ];
@@ -489,7 +491,12 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     if ( this.#restorationKey === key ) return;
     this.#suppressRecentColorRecord = true;
     try {
-      const stored = await recoveryStore.load(identity);
+      let stored = null;
+      try {
+        stored = await recoveryStore.load(identity);
+      } catch (err) {
+        console.warn("drawing-prompts | local Recovery is unavailable; trying retained GM capture", err);
+      }
       if ( stored ) {
         engine.loadRecoverySnapshot(stored.snapshot);
         this.#restorationKey = key;
@@ -549,7 +556,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     this.#recoverySaves.flush(identity, snapshot);
   }
 
-  /** Pagehide republishes only an already-pinned snapshot; it never starts a large canvas/history copy. */
+  /** Artwork publication already starts on edit; pagehide does not supersede coherent history. */
   #requestPagehideSave() {
     if ( this.mode !== "live" || !this.#lastRecoverySnapshot ) return;
     this.#recoverySaves.pagehide(this.#recoveryIdentity());

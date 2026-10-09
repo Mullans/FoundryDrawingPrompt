@@ -269,6 +269,8 @@ export class DrawingPrompt {
     this.timerSeconds = data.timerSeconds ?? null;
     this.createdAt = data.createdAt ?? null;
     this.sentAt = data.sentAt ?? null;
+    this.initialDeliveryPending = data.initialDeliveryPending === true;
+    this.initialTimerHeld = data.initialTimerHeld === true;
     this.lifecycleStatus = Object.values(PROMPT_STATUS).includes(data.lifecycleStatus)
       ? data.lifecycleStatus : PROMPT_STATUS.OPEN;
     this.closedAt = data.closedAt ?? null;
@@ -339,6 +341,8 @@ export class DrawingPrompt {
       timerSeconds: this.timerSeconds,
       createdAt: this.createdAt,
       sentAt: this.sentAt,
+      initialDeliveryPending: this.initialDeliveryPending,
+      initialTimerHeld: this.initialTimerHeld,
       lifecycleStatus: this.lifecycleStatus,
       closedAt: this.closedAt,
       archivedAt: this.archivedAt,
@@ -415,6 +419,8 @@ export class DrawingPrompt {
   markClosed(ts) {
     this.#assertLifecycle([PROMPT_STATUS.OPEN], PROMPT_STATUS.CLOSED);
     this.lifecycleStatus = PROMPT_STATUS.CLOSED;
+    this.initialDeliveryPending = false;
+    this.initialTimerHeld = false;
     this.closedAt = ts;
     this.archivedAt = null;
   }

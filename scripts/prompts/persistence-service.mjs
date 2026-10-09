@@ -123,7 +123,8 @@ export async function savePrompt(prompt, {
   draftOnly = false,
   assignmentOnly = null,
   deliveryOnly = null,
-  restartInvitation = false
+  restartInvitation = false,
+  expectedLifecycle = null
 } = {}) {
   assertGM();
   return promptSaveQueue.enqueue(prompt.id, async () => {
@@ -131,6 +132,9 @@ export async function savePrompt(prompt, {
     if ( !entry ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
     const persisted = entry.getFlag(MODULE_ID, FLAG_PROMPT);
     const latest = persisted ? DrawingPrompt.fromObject(persisted) : null;
+    if ( expectedLifecycle && latest?.lifecycleStatus !== expectedLifecycle ) {
+      throw new Error(`Cannot commit ${expectedLifecycle} operation on a ${latest?.lifecycleStatus} Prompt`);
+    }
     let savedPrompt = prompt;
     if ( latest && draftOnly ) {
       if ( latest.lifecycleStatus !== "draft" || prompt.lifecycleStatus !== "draft" ) {
@@ -170,8 +174,11 @@ export async function savePrompt(prompt, {
       savedPrompt = latest;
       prompt.assignments = latest.assignments;
       prompt.assetFolderName = latest.assetFolderName;
+      latest.initialDeliveryPending = prompt.initialDeliveryPending;
+      latest.initialTimerHeld = prompt.initialTimerHeld;
     } else if ( latest && timerOnly ) {
       latest.timerState = prompt.timerState;
+      latest.initialTimerHeld = prompt.initialTimerHeld;
       savedPrompt = latest;
       prompt.assignments = latest.assignments;
       prompt.assetFolderName = latest.assetFolderName;
@@ -197,6 +204,26 @@ export async function savePrompt(prompt, {
     }
     indexPromptAssignments(savedPrompt);
     return entry.setFlag(MODULE_ID, FLAG_PROMPT, savedPrompt.toObject());
+  });
+}
+
+/** Persist the first successful settled delivery and release only its automatic timer hold. */
+export async function settleInitialPromptDelivery(promptId) {
+  assertGM();
+  return promptSaveQueue.enqueue(promptId, async () => {
+    const entry = game.journal.get(promptId);
+    const data = entry?.getFlag(MODULE_ID, FLAG_PROMPT);
+    const prompt = data ? DrawingPrompt.fromObject(data) : null;
+    if ( !prompt || prompt.lifecycleStatus !== "open" || !prompt.initialDeliveryPending
+      || !prompt.deliverySummary.hasRecipients ) return { prompt, completed: false };
+    if ( prompt.initialTimerHeld && prompt.timerStatus === "paused" ) {
+      const remainingMs = Number(prompt.remainingMs ?? prompt.timerSeconds * 1000);
+      prompt.timerState = { timerStatus: "running", deadlineAt: Date.now() + remainingMs, remainingMs: null };
+    }
+    prompt.initialDeliveryPending = false;
+    prompt.initialTimerHeld = false;
+    await entry.setFlag(MODULE_ID, FLAG_PROMPT, prompt.toObject());
+    return { prompt, completed: true };
   });
 }
 

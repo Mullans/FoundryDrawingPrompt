@@ -37,6 +37,14 @@ test("permanent invalidation destroys a retained engine", () => {
   assert.equal(cache.take(identity), null);
 });
 
+test("empty history cannot hide full canvas allocations from session eviction", () => {
+  const cache = new DrawingSessionCache({ budgetBytes: 128 });
+  const engine = { ...fakeEngine(0), retainedBytes: 129 };
+  cache.retain(identity, engine);
+  assert.equal(engine.destroyed, true);
+  assert.equal(cache.size, 0);
+});
+
 function fakeEngine(recoveryBytes) {
   return { recoveryBytes, destroyed: false, destroy() { this.destroyed = true; } };
 }

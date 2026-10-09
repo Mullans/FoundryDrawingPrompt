@@ -40,8 +40,9 @@ export function createRecoverySaveCoordinator({
     changed(identity, snapshot) {
       latestIdentity = identity;
       latestSnapshot = snapshot;
-      start(identity, snapshot, true);
+      const artwork = start(identity, snapshot, true);
       scheduleHistory();
+      return artwork;
     },
     flush(identity = latestIdentity, snapshot = latestSnapshot) {
       cancelTimer();
@@ -50,9 +51,10 @@ export function createRecoverySaveCoordinator({
       latestSnapshot = snapshot;
       return start(identity, snapshot, false);
     },
-    pagehide(identity = latestIdentity) {
-      if ( !identity || !latestSnapshot ) return null;
-      return start(identity, latestSnapshot, true);
+    pagehide() {
+      // changed() already starts artwork publication synchronously. Publishing
+      // the same state again would supersede an attached coherent history.
+      return null;
     },
     destroy() { cancelTimer(); },
     async settled() {

@@ -113,6 +113,7 @@
   "DRAWING-PROMPTS.manager.fileUpload.missing": "No file upload",
   "DRAWING-PROMPTS.manager.fileUpload.tooltip": "Submissions from this player transfer over the socket and may be size-reduced; grant \"Upload New Files\" in core permissions for full-quality staged submissions.",
   "DRAWING-PROMPTS.manager.submittedDrawing": "Submitted drawing",
+  "DRAWING-PROMPTS.manager.savedPreview": "Saved preview",
   "DRAWING-PROMPTS.manager.liveReview": "live review",
   "DRAWING-PROMPTS.manager.summary.label": "Prompt summary",
   "DRAWING-PROMPTS.manager.summary.expandTooltip": "Expand prompt text",

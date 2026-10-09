@@ -1,4 +1,4 @@
-/** Player-local retained editing sessions, bounded by pixel-history bytes. */
+/** Player-local retained editing sessions, bounded by canvas and history bytes. */
 export class DrawingSessionCache {
   #budgetBytes;
   #now;
@@ -67,7 +67,7 @@ function identityKey(identity) {
 }
 
 function engineBytes(engine) {
-  const bytes = Number(engine?.recoveryBytes);
+  const bytes = Number(engine?.retainedBytes ?? engine?.recoveryBytes);
   return Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
 }
 
