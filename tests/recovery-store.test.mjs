@@ -7,6 +7,32 @@ const identity = Object.freeze({
   worldId: "world", gmUserId: "gm", userId: "player", promptId: "prompt", assignmentId: "assignment", width: 1, height: 1
 });
 
+test("garbage collection preserves a concurrently published staging pin", async () => {
+  const base = createMapRecoveryAdapter();
+  let reads = 0;
+  let injected = false;
+  const injectWriter = async () => {
+    if ( injected ) return;
+    injected = true;
+    await base.putGeneration({ generationId: "other-writer", stagingIds: ["other:1"] });
+    await base.putTiles([{ id: "other:1", kind: "uniform", rgba: [1, 2, 3, 255] }]);
+  };
+  const adapter = { ...base,
+    async getGenerations() {
+      const snapshot = await base.getGenerations();
+      if ( ++reads === 2 ) await injectWriter();
+      return snapshot;
+    },
+    ...(base.collectGarbage ? { async collectGarbage() {
+      await injectWriter();
+      await base.collectGarbage();
+    } } : {})
+  };
+  const store = createRecoveryStore({ adapter });
+  assert.equal(await store.load(identity), null);
+  assert.equal((await base.getTiles(["other:1"])).length, 1);
+});
+
 test("Recovery publishes artwork before attaching coherent history", async () => {
   const adapter = createMapRecoveryAdapter();
   const store = createRecoveryStore({ adapter, writerId: "tab-a", now: () => 10 });

@@ -12,7 +12,8 @@ import {
   getPendingSubmission,
   persistSocketSubmission,
   resolveRestorationSubmission,
-  setPendingSubmission
+  setPendingSubmission,
+  submissionValidationContext
 } from "./pending-submission.mjs";
 import { isStagedSubmission } from "./assignment-save.mjs";
 import {
@@ -27,7 +28,8 @@ import {
   deliverPromptAssignments,
   ensureFramedBackgroundDelivered,
   payloadFor,
-  payloadForReopen
+  payloadForReopen,
+  finishInitialDelivery
 } from "./prompt-delivery.mjs";
 import { DrawingAssignment, DrawingPrompt } from "./prompt-models.mjs";
 import { assertGM } from "./socket-auth.mjs";
@@ -35,6 +37,8 @@ import { refreshManager, setManagerWindowOpen } from "./ui-bridge.mjs";
 import { pauseTimer } from "./timer-service.mjs";
 import { validateDraft } from "./draft-validation.mjs";
 import { TimerUpdateQueue } from "./timer-update-queue.mjs";
+import { validateSubmissionPayload } from "./transitions.mjs";
+import { isAllowedPendingPath, isAllowedStagedPath } from "./wire-validation.mjs";
 
 const draftLifecycleQueue = new TimerUpdateQueue();
 
@@ -56,10 +60,7 @@ export async function sendPrompt(draftOrId) {
     catch (err) { console.warn("drawing-prompts | could not pre-create staging directory", err); }
   }
   Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: prompt.id, stage: "preparation", elapsedMs: performance.now() - started });
-  const completion = deliverPromptAssignments(prompt, { initial: true }).then(() => {
-    if ( prompt.deliverySummary.hasRecipients ) Hooks.callAll("drawing-prompts.promptSent", prompt);
-    return prompt;
-  });
+  const completion = deliverPromptAssignments(prompt, { initial: true }).then(() => prompt);
   if ( awaitDeliveries ) return completion;
   void completion.catch(err => console.warn("drawing-prompts | background delivery failed", err));
   return prompt;
@@ -87,13 +88,15 @@ async function prepareSavedDraftSend(savedId, requested) {
   const sentAt = Date.now();
   prompt.lifecycleStatus = PROMPT_STATUS.OPEN;
   prompt.sentAt = sentAt;
+  prompt.initialDeliveryPending = true;
+  prompt.initialTimerHeld = Number(prompt.timerSeconds || 0) > 0;
   prompt.assignments = {};
   for ( const userId of draft.selectedUserIds ) {
     const user = game.users.get(userId);
     const assignment = DrawingAssignment.create({ promptId: prompt.id, userId, userName: user.name });
     prompt.assignments[assignment.id] = assignment;
   }
-  await savePrompt(prompt);
+  await savePrompt(prompt, { expectedLifecycle: PROMPT_STATUS.DRAFT });
   return { prompt, awaitDeliveries: requested?.awaitDeliveries !== false, started };
 }
 
@@ -114,6 +117,8 @@ async function prepareNewDraftSend(requested) {
     timerStatus: timerSeconds > 0 ? "paused" : "none",
     deadlineAt: null,
     remainingMs: timerSeconds > 0 ? timerSeconds * 1000 : null,
+    initialDeliveryPending: true,
+    initialTimerHeld: timerSeconds > 0,
     selectedUserIds
   }, selectedUserIds);
 
@@ -150,7 +155,7 @@ export async function retryPromptDeliveries(promptId) {
   await deliverPromptAssignments(prompt, {
     assignmentIds: Object.values(prompt.assignments)
       .filter(a => ["pending", "sending", "failed"].includes(a.delivery.status)).map(a => a.id),
-    initial: !prompt.deliverySummary.hasRecipients
+    initial: prompt.initialDeliveryPending
   });
   return prompt;
 }
@@ -176,11 +181,13 @@ export async function continuePromptDeliveries(promptId) {
     prompt.assignments = {};
     prompt.lifecycleStatus = PROMPT_STATUS.DRAFT;
     prompt.sentAt = null;
+    prompt.initialDeliveryPending = false;
+    prompt.initialTimerHeld = false;
     prompt.timerState = Number(prompt.timerSeconds || 0) > 0
       ? { timerStatus: "paused", deadlineAt: null, remainingMs: Number(prompt.timerSeconds) * 1000 }
       : { timerStatus: "none", deadlineAt: null, remainingMs: null };
     await savePrompt(prompt);
-  }
+  } else await finishInitialDelivery(prompt);
   Hooks.callAll("drawing-prompts.deliveryUpdated", prompt, prompt.deliverySummary);
   return prompt;
 }
@@ -366,21 +373,10 @@ async function retainFullCaptures(prompt) {
         const response = await emit.requestRetainedCapture(assignment.userId, assignment.id, requestId);
         if ( response?.requestId !== requestId || response?.assignmentId !== assignment.id ) throw new Error("Stale retained capture response");
         submission = response.submission;
-      } else if ( assignment.retainedCapture?.kind === "full-submission" && assignment.retainedCapture.overlayPath ) {
-        continue;
-      } else if ( assignment.assets?.overlayPath ) {
-        assignment.retainedCapture = {
-          kind: "full-submission",
-          receiptTs: assignment.submittedAt ?? Date.now(),
-          width: assignment.assets.tileWidth ?? prompt.canvasWidth,
-          height: assignment.assets.tileHeight ?? prompt.canvasHeight,
-          overlayPath: assignment.assets.overlayPath,
-          mergedPath: assignment.assets.mergedPath
-        };
-        await savePrompt(prompt, { assignmentOnly: assignment.id });
-        continue;
-      }
-      if ( !captureLiveWork ) submission = getPendingSubmission(assignment.id);
+        if ( !validateSubmissionPayload(submission, submissionValidationContext(assignment.id)).ok ) {
+          throw new Error("Invalid retained capture response");
+        }
+      } else submission = await resolveRestorationSubmission(assignment, prompt);
       if ( !submission || Number(submission.width) !== prompt.canvasWidth || Number(submission.height) !== prompt.canvasHeight || submission.wireScaled ) {
         if ( assignment.isActive ) failures.push(assignment);
         continue;
@@ -465,13 +461,16 @@ function moduleOwnedPromptPaths(prompt) {
   for ( const assignment of Object.values(prompt.assignments)) {
     const exported = new Set(Object.values(assignment.assets ?? {}).filter(value => typeof value === "string"));
     const pending = getPendingSubmission(assignment.id);
-    for ( const path of [
-      pending?.staged?.overlayPath,
-      pending?.staged?.mergedPath,
-      assignment.retainedCapture?.overlayPath,
-      assignment.retainedCapture?.mergedPath
+    const context = submissionValidationContext(assignment.id);
+    for ( const [kind, path] of [
+      ["overlay", pending?.staged?.overlayPath],
+      ["merged", pending?.staged?.mergedPath],
+      ["overlay", assignment.retainedCapture?.overlayPath],
+      ["merged", assignment.retainedCapture?.mergedPath]
     ]) {
-      if ( typeof path === "string" && path && !exported.has(path) ) paths.add(path);
+      if ( typeof path === "string" && path && !exported.has(path)
+        && (isAllowedStagedPath(assignment.id, path, context.stagingRoot, { forge: context.forge, expectedKind: kind })
+          || isAllowedPendingPath(assignment.id, path, context.pendingRoot, { forge: context.forge, expectedKind: kind })) ) paths.add(path);
     }
   }
   return [...paths];
@@ -541,6 +540,9 @@ export async function reopenAssignment(assignmentId, userId = null) {
   const { prompt, assignment: originalAssignment } = requirePromptAssignment(assignmentId);
   let assignment = originalAssignment;
   assertPromptOwner(prompt);
+  if ( ![PROMPT_STATUS.OPEN, PROMPT_STATUS.CLOSED].includes(prompt.lifecycleStatus) ) {
+    throw new Error(`Cannot reopen an Assignment on a ${prompt.lifecycleStatus} Prompt`);
+  }
   if ( userId && assignment.userId !== userId ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.notYourAssignment"));
   if ( prompt.lifecycleStatus === PROMPT_STATUS.CLOSED ) {
     prompt.markReopened();

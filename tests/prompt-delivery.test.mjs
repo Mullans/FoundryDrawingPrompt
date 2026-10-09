@@ -41,6 +41,62 @@ beforeEach(() => {
 });
 const draft = { promptName: "Delivery Test", canvasWidth: 512, canvasHeight: 512, selectedUserIds: ["u1"], timerSeconds: 60 };
 
+test("Draft service rejects fractional canvas dimensions before persistence", async () => {
+  await assert.rejects(lifecycle.createPrompt({ ...draft, canvasWidth: 512.5 }), /dimensions/);
+  await assert.rejects(lifecycle.sendPrompt({ ...draft, canvasHeight: 512.5 }), /dimensions/);
+  assert.equal(entries.size, 0);
+});
+
+test("Send commit cannot overwrite a Draft archived during preparation", async () => {
+  const persistence = await import("../scripts/prompts/persistence-service.mjs");
+  const saved = await lifecycle.createPrompt(draft);
+  const preparing = persistence.loadPrompt(saved.id);
+  await lifecycle.archivePrompt(saved.id);
+  preparing.lifecycleStatus = "open";
+  await assert.rejects(persistence.savePrompt(preparing, { expectedLifecycle: "draft" }), /archived/);
+  assert.equal(stored.lifecycleStatus, "archived");
+  assert.deepEqual(stored.assignments, {});
+});
+
+test("successful zero-recipient Retry emits promptSent once", async () => {
+  const hooks = [];
+  Hooks.callAll = name => hooks.push(name);
+  emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
+  const prompt = await lifecycle.sendPrompt(draft);
+  emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+  await Promise.all([lifecycle.retryPromptDeliveries(prompt.id), lifecycle.retryPromptDeliveries(prompt.id)]);
+  assert.equal(hooks.filter(name => name === "drawing-prompts.promptSent").length, 1);
+  await lifecycle.retryPromptDeliveries(prompt.id);
+  assert.equal(hooks.filter(name => name === "drawing-prompts.promptSent").length, 1);
+});
+
+for ( const action of ["retryPromptDeliveries", "continuePromptDeliveries"] ) {
+  test(`interrupted partial initial delivery starts its held timer on ${action}`, async () => {
+    emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
+    emit.cancelDrawingPrompt = async () => {};
+    const prompt = await lifecycle.sendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
+    stored.initialDeliveryPending = true;
+    stored.initialTimerHeld = true;
+    stored.assignments.a1.delivery.status = "received";
+    emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+    const recovered = await lifecycle[action](prompt.id);
+    assert.equal(recovered.timerStatus, "running");
+    assert.equal(stored.initialDeliveryPending, false);
+  });
+}
+
+test("initial-delivery recovery respects an explicit GM timer pause", async () => {
+  const { pausePromptTimer } = await import("../scripts/prompts/prompt-timer-bridge.mjs");
+  emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
+  emit.timerUpdated = async () => {};
+  const prompt = await lifecycle.sendPrompt(draft);
+  await pausePromptTimer(prompt.id);
+  emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+  const retried = await lifecycle.retryPromptDeliveries(prompt.id);
+  assert.equal(retried.timerStatus, "paused");
+  assert.equal(stored.initialDeliveryPending, false);
+});
+
 test("awaitDeliveries false returns while the actual OPEN transport is unresolved", async () => {
   let release;
   emit.openDrawingPrompt = () => new Promise(resolve => { release = resolve; });

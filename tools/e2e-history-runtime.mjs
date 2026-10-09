@@ -22,6 +22,107 @@ try {
       import("/modules/drawing-prompts/scripts/drawing/recovery-save-coordinator.mjs")
     ]);
     const frame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
+    // Compare incremental clipped rendering against a one-pass native canvas.
+    // Recovery tiles preserve exact RGBA; the unit FakeContext cannot exercise clip().
+    const size = { width: 512, height: 384 };
+    const pixelEngine = new DrawingEngine(size);
+    pixelEngine.setColor("#000000");
+    pixelEngine.setBrushSize(27);
+    pixelEngine.setBrushOpacity(1);
+    const points = [{ x: 25, y: 64 }, { x: 150, y: 64 }, { x: 270, y: 64 }, { x: 470, y: 64 }];
+    const linePoints = [{ x: 25, y: 64 }, { x: 150, y: 64 }, { x: 150, y: 280 }, { x: 470, y: 280 }];
+    const readPixels = () => {
+      const snapshot = pixelEngine.getRecoverySnapshot();
+      const versions = new Map(snapshot.versions.map(version => [version.id, version]));
+      const pixels = new Uint8ClampedArray(size.width * size.height * 4);
+      for ( const [tile, id] of snapshot.current ) {
+        const version = versions.get(id);
+        const x = tile % 4 * 128, y = Math.floor(tile / 4) * 128;
+        for ( let row = 0; row < 128; row++ ) for ( let column = 0; column < 128; column++ ) {
+          const offset = ((y + row) * size.width + x + column) * 4;
+          const data = version.kind === "uniform" ? version.rgba : version.data.subarray((row * 128 + column) * 4, (row * 128 + column) * 4 + 4);
+          pixels.set(data, offset);
+        }
+      }
+      return pixels;
+    };
+    const equalPixels = (actual, expected, label) => {
+      const index = actual.findIndex((byte, index) => byte !== expected[index]);
+      if ( index !== -1 ) {
+        const offset = index - index % 4;
+        throw new Error(`${label}: RGBA mismatch at byte ${index}: ${[...actual.slice(offset, offset + 4)]} != ${[...expected.slice(offset, offset + 4)]}`);
+      }
+    };
+    const nativePixels = (actual, expected, label) => {
+      // Native clipped rendering quantizes antialiased edges differently. Compare
+      // exact stable interiors and untouched exterior at least two pixels away.
+      let checked = 0;
+      for ( let y = 2; y < size.height - 2; y++ ) for ( let x = 2; x < size.width - 2; x++ ) {
+        const offset = (y * size.width + x) * 4, alpha = expected[offset + 3];
+        if ( alpha !== 0 && alpha !== 255 ) continue;
+        let stable = true;
+        for ( let dy = -2; dy <= 2; dy++ ) for ( let dx = -2; dx <= 2; dx++ ) {
+          if ( expected[((y + dy) * size.width + x + dx) * 4 + 3] !== alpha ) stable = false;
+        }
+        if ( !stable ) continue;
+        checked++;
+        equalPixels(actual.subarray(offset, offset + 4), expected.subarray(offset, offset + 4), label + offset);
+      }
+      if ( checked < 1000 ) throw new Error(label + ' insufficient stable pixel coverage');
+    };
+    const reference = document.createElement("canvas");
+    reference.width = size.width; reference.height = size.height;
+    const ctx = reference.getContext("2d", { willReadFrequently: true });
+    ctx.strokeStyle = "#000000"; ctx.lineWidth = 27; ctx.globalAlpha = 1;
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
+    for ( let index = 1; index < points.length - 1; index++ ) {
+      ctx.quadraticCurveTo(points[index].x, points[index].y,
+        (points[index].x + points[index + 1].x) / 2, (points[index].y + points[index + 1].y) / 2);
+    }
+    ctx.lineTo(points.at(-1).x, points.at(-1).y); ctx.stroke();
+    pixelEngine.beginStroke("stroke", points[0]); await frame();
+    for ( const point of points.slice(1) ) { pixelEngine.extendStroke(point); await frame(); }
+    pixelEngine.commitStroke(points.at(-1));
+    const committedPixels = await readPixels();
+    nativePixels(committedPixels, ctx.getImageData(0, 0, size.width, size.height).data, "multi-tile brush");
+    pixelEngine.previewPolyline(linePoints.slice(0, 2)); await frame();
+    pixelEngine.previewPolyline(linePoints.slice(0, 3)); await frame();
+    pixelEngine.previewPolyline(linePoints); await frame();
+    pixelEngine.cancelStrokePreview();
+    equalPixels(await readPixels(), committedPixels, "cancel multi-tile line preview");
+    // A first preview may contain several points (public engine API).
+    pixelEngine.previewPolyline(linePoints); await frame();
+    pixelEngine.commitStrokePreview();
+    const linePixels = await readPixels();
+    ctx.beginPath(); ctx.moveTo(linePoints[0].x, linePoints[0].y);
+    for ( const point of linePoints.slice(1) ) ctx.lineTo(point.x, point.y);
+    ctx.stroke();
+    nativePixels(linePixels, ctx.getImageData(0, 0, size.width, size.height).data, "multi-tile line");
+    pixelEngine.undo(); equalPixels(await readPixels(), committedPixels, "line Undo");
+    pixelEngine.redo(); equalPixels(await readPixels(), linePixels, "line Redo");
+    pixelEngine.undo(); pixelEngine.undo();
+    equalPixels(await readPixels(), new Uint8ClampedArray(size.width * size.height * 4), "brush Undo");
+    pixelEngine.redo(); equalPixels(await readPixels(), committedPixels, "brush Redo");
+    // Full curved/translucent layer comparisons use the engine's own lossless
+    // baseline, avoiding native clipping antialias differences at path edges.
+    const layer = () => pixelEngine.getOverlaySnapshot({ maxEdge: 512, type: "image/png" });
+    const baselineLayer = layer();
+    const curved = [{ x: 25, y: 25 }, { x: 150, y: 280 }, { x: 270, y: 35 }, { x: 470, y: 310 }];
+    pixelEngine.setColor("#349ac8"); pixelEngine.setBrushOpacity(0.35);
+    pixelEngine.beginStroke("stroke", curved[0]); await frame();
+    for ( const point of curved.slice(1) ) { pixelEngine.extendStroke(point); await frame(); }
+    pixelEngine.commitStroke(curved.at(-1));
+    const curvedLayer = layer();
+    if ( curvedLayer === baselineLayer ) throw new Error("curved stroke did not change foreground pixels");
+    pixelEngine.previewPolyline(curved); await frame();
+    pixelEngine.cancelStrokePreview();
+    if ( layer() !== curvedLayer ) throw new Error("curved cancellation changed committed foreground pixels");
+    pixelEngine.undo();
+    if ( layer() !== baselineLayer ) throw new Error("curved Undo did not restore exact foreground pixels");
+    pixelEngine.redo();
+    if ( layer() !== curvedLayer ) throw new Error("curved Redo did not restore exact foreground pixels");
+    pixelEngine.destroy();
     const dimensions = [2048, 4096];
     const timings = [];
     const baselineStart = performance.now();
@@ -85,7 +186,7 @@ try {
     const reloadIdentity = { ...identity, promptId: `runtime-reload-${Date.now()}`, assignmentId: `runtime-reload-${Date.now()}` };
     await recoveryStore.save(reloadIdentity, snapshot);
     const rapidReloadIdentity = { ...identity, promptId: `runtime-rapid-${Date.now()}`, assignmentId: `runtime-rapid-${Date.now()}` };
-    createRecoverySaveCoordinator({ store: recoveryStore }).changed(rapidReloadIdentity, snapshot);
+    await createRecoverySaveCoordinator({ store: recoveryStore }).changed(rapidReloadIdentity, snapshot);
     return { timings, recoveredKind: recovered?.kind, recoveredCursor: recovered?.snapshot?.cursor, reloadIdentity, rapidReloadIdentity };
   });
 

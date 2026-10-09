@@ -127,6 +127,10 @@ export function createMapRecoveryAdapter(generations = new Map(), tiles = new Ma
     async getTiles(ids) { return ids.filter(id => tiles.has(id)).map(id => clone(tiles.get(id))); },
     async getAllTiles() { return [...tiles.values()].map(clone); },
     async deleteTiles(ids) { for ( const id of ids ) tiles.delete(id); },
+    async collectGarbage() {
+      const retained = retainedTileIds([...generations.values()]);
+      for ( const id of tiles.keys() ) if ( !retained.has(id) ) tiles.delete(id);
+    },
     close() {}
   };
 }
@@ -173,6 +177,21 @@ export function createIndexedDbRecoveryAdapter(indexedDB = globalThis.indexedDB,
     }); },
     getAllTiles: () => transact(TILE_STORE, "readonly", tx => tx.objectStore(TILE_STORE).getAll()).then(value => value ?? []),
     deleteTiles: ids => transact(TILE_STORE, "readwrite", tx => { const store = tx.objectStore(TILE_STORE); for ( const id of ids ) store.delete(id); }),
+    collectGarbage: () => transact([GENERATION_STORE, TILE_STORE], "readwrite", tx => {
+      // Taking the reference snapshot and deleting orphans share a transaction.
+      // Concurrent writers cannot publish staging pins between these operations.
+      const records = tx.objectStore(GENERATION_STORE).getAll();
+      records.onsuccess = () => {
+        const retained = retainedTileIds(records.result);
+        const cursor = tx.objectStore(TILE_STORE).openCursor();
+        cursor.onsuccess = () => {
+          const value = cursor.result;
+          if ( !value ) return;
+          if ( !retained.has(value.key) ) value.delete();
+          value.continue();
+        };
+      };
+    }),
     close: async () => (await database()).close()
   };
 }
@@ -214,7 +233,8 @@ async function enforceQuota(adapter, currentId, quotaBytes) {
   if ( total > quotaBytes && current?.history ) { current = { ...current, history: null, stagingIds: [] }; await adapter.putGeneration(current); await garbageCollectTiles(adapter); }
   return current;
 }
-async function garbageCollectTiles(adapter) { const records = await adapter.getGenerations(); const retained = new Set(); for ( const record of records ) { for ( const id of record.stagingIds ?? [] ) retained.add(id); for ( const id of referencedIds(record.artwork) ) retained.add(id); for ( const id of referencedIds(record.history) ) retained.add(id); } const tiles = await adapter.getAllTiles(); await adapter.deleteTiles(tiles.filter(tile => !retained.has(tile.id)).map(tile => tile.id)); }
+async function garbageCollectTiles(adapter) { await adapter.collectGarbage(); }
+function retainedTileIds(records) { const retained = new Set(); for ( const record of records ) { for ( const id of record.stagingIds ?? [] ) retained.add(id); for ( const id of referencedIds(record.artwork) ) retained.add(id); for ( const id of referencedIds(record.history) ) retained.add(id); } return retained; }
 async function storedBytes(adapter, records) { const tileBytes = (await adapter.getAllTiles()).reduce((sum, tile) => sum + versionBytes(tile), 0); return tileBytes + records.reduce((sum, record) => sum + JSON.stringify(record).length, 0); }
 function versionBytes(version) { return version.kind === "rgba" ? version.data?.byteLength ?? 0 : version.kind === "uniform" ? 4 : 0; }
 

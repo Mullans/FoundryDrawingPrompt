@@ -12,6 +12,123 @@ import {
   sourceFramingPreviewCacheKey
 } from "../scripts/prompts/assignment-review.mjs";
 
+test("retained saved preview is inspectable after live cache loss and cannot be placed", async () => {
+  const assignment = { id: "retained", status: STATUS.CANCELLED, retainedCapture: {
+    kind: "saved-preview", receiptTs: 42, overlayPath: "saved-preview.webp", mergedPath: null
+  } };
+  const prompt = { id: "closed", canvasWidth: 400, canvasHeight: 300, background: { framedPath: "background.webp" } };
+  const review = await resolveAssignmentReview({ assignment, prompt });
+  assert.equal(review.src, "saved-preview.webp?ts=42");
+  assert.equal(review.heading, "DRAWING-PROMPTS.manager.savedPreview");
+  assert.equal(review.canPlace, false);
+});
+
+test("retained saved preview is a composite and never used as Full Framing ink", async () => {
+  let remaps = 0;
+  const review = await resolveAssignmentReview({
+    assignment: { id: "retained", status: STATUS.CANCELLED, retainedCapture: {
+      kind: "saved-preview", overlayPath: "composite.webp", receiptTs: 42
+    } },
+    prompt: { id: "closed", background: { path: "source.webp", naturalWidth: 800, naturalHeight: 600 } },
+    framingView: FRAMING_VIEW.FULL,
+    buildRemap: async () => { remaps++; return "remap"; }
+  });
+  assert.equal(remaps, 0);
+  assert.equal(review.src, "source.webp");
+  assert.equal(review.canPlace, false);
+});
+
+test("retained full submission survives cache loss in both Framing Views", async () => {
+  const assignment = { id: "full", status: STATUS.CANCELLED, retainedCapture: {
+    kind: "full-submission", receiptTs: 42, width: 400, height: 300,
+    overlayPath: "ink.webp", mergedPath: "composite.webp"
+  } };
+  const prompt = { id: "closed", canvasWidth: 400, canvasHeight: 300,
+    background: { path: "source.webp", framedPath: "framed.webp", naturalWidth: 800, naturalHeight: 600 } };
+  const canvas = await resolveAssignmentReview({ assignment, prompt });
+  assert.equal(canvas.src, "composite.webp?ts=42");
+  assert.notEqual(canvas.heading, "DRAWING-PROMPTS.manager.savedPreview");
+  const full = await resolveAssignmentReview({ assignment, prompt, framingView: FRAMING_VIEW.FULL,
+    buildRemap: async ({ src, submission }) => {
+      assert.equal(src, "ink.webp?ts=42");
+      assert.equal(submission.width, 400);
+      return "data:full-retained";
+    }
+  });
+  assert.equal(full.src, "data:full-retained");
+  assert.equal(canvas.canPlace, false);
+  assert.equal(full.canPlace, false);
+});
+
+test("overlay-only retained full capture composites over framed Prompt background", async () => {
+  const result = await resolveAssignmentReview({
+    assignment: { id: "full", status: STATUS.CANCELLED, retainedCapture: {
+      kind: "full-submission", overlayPath: "ink.webp", receiptTs: 42, width: 400, height: 300
+    } },
+    prompt: { id: "closed", canvasWidth: 400, canvasHeight: 300, background: { framedPath: "framed.webp" } },
+    buildPromptCanvas: async ({ src, prompt, submission }) => {
+      assert.equal(src, "ink.webp?ts=42");
+      assert.equal(prompt.background.framedPath, "framed.webp");
+      assert.equal(submission.width, 400);
+      return "data:composed-retained";
+    }
+  });
+  assert.equal(result.src, "data:composed-retained");
+});
+
+test("Saved preview cannot unlock Place using stale saved assets", async () => {
+  const result = await resolveAssignmentReview({ assignment: {
+    id: "preview", status: STATUS.SUBMITTED, submittedAt: 10, savedSubmissionTs: 10,
+    primaryImagePath: "old.webp", assets: { overlayPath: "old.webp", fullPath: "old-full.webp" },
+    retainedCapture: { kind: "saved-preview", overlayPath: "preview.webp", receiptTs: 42 }
+  } });
+  assert.equal(result.canPlace, false);
+});
+
+test("a newer submitted and saved drawing supersedes an older retained preview", async () => {
+  const assignment = {
+    id: "resubmitted", status: STATUS.SUBMITTED, submittedAt: 20, savedSubmissionTs: 20,
+    primaryImagePath: "new.webp", assets: { overlayPath: "new-ink.webp", fullPath: "new-full.webp" },
+    retainedCapture: { kind: "saved-preview", receiptTs: 10, overlayPath: "old-preview.webp" }
+  };
+  const prompt = { id: "reopened", background: { path: "source.webp", naturalWidth: 800, naturalHeight: 600 } };
+  const canvas = await resolveAssignmentReview({ assignment, prompt });
+  assert.equal(canvas.src, "new.webp");
+  assert.notEqual(canvas.heading, "DRAWING-PROMPTS.manager.savedPreview");
+  assert.equal(canvas.canPlace, true);
+  const full = await resolveAssignmentReview({ assignment, prompt, framingView: FRAMING_VIEW.FULL });
+  assert.equal(full.src, "new-full.webp");
+  assert.equal(full.canPlace, true);
+});
+
+test("newer saved artwork supersedes an older retained full capture in both Framing Views", async () => {
+  const assignment = {
+    id: "resubmitted-full", status: STATUS.SUBMITTED, submittedAt: 20, savedSubmissionTs: 20,
+    primaryImagePath: "new-composite.webp", assets: { overlayPath: "new-ink.webp", fullPath: "new-full.webp" },
+    retainedCapture: { kind: "full-submission", receiptTs: 10, width: 400, height: 300,
+      overlayPath: "old-ink.webp", mergedPath: "old-composite.webp" }
+  };
+  const prompt = { id: "reopened", canvasWidth: 400, canvasHeight: 300,
+    background: { path: "source.webp", naturalWidth: 800, naturalHeight: 600 } };
+  const canvas = await resolveAssignmentReview({ assignment, prompt });
+  assert.equal(canvas.src, "new-composite.webp");
+  assert.equal(canvas.canPlace, true);
+  const full = await resolveAssignmentReview({ assignment, prompt, framingView: FRAMING_VIEW.FULL });
+  assert.equal(full.src, "new-full.webp");
+  assert.equal(full.canPlace, true);
+});
+
+test("equal and newer retained full captures remain eligible for review", async () => {
+  for (const receiptTs of [20, 30]) {
+    const review = await resolveAssignmentReview({ assignment: {
+      id: "retained-current", status: STATUS.SUBMITTED, submittedAt: 20, savedSubmissionTs: 20,
+      primaryImagePath: "saved.webp", assets: { overlayPath: "saved-ink.webp" },
+      retainedCapture: { kind: "full-submission", receiptTs, overlayPath: "retained-ink.webp", mergedPath: "retained.webp" }
+    } });
+    assert.equal(review.src, `retained.webp?ts=${receiptTs}`);
+  }
+});
+
 test("pendingSubmissionPromptCanvasPreviewSrc stamps staged paths", () => {
   assert.equal(pendingSubmissionPromptCanvasPreviewSrc(null), null);
   assert.equal(

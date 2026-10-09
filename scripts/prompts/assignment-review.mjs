@@ -8,8 +8,11 @@
 
 import { FRAMING_VIEW, STATUS } from "../constants.mjs";
 import {
+  buildPromptCanvasPreviewDataUrl,
   buildSourceFramingPreviewDataUrl,
   canPlaceFramingView,
+  hasCurrentRetainedSavedPreview,
+  isRetainedCaptureSuperseded,
   hasSourceBackground,
   normalizeFramingView,
   pickSubmissionOverlaySrc,
@@ -114,6 +117,7 @@ export function clearSourceFramingPreviewCacheForAssignment(cache, assignmentId)
  * @param {object|null} [options.pendingSubmission] Cached pending submission, if any.
  * @param {Map<string, string>|null} [options.remapCache] Mutable Full Framing remap cache.
  * @param {typeof buildSourceFramingPreviewDataUrl} [options.buildRemap] Remap builder (injectable).
+ * @param {typeof buildPromptCanvasPreviewDataUrl} [options.buildPromptCanvas] Retained ink composite builder.
  * @param {(key: string) => string} [options.localize] Localization for headings.
  * @returns {Promise<AssignmentReviewResult>}
  */
@@ -126,6 +130,7 @@ export async function resolveAssignmentReview({
   pendingSubmission = null,
   remapCache = null,
   buildRemap = buildSourceFramingPreviewDataUrl,
+  buildPromptCanvas = buildPromptCanvasPreviewDataUrl,
   localize = defaultLocalize
 } = {}) {
   const hasSource = hasSourceBackground(prompt);
@@ -135,7 +140,10 @@ export async function resolveAssignmentReview({
     prompt,
     hasSource
   });
-  const heading = resolveReviewHeading(assignment, localize);
+  const heading = resolveReviewHeading(assignment, localize, {
+    retainedPreview: view === FRAMING_VIEW.PROMPT_CANVAS && !liveSnapshot
+      && !(assignment?.status === STATUS.SUBMITTED && pendingSubmissionPromptCanvasPreviewSrc(pendingSubmission))
+  });
   const canPlace = canPlaceFramingView(assignment, view);
 
   if ( !assignment ) {
@@ -166,10 +174,22 @@ export async function resolveAssignmentReview({
   const pendingSrc = assignment.status === STATUS.SUBMITTED
     ? pendingSubmissionPromptCanvasPreviewSrc(pendingSubmission)
     : null;
+  const retainedSubmission = retainedFullSubmission(assignment);
+  let retainedSrc = retainedSavedPreviewSrc(assignment);
+  if ( !liveSnapshot && !pendingSrc && retainedSubmission ) {
+    retainedSrc = pendingSubmissionPromptCanvasPreviewSrc(retainedSubmission);
+    if ( retainedSrc && !retainedSubmission.staged.mergedPath ) {
+      try {
+        retainedSrc = await buildPromptCanvas({ src: retainedSrc, prompt, submission: retainedSubmission });
+      } catch (error) {
+        console.warn("drawing-prompts | retained Prompt-canvas preview composition failed", error);
+      }
+    }
+  }
   const src = resolvePromptCanvasReviewSrc({
     liveSrc: liveSnapshot,
     pendingSrc,
-    savedPath: assignment.primaryImagePath ?? null,
+    savedPath: retainedSrc ?? assignment.primaryImagePath ?? null,
     framedPath: prompt?.background?.framedPath ?? null
   });
   return { src, heading, plateAspect, canPlace, framingView: view, pendingRemap: false };
@@ -232,6 +252,8 @@ async function resolveFullFramingSrc({
       ?? liveOverlaySnapshot
       ?? null;
   }
+  const retainedSubmission = retainedFullSubmission(assignment);
+  overlaySrc ??= pendingSubmissionOverlayPreviewSrc(retainedSubmission);
 
   let remappedSrc = null;
   if ( overlaySrc && prompt ) {
@@ -239,7 +261,7 @@ async function resolveFullFramingSrc({
       assignmentId: assignment.id,
       prompt,
       overlaySrc,
-      pendingSubmission,
+      pendingSubmission: pendingSubmission ?? retainedSubmission,
       remapCache,
       buildRemap
     });
@@ -308,12 +330,30 @@ async function resolveRemappedPreviewSrc({
  * @param {(key: string) => string} localize Localizer.
  * @returns {string}
  */
-function resolveReviewHeading(assignment, localize) {
+function resolveReviewHeading(assignment, localize, { retainedPreview = false } = {}) {
   if ( !assignment ) return localize("DRAWING-PROMPTS.manager.sections.preview");
+  if ( retainedPreview && retainedSavedPreviewSrc(assignment) ) return localize("DRAWING-PROMPTS.manager.savedPreview");
   if ( assignment.status === STATUS.SUBMITTED ) {
     return assignment.assets?.name || localize("DRAWING-PROMPTS.manager.submittedDrawing");
   }
   return localize("DRAWING-PROMPTS.manager.sections.preview");
+}
+
+/** Saved previews contain a Prompt-canvas composite, never editable Recovery or remappable ink. */
+function retainedSavedPreviewSrc(assignment) {
+  const capture = assignment?.retainedCapture;
+  if ( !hasCurrentRetainedSavedPreview(assignment) ) return null;
+  const path = capture.mergedPath ?? capture.overlayPath;
+  return path ? `${encodeURI(path)}?ts=${encodeURIComponent(String(capture.receiptTs ?? 0))}` : null;
+}
+
+/** Rehydrate durable full capture paths without relying on the GM's session cache. */
+function retainedFullSubmission(assignment) {
+  const capture = assignment?.retainedCapture;
+  if ( capture?.kind !== "full-submission" || !capture.overlayPath ) return null;
+  if ( isRetainedCaptureSuperseded(assignment) ) return null;
+  return { mode: "staged", receiptTs: capture.receiptTs, width: capture.width, height: capture.height,
+    staged: { overlayPath: capture.overlayPath, mergedPath: capture.mergedPath ?? null } };
 }
 
 /**
