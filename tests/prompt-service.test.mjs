@@ -636,6 +636,24 @@ test("Delete preserves a Prompt with files when the host has no deletion API, th
   } finally { picker.delete = originalDelete; picker.browse = originalBrowse; }
 });
 
+test("Delete confirms a removed single-segment custom asset folder through the data root", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const picker = foundry.applications.apps.FilePicker;
+  const originalBrowse = picker.browse;
+  game.settings.values.set("assetFolder", "art");
+  const browsed = [];
+  picker.browse = async (_source, dir) => {
+    browsed.push(dir);
+    if ( dir ) throw new Error("Missing folder");
+    return { files: [], dirs: ["worlds"] };
+  };
+  try {
+    await deletePrompt("p-save", { confirmed: true });
+    assert.equal(storedPrompt, null);
+    assert.ok(browsed.includes(""), "successful root listing proves custom folder is absent");
+  } finally { picker.browse = originalBrowse; }
+});
+
 test("Archived assignment cannot reopen before Restore", async () => {
   storedPrompt.lifecycleStatus = PROMPT_STATUS.ARCHIVED;
   const before = structuredClone(storedPrompt);

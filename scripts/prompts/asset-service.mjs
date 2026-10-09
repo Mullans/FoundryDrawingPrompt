@@ -113,8 +113,8 @@ async function browseExistingDirectory(dir) {
     return await getFilePicker().browse("data", dir);
   } catch (err) {
     const separator = dir.lastIndexOf("/");
-    if ( separator < 0 ) throw err;
-    const parent = await browseExistingDirectory(dir.slice(0, separator));
+    if ( !dir ) throw err;
+    const parent = await browseExistingDirectory(separator < 0 ? "" : dir.slice(0, separator));
     if ( !parent ) return null;
     if ( !Array.isArray(parent.dirs) || parent.dirs.some(path => normalizePath(path) === dir) ) throw err;
     return null;
