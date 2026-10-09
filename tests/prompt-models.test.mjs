@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
-import { BG_SOURCE, FIT_MODE, STATUS } from "../scripts/constants.mjs";
+import { BG_SOURCE, FIT_MODE, PROMPT_STATUS, STATUS } from "../scripts/constants.mjs";
 import { DrawingAssignment, DrawingPrompt } from "../scripts/prompts/prompt-models.mjs";
 
 beforeEach(() => {
@@ -78,6 +78,23 @@ test("DrawingAssignment round-trips savedSubmissionTs", () => {
   assert.equal(legacy.savedSubmissionTs, null);
 });
 
+test("DrawingAssignment keeps retained captures distinct and validates their recovery kind", () => {
+  const full = DrawingAssignment.fromObject({
+    id: "a1", promptId: "p1", userId: "u1",
+    retainedCapture: { kind: "full-submission", receiptTs: 10, width: 640, height: 480, overlayPath: "full.webp" }
+  });
+  assert.deepEqual(full.toObject().retainedCapture, {
+    kind: "full-submission", receiptTs: 10, width: 640, height: 480,
+    overlayPath: "full.webp", mergedPath: null
+  });
+  const preview = DrawingAssignment.fromObject({
+    id: "a2", promptId: "p1", userId: "u2",
+    retainedCapture: { kind: "saved-preview", receiptTs: 11, overlayPath: "preview.webp" }
+  });
+  assert.equal(preview.retainedCapture.kind, "saved-preview");
+  assert.equal(DrawingAssignment.fromObject({ retainedCapture: { kind: "quick-preview" } }).retainedCapture, null);
+});
+
 test("DrawingAssignment preserves tile and token placement identities", () => {
   const assignment = DrawingAssignment.fromObject({
     id: "a1",
@@ -135,7 +152,7 @@ test("DrawingAssignment primaryImagePath prefers merged assets and falls back to
 test("DrawingPrompt creates per-user assignments and round-trips JSON data", () => {
   const prompt = DrawingPrompt.create({
     promptText: "Draw a door",
-    drawingName: "Door",
+    promptName: "Door",
     canvasWidth: 640,
     canvasHeight: 480,
     background: { sourceType: "blank", path: null, fitMode: "fit-width" },
@@ -153,6 +170,7 @@ test("DrawingPrompt creates per-user assignments and round-trips JSON data", () 
 
   const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(prompt.toObject())));
   assert.equal(roundTrip.promptText, "Draw a door");
+  assert.equal(roundTrip.promptName, "Door");
   assert.equal(roundTrip.isActive, true);
   assert.equal(roundTrip.assignmentForUser("u2").userName, "Bert");
   assert.deepEqual(roundTrip.timerState, {
@@ -160,6 +178,62 @@ test("DrawingPrompt creates per-user assignments and round-trips JSON data", () 
     deadlineAt: 61000,
     remainingMs: null
   });
+});
+
+test("DrawingPrompt migrates legacy lifecycle state and enforces retained transitions", () => {
+  const legacy = DrawingPrompt.fromObject({ id: "p1", assignments: {
+    a1: { id: "a1", promptId: "p1", userId: "u1" }
+  } });
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.OPEN);
+  assert.equal(legacy.needsAttention, true);
+
+  legacy.markClosed(100);
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.CLOSED);
+  assert.equal(legacy.closedAt, 100);
+  assert.equal(legacy.needsAttention, false);
+  assert.throws(() => legacy.markClosed(101), /Illegal transition/);
+
+  legacy.markArchived(200);
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.ARCHIVED);
+  assert.equal(legacy.archivedAt, 200);
+  assert.throws(() => legacy.markReopened(), /Illegal transition/);
+
+  legacy.markRestored();
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.CLOSED);
+  assert.equal(legacy.archivedAt, null);
+  legacy.markReopened();
+  assert.equal(legacy.lifecycleStatus, PROMPT_STATUS.OPEN);
+  assert.equal(legacy.closedAt, null);
+
+  const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(legacy.toObject())));
+  assert.equal(roundTrip.lifecycleStatus, PROMPT_STATUS.OPEN);
+});
+
+test("DrawingPrompt preserves saved Draft selections and restores archived Drafts", () => {
+  const draft = DrawingPrompt.fromObject({
+    id: "p-draft", promptName: "Later", lifecycleStatus: PROMPT_STATUS.DRAFT,
+    createdAt: 100, selectedUserIds: ["u1", "u1", "u2"]
+  });
+  assert.deepEqual(draft.selectedUserIds, ["u1", "u2"]);
+  assert.deepEqual(draft.assignments, {});
+
+  draft.markArchived(200);
+  assert.equal(draft.archivedFromStatus, PROMPT_STATUS.DRAFT);
+  draft.markRestored();
+  assert.equal(draft.lifecycleStatus, PROMPT_STATUS.DRAFT);
+  assert.equal(draft.archivedFromStatus, null);
+
+  const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(draft.toObject())));
+  assert.equal(roundTrip.promptName, "Later");
+  assert.deepEqual(roundTrip.selectedUserIds, ["u1", "u2"]);
+});
+
+test("new Drafts have no creation timestamp until persistence", () => {
+  const draft = DrawingPrompt.create({ promptName: "Unsaved", lifecycleStatus: PROMPT_STATUS.DRAFT });
+  assert.equal(draft.createdAt, null);
+  draft.markSent(500);
+  assert.equal(draft.lifecycleStatus, PROMPT_STATUS.OPEN);
+  assert.equal(draft.sentAt, 500);
 });
 
 test("DrawingPrompt round-trips paused overtime timer state", () => {

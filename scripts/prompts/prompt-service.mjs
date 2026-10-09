@@ -8,7 +8,7 @@
  * - Public re-exports preserving `import … from "./prompt-service.mjs"` and `api.mjs`
  *
  * Carved out:
- * - {@link ./prompt-lifecycle.mjs} — create/send/finish/reopen/resend/cancel/redeliver
+ * - {@link ./prompt-lifecycle.mjs} — create/send/close/reopen/resend/cancel/redeliver
  * - {@link ./assignment-placement.mjs} — Place Tile/Token + Transform
  * - {@link ./pending-submission.mjs} — pending store, cache, restoration payloads
  * - {@link ./prompt-timer-bridge.mjs} — timer wrappers over timer-service
@@ -38,15 +38,25 @@ export {
 } from "./assignment-placement.mjs";
 export {
   buildRestorationSubmissionFromSavedAssets,
+  buildRestorationSubmissionFromRetainedCapture,
   getPendingSubmission
 } from "./pending-submission.mjs";
 export { getAssignment, getPrompt } from "./prompt-context.mjs";
 export {
   cancelAllAssignments,
   cancelAssignment,
-  createAndSendPrompt,
+  sendPrompt,
   createPrompt,
-  finishPrompt,
+  updatePrompt,
+  retryPromptDeliveries,
+  continuePromptDeliveries,
+  invitePromptRecipients,
+  processRecoveryTombstonesForUser,
+  closePrompt,
+  reopenPrompt,
+  archivePrompt,
+  restorePrompt,
+  deletePrompt,
   redeliverAssignmentsForUser,
   reopenAssignment,
   resendAllAssignments,
@@ -62,17 +72,44 @@ export {
   stopPromptTimer
 } from "./prompt-timer-bridge.mjs";
 
-/**
- * Open the GM prompt manager.
- * @returns {Promise<void>}
- */
-export async function openPromptManager() {
+async function requireGMManager() {
+  if ( !game.user.isGM ) {
+    ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
+    return null;
+  }
+  const { DrawingPromptManager } = await import("../apps/drawing-prompt-manager.mjs");
+  return DrawingPromptManager;
+}
+
+/** Open an empty, unsaved Prompt Draft. */
+export async function openNewPrompt() {
+  const Manager = await requireGMManager();
+  return Manager?.openNewPrompt();
+}
+
+/** Open an exact retained Prompt in the singleton manager. */
+export async function openPrompt(promptId) {
+  const Manager = await requireGMManager();
+  return Manager?.openPrompt(promptId);
+}
+
+/** Open an unsaved reusable copy of a retained Prompt. */
+export async function openPromptCopy(promptId) {
+  const Manager = await requireGMManager();
+  return Manager?.openPromptCopy(promptId);
+}
+
+/** Open the singleton Closed/Archived Prompt library. */
+export async function openPromptLibrary() {
   if ( !game.user.isGM ) {
     ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
     return;
   }
-  const { DrawingPromptManager } = await import("../apps/drawing-prompt-manager.mjs");
-  await DrawingPromptManager.open();
+  const [{ PromptLibrary }, { DrawingPromptManager }] = await Promise.all([
+    import("../apps/prompt-library.mjs"),
+    import("../apps/drawing-prompt-manager.mjs")
+  ]);
+  await PromptLibrary.open({ activePromptId: () => DrawingPromptManager.activePromptId() });
 }
 
 /**
@@ -98,7 +135,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   const resolvedName = resolveDrawingName(prompt, name);
   if ( !resolvedName ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.nameRequired"));
 
-  const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath && assignment.assets?.oplogPath);
+  const alreadySaved = Boolean(assignment.primaryImagePath && assignment.assets?.overlayPath);
   const submission = peekMemoryOrCachedSubmission(assignment.id);
   if ( !submission && !alreadySaved ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.pendingSubmissionLost"));
 
@@ -131,7 +168,7 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
  */
 function resolveDrawingName(prompt, explicitName) {
   return String(explicitName ?? defaultAssignmentAssetName({
-    drawingName: prompt.drawingName,
+    promptName: prompt.promptName,
     promptText: prompt.promptText
   })).trim();
 }

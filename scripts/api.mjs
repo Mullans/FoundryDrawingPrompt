@@ -2,10 +2,20 @@ import { MODULE_ID } from "./constants.mjs";
 import {
   applyAssignmentTransform,
   cancelAssignment,
+  closePrompt,
+  reopenPrompt,
+  archivePrompt,
+  restorePrompt,
+  deletePrompt,
   createPrompt,
+  updatePrompt,
+  sendPrompt,
   getAssignment,
   getPrompt,
-  openPromptManager,
+  openPromptLibrary,
+  openNewPrompt,
+  openPrompt,
+  openPromptCopy,
   placeAssignmentAsTile,
   placeAssignmentAsToken,
   reopenAssignment,
@@ -19,7 +29,12 @@ import {
 export function registerAPI() {
   game.modules.get(MODULE_ID).api = {
     createPrompt,
-    openPromptManager,
+    updatePrompt,
+    sendPrompt,
+    openPromptLibrary,
+    openNewPrompt,
+    openPrompt,
+    openPromptCopy,
     getPrompt,
     getAssignment,
     saveAssignment,
@@ -27,6 +42,11 @@ export function registerAPI() {
     placeAssignmentAsTile,
     placeAssignmentAsToken,
     reopenAssignment,
-    cancelAssignment
+    cancelAssignment,
+    closePrompt,
+    reopenPrompt,
+    archivePrompt,
+    restorePrompt,
+    deletePrompt
   };
 }

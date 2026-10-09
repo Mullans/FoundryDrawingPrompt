@@ -5,7 +5,7 @@
 
 import { MODULE_ID } from "../constants.mjs";
 import { isForge } from "../foundry/path-provider.mjs";
-import { ensureDir, normalizePath, pendingDir, stagingDir, uploadDataUrl } from "./asset-service.mjs";
+import { ensureDir, pendingDir, stagingDir, uploadDataUrl } from "./asset-service.mjs";
 import { isStagedSubmission } from "./assignment-save.mjs";
 import { getAssignment } from "./prompt-context.mjs";
 
@@ -71,8 +71,37 @@ export function clearPendingSubmission(assignmentId) {
  */
 export async function resolveRestorationSubmission(assignment, prompt) {
   const pending = getPendingSubmission(assignment.id);
-  if ( pending ) return pending;
-  return buildRestorationSubmissionFromSavedAssets(assignment, prompt);
+  const saved = await buildRestorationSubmissionFromSavedAssets(assignment, prompt);
+  const retained = buildRestorationSubmissionFromRetainedCapture(assignment, prompt);
+  const pendingCandidate = pending ? {
+    ...withoutOperationLog(pending),
+    recoveryKind: "full-submission",
+    assignmentId: assignment.id,
+    receiptTs: pending.receiptTs ?? assignment.submittedAt ?? Date.now()
+  } : null;
+  return [pendingCandidate, retained, saved]
+    .filter(candidate => candidate
+      && Number(candidate.width) === Number(prompt.canvasWidth)
+      && Number(candidate.height) === Number(prompt.canvasHeight)
+      && !candidate.wireScaled
+      && (candidate.overlay?.dataUrl || candidate.staged?.overlayPath))
+    .sort((a, b) => Number(b.receiptTs ?? 0) - Number(a.receiptTs ?? 0))[0] ?? null;
+}
+
+/** Build a recovery candidate only from a retained full submission, never a Saved preview. */
+export function buildRestorationSubmissionFromRetainedCapture(assignment, prompt) {
+  const capture = assignment.retainedCapture;
+  if ( capture?.kind !== "full-submission" || !capture.overlayPath ) return null;
+  return {
+    recoveryKind: "full-submission",
+    assignmentId: assignment.id,
+    mode: "staged",
+    staged: { overlayPath: capture.overlayPath, mergedPath: capture.mergedPath ?? null },
+    formats: { overlay: formatFromAssetPath(capture.overlayPath), merged: capture.mergedPath ? formatFromAssetPath(capture.mergedPath) : null },
+    width: Number(capture.width ?? prompt.canvasWidth),
+    height: Number(capture.height ?? prompt.canvasHeight),
+    receiptTs: capture.receiptTs ?? 0
+  };
 }
 
 /**
@@ -85,13 +114,13 @@ export async function resolveRestorationSubmission(assignment, prompt) {
 export async function buildRestorationSubmissionFromSavedAssets(assignment, prompt) {
   const overlayPath = assignment.assets?.overlayPath;
   const mergedPath = assignment.assets?.mergedPath ?? null;
-  const oplogPath = assignment.assets?.oplogPath;
-  if ( !overlayPath || !oplogPath ) return null;
+  if ( !overlayPath ) return null;
   try {
-    const opLog = await fetchSavedJson(oplogPath);
     const overlayFormat = formatFromAssetPath(overlayPath);
     const mergedFormat = mergedPath ? formatFromAssetPath(mergedPath) : null;
     return {
+      recoveryKind: "full-submission",
+      assignmentId: assignment.id,
       mode: "staged",
       staged: {
         overlayPath,
@@ -101,7 +130,6 @@ export async function buildRestorationSubmissionFromSavedAssets(assignment, prom
         overlay: overlayFormat,
         merged: mergedFormat
       },
-      opLog,
       width: Number(assignment.assets?.tileWidth ?? prompt.canvasWidth),
       height: Number(assignment.assets?.tileHeight ?? prompt.canvasHeight),
       receiptTs: assignment.submittedAt ?? Date.now()
@@ -110,6 +138,12 @@ export async function buildRestorationSubmissionFromSavedAssets(assignment, prom
     console.warn(`${MODULE_ID} | could not build restoration payload from saved assets`, assignment.id, err);
     return null;
   }
+}
+
+/** GM-held operation logs are deliberately excluded from player Recovery payloads. */
+function withoutOperationLog(submission) {
+  const { opLog: _opLog, ...imageOnly } = submission;
+  return imageOnly;
 }
 
 /**
@@ -129,12 +163,6 @@ export function formatFromAssetPath(path) {
  * @param {string} path Asset path.
  * @returns {Promise<object>}
  */
-async function fetchSavedJson(path) {
-  const response = await fetch(`/${encodeURI(normalizePath(path))}`);
-  if ( !response.ok ) throw new Error(`HTTP ${response.status}`);
-  return response.json();
-}
-
 /**
  * Cache a pending submission in sessionStorage for same-session GM reloads.
  * @param {string} assignmentId Assignment id.
@@ -280,13 +308,11 @@ export async function persistSocketSubmission(assignmentId, submission) {
       overlay: submission.overlay?.format ?? "webp",
       merged: hasMerged ? submission.merged?.format ?? "webp" : null
     },
-    opLog: submission.opLog,
     width: submission.width,
     height: submission.height,
     originalWidth: submission.originalWidth,
     originalHeight: submission.originalHeight,
     wireScaled: submission.wireScaled,
-    opLogTruncated: submission.opLogTruncated,
     receiptTs: submission.receiptTs
   };
 }

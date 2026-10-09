@@ -1,5 +1,4 @@
 import { INTERNAL } from "../constants.mjs";
-import { estimateOpLogWireBytes } from "../prompts/wire-validation.mjs";
 
 /**
  * Encode a canvas to a requested image format with PNG fallback.
@@ -30,10 +29,10 @@ export async function canvasToEncodedImage(canvas, { format, quality } = {}) {
  * Build a full-resolution submission payload from an engine.
  * @param {import("./drawing-engine.mjs").DrawingEngine} engine Drawing engine.
  * @param {{format: string, quality?: number}} options Export options.
- * @returns {Promise<{overlay: {dataUrl: string, format: string}, merged?: {dataUrl: string, format: string}, opLog: object, width: number, height: number}>}
+ * @returns {Promise<{overlay: {dataUrl: string, format: string}, merged?: {dataUrl: string, format: string}, width: number, height: number}>}
  */
 export async function buildFullSubmission(engine, { format, quality } = {}) {
-  // Commit any rubber-band line draft so exported pixels and the op log stay aligned.
+  // Commit any rubber-band line draft so exported pixels contain the completed action.
   engine.commitLineDraft?.();
   const hasBackground = engine.hasBackground;
   const [overlay, merged] = await Promise.all([
@@ -43,7 +42,6 @@ export async function buildFullSubmission(engine, { format, quality } = {}) {
   const payload = {
     overlay: { dataUrl: overlay.dataUrl, format: overlay.format },
     ...(merged ? { merged: { dataUrl: merged.dataUrl, format: merged.format } } : {}),
-    opLog: engine.getOpLog(),
     width: engine.width,
     height: engine.height
   };
@@ -54,7 +52,7 @@ export async function buildFullSubmission(engine, { format, quality } = {}) {
  * Build a socket-safe submission payload from an engine.
  * @param {import("./drawing-engine.mjs").DrawingEngine} engine Drawing engine.
  * @param {{format: string, quality?: number}} options Export options.
- * @returns {Promise<{overlay: {dataUrl: string, format: string}, merged?: {dataUrl: string, format: string}, opLog: object, width: number, height: number}>}
+ * @returns {Promise<{overlay: {dataUrl: string, format: string}, merged?: {dataUrl: string, format: string}, width: number, height: number}>}
  */
 export async function buildSubmission(engine, { format, quality } = {}) {
   const payload = await buildFullSubmission(engine, { format, quality });
@@ -69,7 +67,7 @@ export async function buildSubmission(engine, { format, quality } = {}) {
 export function estimateSubmissionWireSize(payload) {
   const images = String(payload?.overlay?.dataUrl ?? "").length
     + String(payload?.merged?.dataUrl ?? "").length;
-  return images + estimateOpLogWireBytes(payload?.opLog);
+  return images;
 }
 
 /**
@@ -141,9 +139,7 @@ async function enforceSubmissionWireLimit(engine, initialPayload, { format, hasB
 
     if ( step.action === "done" ) return payload;
     if ( step.action === "oversized" ) {
-      const trimmed = trimOpLogForWire(payload);
-      if ( estimateSubmissionWireSize(trimmed) <= INTERNAL.MAX_SUBMISSION_BYTES ) return trimmed;
-      return { ...trimmed, wireOversized: true, opLogTruncated: trimmed.opLog !== payload.opLog };
+      return { ...payload, wireOversized: true };
     }
 
     if ( step.action === "quality" ) {
@@ -170,31 +166,11 @@ async function enforceSubmissionWireLimit(engine, initialPayload, { format, hasB
     strategyFormat = "png";
   }
 
-  return { ...payload, wireOversized: true, opLogTruncated: Boolean(payload.opLog) };
+  return { ...payload, wireOversized: true };
 }
 
 /**
- * Drop redo tail from an op-log so wire size can fit under the cap.
- * @param {object} payload Submission payload.
- * @returns {object} Payload with trimmed op-log when possible.
- */
-function trimOpLogForWire(payload) {
-  const opLog = payload?.opLog;
-  if ( !opLog || typeof opLog !== "object" ) return payload;
-  const pointer = Number(opLog.pointer);
-  const operations = Array.isArray(opLog.operations) ? opLog.operations : null;
-  if ( !operations?.length || !Number.isFinite(pointer) ) return payload;
-  return {
-    ...payload,
-    opLog: {
-      ...opLog,
-      operations: operations.slice(0, Math.max(0, pointer + 1))
-    }
-  };
-}
-
-/**
- * Rebuild submission image fields while preserving operation log data.
+ * Rebuild submission image fields while preserving image metadata.
  * @param {import("./drawing-engine.mjs").DrawingEngine} engine Drawing engine.
  * @param {object} payload Existing payload.
  * @param {object} options Export options.

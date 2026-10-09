@@ -84,8 +84,10 @@ export async function ensureJournalFolder() {
  */
 export async function createPromptEntry(prompt) {
   assertGM();
+  if ( prompt.id ) throw new Error("Cannot create a Prompt that already has an id.");
+  prompt.createdAt ??= Date.now();
   const folder = await ensureJournalFolder();
-  const name = game.i18n.format("DRAWING-PROMPTS.journal.entryName", { name: prompt.drawingName || prompt.promptText || prompt.id || "" });
+  const name = game.i18n.format("DRAWING-PROMPTS.journal.entryName", { name: prompt.promptName || prompt.promptText || "" });
   const entry = await JournalEntry.create({
     name,
     folder: folder.id,
@@ -111,25 +113,86 @@ export async function createPromptEntry(prompt) {
  * @param {DrawingPrompt} prompt Prompt model to save.
  * @param {object} [options] Save options.
  * @param {boolean} [options.timerOnly=false] Persist only the timer state.
+ * @param {boolean} [options.draftOnly=false] Persist editable Draft configuration.
  * @param {string|null} [options.assignmentOnly=null] Persist only this assignment and the asset folder name.
  * @returns {Promise<JournalEntry>}
  */
-export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = null } = {}) {
+export async function savePrompt(prompt, {
+  timerOnly = false,
+  lifecycleOnly = false,
+  draftOnly = false,
+  assignmentOnly = null,
+  deliveryOnly = null,
+  restartInvitation = false,
+  expectedLifecycle = null
+} = {}) {
   assertGM();
   return promptSaveQueue.enqueue(prompt.id, async () => {
     const entry = game.journal.get(prompt.id);
     if ( !entry ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
     const persisted = entry.getFlag(MODULE_ID, FLAG_PROMPT);
     const latest = persisted ? DrawingPrompt.fromObject(persisted) : null;
+    if ( expectedLifecycle && latest?.lifecycleStatus !== expectedLifecycle ) {
+      throw new Error(`Cannot commit ${expectedLifecycle} operation on a ${latest?.lifecycleStatus} Prompt`);
+    }
     let savedPrompt = prompt;
-    if ( latest && timerOnly ) {
+    if ( latest && draftOnly ) {
+      if ( latest.lifecycleStatus !== "draft" || prompt.lifecycleStatus !== "draft" ) {
+        throw new Error(`Illegal Draft update for ${latest.lifecycleStatus} Prompt`);
+      }
+      latest.promptName = prompt.promptName;
+      latest.promptText = prompt.promptText;
+      latest.canvasWidth = prompt.canvasWidth;
+      latest.canvasHeight = prompt.canvasHeight;
+      latest.background = { ...prompt.background };
+      latest.timerSeconds = prompt.timerSeconds;
       latest.timerState = prompt.timerState;
+      latest.selectedUserIds = [...prompt.selectedUserIds];
+      savedPrompt = latest;
+      prompt.createdAt = latest.createdAt;
+      prompt.assignments = latest.assignments;
+    } else if ( latest && deliveryOnly ) {
+      const current = latest.getAssignment(deliveryOnly);
+      const requested = prompt.getAssignment(deliveryOnly);
+      if ( !current || !requested ) throw new Error(`Assignment not found: ${deliveryOnly}`);
+      // Withdrawal wins over late receipt; confirmed recipients cannot be withdrawn or failed.
+      if ( current.delivery.generation === requested.delivery.generation
+        && current.delivery.status !== "withdrawn" && (requested.delivery.status !== "received" || current.isActive)
+        && (current.delivery.status !== "received" || requested.delivery.status === "received") ) {
+        current.delivery = { ...requested.delivery };
+        if ( current.delivery.status === "withdrawn" ) current.status = "cancelled";
+      }
+      savedPrompt = latest;
+      prompt.assignments = latest.assignments;
+      prompt.timerState = latest.timerState;
+    } else if ( latest && lifecycleOnly ) {
+      latest.lifecycleStatus = prompt.lifecycleStatus;
+      latest.closedAt = prompt.closedAt;
+      latest.archivedAt = prompt.archivedAt;
+      latest.archivedFromStatus = prompt.archivedFromStatus;
+      latest.timerState = prompt.timerState;
+      savedPrompt = latest;
+      prompt.assignments = latest.assignments;
+      prompt.assetFolderName = latest.assetFolderName;
+      latest.initialDeliveryPending = prompt.initialDeliveryPending;
+      latest.initialTimerHeld = prompt.initialTimerHeld;
+    } else if ( latest && timerOnly ) {
+      latest.timerState = prompt.timerState;
+      latest.initialTimerHeld = prompt.initialTimerHeld;
       savedPrompt = latest;
       prompt.assignments = latest.assignments;
       prompt.assetFolderName = latest.assetFolderName;
     } else if ( latest && assignmentOnly ) {
       const assignment = prompt.getAssignment(assignmentOnly);
       if ( !assignment ) throw new Error(`Assignment not found: ${assignmentOnly}`);
+      // Lifecycle updates may have been loaded before a receipt/withdrawal completed.
+      if ( latest.assignments[assignmentOnly] ) {
+        assignment.delivery = { ...latest.assignments[assignmentOnly].delivery };
+        if ( restartInvitation && latest.assignments[assignmentOnly].status === "cancelled" && assignment.delivery.status !== "withdrawn" ) {
+          assignment.delivery.generation += 1;
+        }
+        if ( assignment.delivery.status === "withdrawn" ) assignment.status = "cancelled";
+      }
       latest.assignments[assignmentOnly] = assignment;
       latest.assetFolderName = prompt.assetFolderName ?? latest.assetFolderName;
       savedPrompt = latest;
@@ -141,6 +204,26 @@ export async function savePrompt(prompt, { timerOnly = false, assignmentOnly = n
     }
     indexPromptAssignments(savedPrompt);
     return entry.setFlag(MODULE_ID, FLAG_PROMPT, savedPrompt.toObject());
+  });
+}
+
+/** Persist the first successful settled delivery and release only its automatic timer hold. */
+export async function settleInitialPromptDelivery(promptId) {
+  assertGM();
+  return promptSaveQueue.enqueue(promptId, async () => {
+    const entry = game.journal.get(promptId);
+    const data = entry?.getFlag(MODULE_ID, FLAG_PROMPT);
+    const prompt = data ? DrawingPrompt.fromObject(data) : null;
+    if ( !prompt || prompt.lifecycleStatus !== "open" || !prompt.initialDeliveryPending
+      || !prompt.deliverySummary.hasRecipients ) return { prompt, completed: false };
+    if ( prompt.initialTimerHeld && prompt.timerStatus === "paused" ) {
+      const remainingMs = Number(prompt.remainingMs ?? prompt.timerSeconds * 1000);
+      prompt.timerState = { timerStatus: "running", deadlineAt: Date.now() + remainingMs, remainingMs: null };
+    }
+    prompt.initialDeliveryPending = false;
+    prompt.initialTimerHeld = false;
+    await entry.setFlag(MODULE_ID, FLAG_PROMPT, prompt.toObject());
+    return { prompt, completed: true };
   });
 }
 

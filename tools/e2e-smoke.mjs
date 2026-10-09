@@ -91,14 +91,13 @@ async function main() {
       assert.ok(canvas.scene.tiles.some(tile => tile.texture?.src === assignment.assets.mergedPath || tile.texture?.src === assignment.assets.overlayPath));
     }, "saved drawing placed as tile", smokeData());
 
-    await finishPrompt(gm);
-    await gm.locator("textarea[name='promptText']").waitFor({ state: "visible", timeout: 10000 });
-    await assertComposeManagerLayout(gm);
+    await closePrompt(gm);
+    await gm.locator(".dp-review-mode").waitFor({ state: "visible", timeout: 10000 });
     await assertState(gm, data => {
       const manager = foundry.applications.instances.get("drawing-prompts-manager");
-      assert.equal(manager?.activePrompt, null);
-      assert.equal(manager?.draft?.promptText, data.promptText);
-    }, "manager returned to setup with retained draft", smokeData());
+      assert.equal(manager?.activePrompt?.lifecycleStatus, "closed");
+      assert.equal(manager?.activePrompt?.promptText, data.promptText);
+    }, "manager retained the closed prompt", smokeData());
 
     if ( consoleErrors.length ) {
       const shown = consoleErrors.slice(0, 20).join("\n  ");
@@ -150,6 +149,9 @@ async function openManager(page) {
     const control = page.locator(selector).first();
     if ( await control.count() ) {
       await control.click();
+      const library = page.locator(".drawing-prompts-library").first();
+      await library.waitFor({ state: "visible", timeout: 10000 });
+      await library.locator("button[data-action='newPrompt']").click();
       await page.locator(".drawing-prompts-manager").waitFor({ state: "visible", timeout: 10000 });
       return;
     }
@@ -213,7 +215,7 @@ async function assertReviewManagerLayout(page) {
 async function fillAndSendPrompt(page) {
   const manager = page.locator(".drawing-prompts-manager").first();
   await manager.locator("textarea[name='promptText']").fill(PROMPT_TEXT);
-  await manager.locator("input[name='drawingName']").fill(DRAWING_NAME);
+  await manager.locator("input[name='promptName']").fill(DRAWING_NAME);
   await manager.locator("input[name='canvasWidth']").fill("512");
   await manager.locator("input[name='canvasHeight']").fill("384");
   await manager.locator(".dp-user-row", { hasText: PLAYER_USER }).locator("input[name='selectedUserIds']").check();
@@ -269,10 +271,15 @@ async function assertAbandonedPlacementIsSafe(page) {
     const el = document.querySelector(".drawing-prompts-manager");
     return Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
   });
-  await page.waitForFunction(() => {
+  // Hiding happens before asynchronous placement preparation. Wait for the actual
+  // preview and input listener, otherwise this test abandons before placement starts.
+  await page.waitForFunction(idle => {
     const el = document.querySelector(".drawing-prompts-manager");
-    return Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
-  }, null, { timeout: 10000 });
+    const hidden = Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
+    return hidden && canvas.tiles.active
+      && canvas.tiles.preview?.children?.some(preview => preview.document && !preview.destroyed)
+      && (canvas.stage?.listenerCount?.("pointerdown") ?? 0) > idle;
+  }, idleListeners, { timeout: 10000 });
 
   // Abandon by switching canvas layer -- PlaceablesLayer#_deactivate destroys the preview.
   // NOTE: never return the layer from evaluate(); serializing that circular PIXI object
@@ -310,7 +317,7 @@ async function assertAbandonedPlacementIsSafe(page) {
   const board = page.locator("canvas#board").first();
   const box = await board.boundingBox();
   assert.ok(box, "Foundry #board has a bounding box");
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 40 });
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await page.waitForTimeout(1000);
 
   const tilesAfter = await page.evaluate(() => canvas.scene.tiles.size);
@@ -321,6 +328,9 @@ async function assertAbandonedPlacementIsSafe(page) {
 }
 
 async function placeSavedTile(page) {
+  await page.evaluate(() => { canvas.tiles.activate(); });
+  const tileIdsBefore = await page.evaluate(() => canvas.scene.tiles.map(tile => tile.id));
+  const idleListeners = await page.evaluate(() => canvas.stage?.listenerCount?.("pointerdown") ?? 0);
   await page.locator(".drawing-prompts-manager button[data-action='openPlaceDialog']").click();
   const placeDialog = page.locator("#drawing-prompts-place-dialog, .drawing-prompts-place-dialog").last();
   await placeDialog.waitFor({ state: "visible", timeout: 10000 });
@@ -329,25 +339,65 @@ async function placeSavedTile(page) {
   await placeDialog.waitFor({ state: "hidden", timeout: 15000 });
 
   // Interactive place: manager yields (display:none) and a tile preview follows the cursor.
-  await page.waitForFunction(() => {
+  await page.waitForFunction(idle => {
     const el = document.querySelector(".drawing-prompts-manager");
-    return Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
-  }, null, { timeout: 10000 });
+    const hidden = Boolean(el?.classList?.contains("dp-canvas-yield-hidden") || el?.style?.display === "none");
+    return hidden && canvas.tiles.active
+      && canvas.tiles.preview?.children?.some(preview => preview.document && !preview.destroyed)
+      && (canvas.stage?.listenerCount?.("pointerdown") ?? 0) > idle;
+  }, idleListeners, { timeout: 10000 });
 
   const board = page.locator("canvas#board").first();
   await board.waitFor({ state: "visible", timeout: 10000 });
   const box = await board.boundingBox();
   assert.ok(box, "Foundry #board has a bounding box for placement click");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 40 });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
-  await page.waitForFunction(playerUser => {
+  // Observe the real Foundry preview after its render flags have flushed. A Tile's
+  // document bounds and rendered PIXI bounds must share the cursor center; moving the
+  // Tile container as well as its absolute-positioned shape doubles this offset in v14.
+  const placementGeometry = await page.evaluate(() => {
+    const preview = canvas.tiles.preview.children.find(item => item.document && !item.destroyed);
+    if ( !preview ) return null;
+    const cursor = { x: canvas.mousePosition.x, y: canvas.mousePosition.y };
+    const globalCursor = canvas.stage.toGlobal(new PIXI.Point(cursor.x, cursor.y));
+    const renderedObject = preview.mesh ?? preview.shape ?? preview.children?.find(child => child?.getBounds);
+    const rendered = renderedObject?.getBounds?.() ?? preview.getBounds();
+    const document = preview.document;
+    return {
+      cursor,
+      globalCursor: { x: globalCursor.x, y: globalCursor.y },
+      rendered: { x: rendered.x, y: rendered.y, width: rendered.width, height: rendered.height },
+      document: { x: document.x, y: document.y, width: document.width, height: document.height },
+      renderedType: renderedObject?.constructor?.name ?? null
+    };
+  });
+  assert.ok(placementGeometry, "tile placement preview disappeared before geometry assertion");
+  const renderedCenter = {
+    x: placementGeometry.rendered.x + (placementGeometry.rendered.width / 2),
+    y: placementGeometry.rendered.y + (placementGeometry.rendered.height / 2)
+  };
+  // Foundry v14 centers a Tile mesh on its preview document position. The placement
+  // helper converts that visual center back to a top-left only when creating the Tile.
+  assert.ok(Math.abs(placementGeometry.document.x - placementGeometry.cursor.x) <= 1,
+    "preview document origin is not at the cursor on x");
+  assert.ok(Math.abs(placementGeometry.document.y - placementGeometry.cursor.y) <= 1,
+    "preview document origin is not at the cursor on y");
+  assert.ok(Math.abs(renderedCenter.x - placementGeometry.globalCursor.x) <= 2,
+    `rendered tile preview is not cursor-centered on x: ${JSON.stringify({ renderedCenter, placementGeometry })}`);
+  assert.ok(Math.abs(renderedCenter.y - placementGeometry.globalCursor.y) <= 2,
+    `rendered tile preview is not cursor-centered on y: ${JSON.stringify({ renderedCenter, placementGeometry })}`);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+
+  await page.waitForFunction(({ playerUser, previousIds }) => {
     const prompt = game.journal
       .map(entry => entry.getFlag("drawing-prompts", "prompt"))
       .filter(Boolean)
       .sort((a, b) => Number(b.sentAt ?? 0) - Number(a.sentAt ?? 0))[0] ?? null;
     const assignment = Object.values(prompt?.assignments ?? {}).find(item => item.userName === playerUser);
     if ( assignment?.placements?.some(item => item.kind === "tile") ) return true;
+    if ( canvas.scene.tiles.some(tile => !previousIds.includes(tile.id)) ) return true;
     const src = assignment?.assets?.mergedPath
       || assignment?.assets?.overlayPath
       || assignment?.assets?.fullPath
@@ -357,12 +407,32 @@ async function placeSavedTile(page) {
       const tileSrc = String(tile.texture?.src ?? "");
       return tileSrc === src || tileSrc.includes(src) || src.includes(tileSrc) || tileSrc.includes("/drawing-prompts/");
     });
-  }, PLAYER_USER, { timeout: 20000 });
+  }, { playerUser: PLAYER_USER, previousIds: tileIdsBefore }, { timeout: 20000 }).catch(async error => {
+    const diagnostic = await page.evaluate(previousIds => ({
+      activeLayer: canvas.activeLayer?.constructor?.name,
+      previewCount: canvas.tiles.preview?.children?.length ?? null,
+      newTiles: canvas.scene.tiles.filter(tile => !previousIds.includes(tile.id)).map(tile => tile.toObject()),
+      managerHidden: document.querySelector(".drawing-prompts-manager")?.classList?.contains("dp-canvas-yield-hidden") ?? null
+    }), tileIdsBefore);
+    throw new Error(`Tile placement did not commit: ${JSON.stringify(diagnostic)}`, { cause: error });
+  });
+
+  const createdBounds = await page.evaluate(previousIds => {
+    const tile = canvas.scene.tiles.find(item => !previousIds.includes(item.id));
+    return tile ? { x: tile.x, y: tile.y, width: tile.width, height: tile.height } : null;
+  }, tileIdsBefore);
+  const expectedCreatedBounds = {
+    x: placementGeometry.cursor.x - (placementGeometry.document.width / 2),
+    y: placementGeometry.cursor.y - (placementGeometry.document.height / 2),
+    width: placementGeometry.document.width,
+    height: placementGeometry.document.height
+  };
+  assert.deepEqual(createdBounds, expectedCreatedBounds, "created Tile bounds differ from the committed preview");
 }
 
-async function finishPrompt(page) {
-  await page.locator(".drawing-prompts-manager button[data-action='finishPrompt']").click();
-  // Finish only confirms when work would be discarded; the confirm is a DialogV2 yes button.
+async function closePrompt(page) {
+  await page.locator(".drawing-prompts-manager button[data-action='closePrompt']").click();
+  // Close confirms only when work would be discarded; the confirm is a DialogV2 yes button.
   const confirm = page.locator("dialog [data-action='yes']").last();
   try {
     await confirm.click({ timeout: 5000 });
@@ -406,7 +476,7 @@ async function assertState(page, assertion, label, data = {}) {
 }
 
 await main().then(() => {
-  console.log("e2e-smoke: PASS (layout → send → draw → snapshot → submit → save → place → finish)");
+  console.log("e2e-smoke: PASS (library → compose → send → draw → snapshot → submit → save → place → close)");
 }).catch(err => {
   console.error(err);
   process.exitCode = 1;

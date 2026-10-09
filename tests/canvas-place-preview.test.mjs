@@ -106,10 +106,14 @@ function installFoundryEnvironment() {
     h: 100,
     x: 0,
     y: 0,
+    mesh: { x: 0, y: 0 },
     refreshCount: 0,
     refresh() {
       if ( this.destroyed ) throw new Error("refresh on destroyed preview");
       this.refreshCount += 1;
+      // Foundry v14 places the centered Tile mesh at the document's top-left.
+      this.mesh.x = this.document.x;
+      this.mesh.y = this.document.y;
     },
     document: {
       _id: "preview-id",
@@ -124,6 +128,16 @@ function installFoundryEnvironment() {
       }
     }
   };
+  Object.defineProperty(preview, "renderedBounds", {
+    get() {
+      return {
+        x: this.x + this.mesh.x - (this.w / 2),
+        y: this.y + this.mesh.y - (this.h / 2),
+        width: this.w,
+        height: this.h
+      };
+    }
+  });
 
   class StubTilesLayer {
     static documentName = "Tile";
@@ -198,6 +212,31 @@ function installFoundryEnvironment() {
 /** Left mouse button pointerdown event. */
 const leftClick = () => ({ button: 0, preventDefault() {}, stopPropagation() {} });
 
+test("SCR-57 a committed create remains pending through abandonment and records its result once", async () => {
+  const env = installFoundryEnvironment();
+  let release;
+  try {
+    const originalScene = canvas.scene;
+    originalScene.createEmbeddedDocuments = async (documentName, data) => {
+      env.createCalls.push({ documentName, data });
+      await new Promise(resolve => { release = resolve; });
+      return [env.createdDoc];
+    };
+    const pending = placeWithLayerPreview({ layerName: "tiles", createData: {} });
+    await flush();
+    env.stage.emit("pointerdown", leftClick());
+    env.hooks.callAll("activateCanvasLayer", env.otherLayer);
+    env.hooks.callAll("canvasTearDown");
+    canvas.scene = { createEmbeddedDocuments() { throw new Error("wrong scene"); } };
+    env.stage.emit("pointerdown", leftClick());
+    await assertStillPending(pending);
+    release();
+    assert.equal(await pending, env.createdDoc);
+    assert.equal(env.createCalls.length, 1);
+    env.assertFullyUnregistered();
+  } finally { release?.(); env.restore(); }
+});
+
 test("previewPixelSize prefers placeable w/h over grid-unit document width", () => {
   assert.deepEqual(
     previewPixelSize({ w: 100, h: 200, document: { width: 1, height: 1 } }, { width: 1, height: 1 }),
@@ -267,6 +306,26 @@ test("placeWithLayerPreview commits on left click and unregisters everything (SC
     assert.equal(env.createCalls[0].data[0].y, 50);
     assert.equal("_id" in env.createCalls[0].data[0], false);
     env.assertFullyUnregistered();
+  } finally {
+    env.restore();
+  }
+});
+
+test("tile preview's rendered bounds are centered on the cursor before commit", async () => {
+  const env = installFoundryEnvironment();
+  try {
+    const pending = placeWithLayerPreview({
+      layerName: "tiles",
+      createData: { width: 100, height: 100, texture: { src: "p.webp" } }
+    });
+    await flush();
+
+    assert.deepEqual(env.preview.renderedBounds, { x: 50, y: 50, width: 100, height: 100 });
+
+    env.stage.emit("pointerdown", leftClick());
+    await pending;
+    assert.equal(env.createCalls[0].data[0].x, 50);
+    assert.equal(env.createCalls[0].data[0].y, 50);
   } finally {
     env.restore();
   }
@@ -376,3 +435,129 @@ test("placeWithLayerPreview commits against the scene captured at start (SCR-50)
     env.restore();
   }
 });
+
+test("commit ignores duplicate clicks and queued Escape, then settles creation failure", async () => {
+  const env = installFoundryEnvironment();
+  let rejectCreate;
+  try {
+    canvas.scene.createEmbeddedDocuments = () => {
+      env.createCalls.push({});
+      return new Promise((_resolve, reject) => { rejectCreate = reject; });
+    };
+    const pending = placeWithLayerPreview({ layerName: "tiles", createData: {} });
+    await flush();
+    const queuedEscape = env.win.listeners[0].fn;
+    const queuedClick = env.stage.handlers.get("pointerdown")[0];
+    env.stage.emit("pointerdown", leftClick());
+    queuedClick(leftClick());
+    queuedEscape({ key: "Escape", preventDefault() {}, stopImmediatePropagation() {} });
+    await assertStillPending(pending);
+    assert.equal(env.createCalls.length, 1);
+    env.assertFullyUnregistered();
+    rejectCreate(new Error("expected server rejection"));
+    assert.equal(await pending, null);
+    env.assertFullyUnregistered();
+  } finally { env.restore(); }
+});
+
+test("creation completion before abandonment retains the committed result", async () => {
+  const env = installFoundryEnvironment();
+  try {
+    const pending = placeWithLayerPreview({ layerName: "tiles", createData: {} });
+    await flush();
+    env.stage.emit("pointerdown", leftClick());
+    assert.equal(await pending, env.createdDoc);
+    env.hooks.callAll("canvasTearDown");
+    env.hooks.callAll("activateCanvasLayer", env.otherLayer);
+    assert.equal(await pending, env.createdDoc);
+    assert.equal(env.createCalls.length, 1);
+    env.assertFullyUnregistered();
+  } finally { env.restore(); }
+});
+
+/** Exercise public placement callers with their real Journal persistence. */
+async function installPlacementCallerEnvironment() {
+  const env = installFoundryEnvironment();
+  const saved = Object.fromEntries(["game", "CONFIG", "sessionStorage"].map(key => [key, globalThis[key]]));
+  foundry.applications = { api: { ApplicationV2: class {}, DialogV2: class {}, HandlebarsApplicationMixin: Base => class extends Base {} } };
+  let stored = { id: "placement-p", gmUserId: "gm", canvasWidth: 100, canvasHeight: 100,
+    assignments: { "placement-a": { id: "placement-a", promptId: "placement-p", userId: "player", status: "submitted",
+      submittedAt: 10, savedSubmissionTs: 10, assets: { overlayPath: "ink.webp", mergedPath: "drawing.webp", tileWidth: 100, tileHeight: 100 } } } };
+  const entry = { id: "placement-p", getFlag: () => stored,
+    setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; } };
+  const actor = { id: "created-actor", deleted: false,
+    delete: async () => { actor.deleted = true; },
+    getTokenDocument: async overrides => ({ toObject: () => ({ ...overrides }) }) };
+  globalThis.game = { user: { id: "gm", isGM: true }, system: { id: "dnd5e" }, documentTypes: { Actor: ["npc"] },
+    journal: { get: id => id === entry.id ? entry : null, [Symbol.iterator]: function* () { yield entry; } },
+    actors: [{ uuid: "Actor.source", clone: async () => actor }],
+    i18n: { localize: key => key } };
+  globalThis.CONFIG = { Tile: { documentClass: { schema: { fields: { name: {} } } } },
+    Actor: { documentClass: { create: async () => actor } } };
+  globalThis.sessionStorage = { getItem: () => null };
+  Object.assign(canvas.scene, { id: "original-scene", width: 1000, height: 1000, grid: { size: 100 } });
+  canvas.tokens = new (class extends env.layer.constructor { static documentName = "Token"; })();
+  const service = await import("../scripts/prompts/assignment-placement.mjs");
+  return { ...env, actor, service, stored: () => stored, restore() {
+    env.restore();
+    for ( const [key, value] of Object.entries(saved) ) {
+      if ( value === undefined ) delete globalThis[key]; else globalThis[key] = value;
+    }
+  } };
+}
+
+for ( const mode of ["tile", "newActor", "copyActor"] ) {
+  test(`${mode} caller records delayed committed creation on original scene and retains its Actor`, async () => {
+    const env = await installPlacementCallerEnvironment();
+    let release;
+    try {
+      canvas.scene.createEmbeddedDocuments = async (documentName, data) => {
+        env.createCalls.push({ documentName, data });
+        await new Promise(resolve => { release = resolve; });
+        return [env.createdDoc];
+      };
+      const pending = mode === "tile"
+        ? env.service.placeAssignmentAsTile("placement-a", { interactive: true })
+        : env.service.placeAssignmentAsToken("placement-a", { mode, name: "Drawing", actorUuid: "Actor.source", interactive: true });
+      await flush();
+      env.stage.emit("pointerdown", leftClick());
+      env.hooks.callAll("canvasTearDown");
+      canvas.scene = { id: "new-scene", createEmbeddedDocuments() { throw new Error("wrong scene"); } };
+      await assertStillPending(pending);
+      assert.equal(env.actor.deleted, false);
+      release();
+      assert.equal(await pending, env.createdDoc);
+      assert.equal(env.actor.deleted, false);
+      const records = env.stored().assignments["placement-a"].placements;
+      assert.equal(records.length, 1);
+      assert.equal(records[0].sceneId, "original-scene");
+      assert.equal(records[0].kind, mode === "tile" ? "tile" : "token");
+      assert.equal(env.createCalls[0].documentName, mode === "tile" ? "Tile" : "Token");
+      if ( mode !== "tile" ) assert.equal(records[0].actorId, env.actor.id);
+      env.assertFullyUnregistered();
+    } finally { release?.(); env.restore(); }
+  });
+}
+
+for ( const outcome of ["cancel", "failure", "scene-change-during-prepare"] ) {
+  test(`Token ${outcome} cleans its temporary Actor without recording a placement`, async () => {
+    const env = await installPlacementCallerEnvironment();
+    try {
+      if ( outcome === "scene-change-during-prepare" ) {
+        env.actor.getTokenDocument = async overrides => {
+          canvas.scene = { id: "other-scene" };
+          return { toObject: () => ({ ...overrides }) };
+        };
+      }
+      if ( outcome === "failure" ) canvas.scene.createEmbeddedDocuments = async () => { throw new Error("expected create failure"); };
+      const pending = env.service.placeAssignmentAsToken("placement-a", { mode: "newActor", name: "Drawing", interactive: true });
+      await flush();
+      if ( outcome === "cancel" ) env.win.listeners[0].fn({ key: "Escape", preventDefault() {}, stopImmediatePropagation() {} });
+      if ( outcome === "failure" ) env.stage.emit("pointerdown", leftClick());
+      assert.equal(await pending, null);
+      assert.equal(env.actor.deleted, true);
+      assert.equal(env.stored().assignments["placement-a"].placements?.length ?? 0, 0);
+      env.assertFullyUnregistered();
+    } finally { env.restore(); }
+  });
+}

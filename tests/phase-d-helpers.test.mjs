@@ -215,18 +215,18 @@ test("uniqueDrawingAssetFilenames bounds long components while preserving collis
   assert.ok(!occupied.includes(second.opLog));
 });
 
-test("defaultAssignmentAssetName prefers drawing name and truncates prompt text fallback", () => {
+test("defaultAssignmentAssetName prefers Prompt name and truncates prompt text fallback", () => {
   assert.equal(defaultAssignmentAssetName({
-    drawingName: "Mystery Sigil",
+    promptName: "Mystery Sigil",
     promptText: "Draw the symbol on the old door",
     userName: "Ada"
   }), "Mystery Sigil");
 
   assert.equal(defaultAssignmentAssetName({
-    drawingName: "",
+    promptName: "",
     promptText: "A very long prompt text that should be shortened before it becomes part of the drawing name",
     userName: "Bert"
   }), "A very long prompt text that should be shortened before it...");
 
-  assert.equal(defaultAssignmentAssetName({ drawingName: "", promptText: "", userName: "Ada" }), "Drawing");
+  assert.equal(defaultAssignmentAssetName({ promptName: "", promptText: "", userName: "Ada" }), "Drawing");
 });

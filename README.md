@@ -31,7 +31,7 @@ Install `socketlib` separately before enabling Drawing Prompts. On The Forge, us
 2. In setup mode, select one or more non-GM users.
 3. Enter prompt text, an optional drawing name, canvas size, timer, and optional locked background.
 4. Send the prompt. Each selected player receives an independent drawing assignment, and the manager switches to review mode.
-5. In review mode, use the summary bar to confirm the prompt, drawing name, dimensions, timer, and background. Timed prompts show both the configured duration and a live GM-side countdown or overtime readout.
+5. In review mode, use the summary bar to confirm the prompt and drawing name. Timed prompts show a live countdown or overtime readout in the timer block alongside its controls. Canvas dimensions and background thumbnails stay out of the live summary; dimensions are also absent from preview corners.
 6. Click player rows to switch the preview. Live preview updates arrive as throttled bitmap snapshots.
 7. Use row actions to resend, cancel, reopen, or force-show a player's drawing window.
 8. After submission, choose Save, Place, or Place Hidden. Placement actions save first and require a non-empty name. Finish the prompt to return to setup mode with the previous draft retained.
@@ -101,13 +101,7 @@ Player-side reloads lose unsaved strokes because V1 has no local crash/reload re
 
 There is no build step. The module uses plain ESM `.mjs` files loaded directly by Foundry.
 
-For local development from this repository, create a junction into your Foundry data `Data/modules` folder:
-
-```powershell
-.\tools\link-module.ps1 -FoundryDataPath "C:\Code\FoundryVTT\FoundryVTT-WindowsPortable-14.364"
-```
-
-Then start Foundry, open your world, enable `socketlib`, and enable `Drawing Prompts`.
+Develop this repository under `modules/drawing-prompts/` in [FoundryHub](https://github.com/Mullans/FoundryHub). Follow the hub [verification lifecycle](https://github.com/Mullans/FoundryHub/blob/dev/standards/verification.md) for junction setup, server startup and readiness, browser installation, and shutdown. Enable `socketlib` and `Drawing Prompts` in the test world.
 
 Run tests with:
 
@@ -115,15 +109,15 @@ Run tests with:
 node --test tests/
 ```
 
-Optional E2E smoke coverage is available when a local Foundry server is already running on port 30000:
+Foundry-facing and UI changes also run the E2E smoke suite against the running test server:
 
 ```powershell
-node .\FoundryVTT-WindowsPortable-14.364\App\resources\app\main.js --dataPath="C:\Code\FoundryVTT\FoundryVTT-WindowsPortable-14.364" --port=30000 --world=test-world
-npm i playwright
 node tools\e2e-smoke.mjs
 ```
 
 The smoke script expects users named `Gamemaster` and `Player2`, joins through `/join`, drives the real GM/player UI, and exits non-zero on any failed step.
+
+See the [documentation map](docs/LAYOUT.md) for module product decisions, human walkthroughs, and shared development guidance.
 
 Useful layout:
 

@@ -103,16 +103,18 @@ export function restoreApplicationAfterCanvasYield(app, state = {}) {
 
 /**
  * Place a Tile or Token via Foundry's layer preview under the cursor.
- * Left-click commits; Escape cancels and resolves null (caller restores UI).
+ * Left-click commits; Escape cancels only before that click (caller restores UI).
+ * Once creation starts, its actual result wins over later canvas abandonment.
  * The returned promise must always settle: the caller restores its hidden window in a
  * `finally` gated on it, and stale listeners would otherwise commit a placement the GM
  * never asked for. Scene teardown and switching to another canvas layer both abort.
  * @param {object} options Options.
  * @param {"tiles"|"tokens"} options.layerName Canvas layer key.
  * @param {object} options.createData Embedded document create data.
+ * @param {object} [options.scene] Intended scene captured by the caller before asynchronous preparation.
  * @returns {Promise<object|null>} Created document, or null if canceled or aborted.
  */
-export async function placeWithLayerPreview({ layerName, createData } = {}) {
+export async function placeWithLayerPreview({ layerName, createData, scene = globalThis.canvas?.scene } = {}) {
   const layer = canvas?.[layerName];
   if ( !layer || typeof layer._createPreview !== "function" ) {
     throw new Error("Canvas placement preview is unavailable.");
@@ -122,21 +124,29 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
   // placement against a different scene than the document landed on. The teardown hook below
   // makes that unreachable today; capturing keeps it correct by construction rather than by
   // an invariant maintained somewhere else.
-  const scene = canvas?.scene;
+  if ( !scene || canvas?.scene !== scene ) return null;
+  const stage = canvas.stage;
   // InteractionLayer#activate calls Hooks.callAll("activateCanvasLayer", this) synchronously,
   // so the abort hook below is registered *after* this line -- registering first would make the
   // placement abort itself the moment it started. The handler also ignores our own layer.
   layer.activate();
   const preview = await layer._createPreview(foundry.utils.deepClone(createData), { renderSheet: false });
   if ( !preview?.document ) return null;
+  if ( canvas?.scene !== scene || canvas.stage !== stage ) {
+    layer.clearPreviewContainer?.();
+    return null;
+  }
 
   return new Promise(resolve => {
     let settled = false;
-    const finish = result => {
-      if ( settled ) return;
-      settled = true;
-      canvas.stage?.off("pointermove", onMove);
-      canvas.stage?.off("pointerdown", onPointerDown);
+    let committing = false;
+    let cleaned = false;
+    let committedPosition = null;
+    const cleanup = () => {
+      if ( cleaned ) return;
+      cleaned = true;
+      stage?.off("pointermove", onMove);
+      stage?.off("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("keydown", onKeyDown, true);
       Hooks.off("canvasTearDown", onCanvasTearDown);
@@ -146,22 +156,32 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
       } catch ( _err ) {
         // Best effort cleanup.
       }
+    };
+    const finish = result => {
+      if ( settled ) return;
+      settled = true;
+      cleanup();
       resolve(result);
     };
+    const abort = () => { if ( !committing ) finish(null); };
 
     const syncPreviewToCursor = () => {
       // PlaceablesLayer#_deactivate destroys the preview out from under us; refreshing a
       // destroyed PIXI object throws, and leaving the promise pending strands the caller.
-      if ( preview?.destroyed ) return finish(null);
+      if ( settled || committing ) return;
+      if ( preview?.destroyed ) return abort();
       const pos = canvas.mousePosition;
       if ( !pos ) return;
       const size = previewPixelSize(preview, createData);
       const { x, y } = topLeftCenteredOn(pos, size);
-      preview.document.updateSource?.({ x, y });
-      preview.document.x = x;
-      preview.document.y = y;
-      if ( "x" in preview ) preview.x = x;
-      if ( "y" in preview ) preview.y = y;
+      committedPosition = { x, y };
+      // A v14 Tile mesh is centered on its document position. Display it at the cursor,
+      // but retain the cursor-centered top-left for creation. Tokens use top-left document
+      // coordinates for both their preview and created document.
+      const displayPosition = layerName === "tiles" ? { x: pos.x, y: pos.y } : { x, y };
+      preview.document.updateSource?.(displayPosition);
+      preview.document.x = displayPosition.x;
+      preview.document.y = displayPosition.y;
       preview.refresh?.();
     };
 
@@ -170,10 +190,11 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
       if ( event.key !== "Escape" && event.code !== "Escape" ) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      finish(null);
+      abort();
     };
     const onPointerDown = event => {
       if ( event.button !== 0 ) return;
+      if ( settled || committing ) return;
       // Never commit against a preview the canvas already tore down.
       if ( preview?.destroyed ) return finish(null);
       event.preventDefault?.();
@@ -186,6 +207,11 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
           const documentName = layer.constructor.documentName;
           const data = preview.document.toObject();
           delete data._id;
+          if ( layerName === "tiles" && committedPosition ) Object.assign(data, committedPosition);
+          // A deliberate click is the commit boundary. Canceling a promise cannot cancel
+          // the server request, so callers must receive its result and record the placement.
+          committing = true;
+          cleanup();
           const [created] = await scene.createEmbeddedDocuments(documentName, [data]);
           finish(created ?? null);
         } catch ( err ) {
@@ -197,16 +223,16 @@ export async function placeWithLayerPreview({ layerName, createData } = {}) {
 
     // Scene change / navigating away: the preview and its layer go with the canvas, and the
     // captured scene is no longer the one a click would create against.
-    const onCanvasTearDown = () => finish(null);
+    const onCanvasTearDown = () => abort();
     // GM picked another scene control: PlaceablesLayer#_deactivate has cleared the preview
     // container. Ignore the hook for our own layer (re-activation is not an abort).
     const onActivateCanvasLayer = activated => {
       if ( activated === layer ) return;
-      finish(null);
+      abort();
     };
 
-    canvas.stage.on("pointermove", onMove);
-    canvas.stage.on("pointerdown", onPointerDown);
+    stage.on("pointermove", onMove);
+    stage.on("pointerdown", onPointerDown);
     // Capture on both window and document so Foundry's dismiss handler cannot eat Escape first.
     window.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("keydown", onKeyDown, true);

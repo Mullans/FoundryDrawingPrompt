@@ -205,11 +205,46 @@ export function registerSettings() {
     default: true
   });
 
+  game.settings.register(MODULE_ID, SETTINGS.DEFAULT_LIBRARY_SORT_FIELD, {
+    scope: "client",
+    config: true,
+    name: `${PREFIX}.defaultLibrarySortField.name`,
+    hint: `${PREFIX}.defaultLibrarySortField.hint`,
+    type: String,
+    choices: {
+      status: "DRAWING-PROMPTS.choices.librarySortField.status",
+      name: "DRAWING-PROMPTS.choices.librarySortField.name",
+      createdAt: "DRAWING-PROMPTS.choices.librarySortField.createdAt",
+      closedAt: "DRAWING-PROMPTS.choices.librarySortField.closedAt"
+    },
+    default: "createdAt"
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.DEFAULT_LIBRARY_SORT_DIRECTION, {
+    scope: "client",
+    config: true,
+    name: `${PREFIX}.defaultLibrarySortDirection.name`,
+    hint: `${PREFIX}.defaultLibrarySortDirection.hint`,
+    type: String,
+    choices: {
+      asc: "DRAWING-PROMPTS.choices.librarySortDirection.ascending",
+      desc: "DRAWING-PROMPTS.choices.librarySortDirection.descending"
+    },
+    default: "desc"
+  });
+
   game.settings.register(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED, {
     scope: "world",
     config: false,
     type: Boolean,
     default: false
+  });
+
+  game.settings.register(MODULE_ID, INTERNAL.RECOVERY_TOMBSTONES, {
+    scope: "world",
+    config: false,
+    type: Object,
+    default: []
   });
 }
 
@@ -220,7 +255,11 @@ export function registerSettings() {
 export async function migrateLegacySettings() {
   if ( !game.user.isGM ) return;
   if ( game.settings.get(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED) ) return;
-  if ( game.settings.get(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE) === FIT_MODE.FIT_WIDTH ) {
+  // get() resolves both stored choices and defaults; only storage can distinguish them.
+  const worldStorage = game.settings.storage?.get("world");
+  if ( typeof worldStorage?.getItem !== "function" ) return;
+  const hasExplicitFit = worldStorage.getItem(`${MODULE_ID}.${SETTINGS.DEFAULT_FIT_MODE}`) != null;
+  if ( !hasExplicitFit && game.settings.get(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE) === FIT_MODE.FIT_WIDTH ) {
     await game.settings.set(MODULE_ID, SETTINGS.DEFAULT_FIT_MODE, FIT_MODE.FIT_CANVAS);
   }
   await game.settings.set(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED, true);

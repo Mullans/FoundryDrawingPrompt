@@ -1,0 +1,528 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+
+let sequence = 0;
+const english = JSON.parse(readFileSync(new URL("../lang/en.json", import.meta.url), "utf8"));
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+  return { promise, resolve, reject };
+}
+
+function journalCollection(entries) {
+  return {
+    get: id => entries.get(id),
+    delete: id => entries.delete(id),
+    [Symbol.iterator]: function* () { yield* entries.values(); }
+  };
+}
+
+class TestDialogV2 {
+  static calls = [];
+  static dialogs = [];
+  static results = [];
+  static started = null;
+  static async wait(options) {
+    this.calls.push(options);
+    const dialog = { closeCalls: 0, async close() { this.closeCalls++; } };
+    this.dialogs.push(dialog);
+    options.render?.({}, dialog);
+    this.started?.resolve();
+    return this.results.length ? await this.results.shift() : "dismissed-test-dialog";
+  }
+}
+globalThis.foundry = { applications: { api: {
+  ApplicationV2: class {
+    constructor() { this.renderCalls = 0; }
+    async render() { this.renderCalls++; return this; }
+    bringToFront() {}
+    _onClose() {}
+  },
+  DialogV2: TestDialogV2,
+  HandlebarsApplicationMixin: Base => Base
+} }, utils: { randomID: () => `id${++sequence}` } };
+globalThis.CONST = { DOCUMENT_OWNERSHIP_LEVELS: { NONE: 0 } };
+globalThis.Hooks = { callAll() {} };
+globalThis.ui = { notifications: { warn() {}, info() {}, error() {} } };
+globalThis.game = {
+  user: { id: "gm", isGM: true },
+  users: new Map([["u1", { id: "u1", name: "Ada", active: true, can: () => false }]]),
+  journal: [],
+  folders: [{ id: "folder", name: english["DRAWING-PROMPTS.journal.folderName"], type: "JournalEntry" }],
+  settings: { get: () => undefined },
+  i18n: {
+    localize: key => english[key] ?? key,
+    format: (key, data = {}) => Object.entries(data).reduce(
+      (value, [name, replacement]) => value.replaceAll(`{${name}}`, String(replacement)), english[key] ?? key)
+  }
+};
+const { DrawingPromptManager } = await import("../scripts/apps/drawing-prompt-manager.mjs");
+
+for (const concurrentAction of ["savePrompt", "sendPrompt"]) {
+  test(`Draft Save prevents duplicate creation during concurrent ${concurrentAction}`, async () => {
+    const manager = new DrawingPromptManager();
+    Object.assign(manager.draft, { promptName: "One Draft", selectedUserIds: new Set(["u1"]) });
+    const contexts = [];
+    manager.render = async () => { contexts.push(await manager._prepareContext({})); return manager; };
+    const started = deferred();
+    const release = deferred();
+    const entries = new Map();
+    game.journal = journalCollection(entries);
+    let creates = 0;
+    globalThis.JournalEntry = { create: async () => {
+      creates++;
+      started.resolve();
+      await release.promise;
+      let stored;
+      const entry = { id: `saved${++sequence}`, getFlag: () => stored,
+        setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; } };
+      entries.set(entry.id, entry);
+      return entry;
+    } };
+    const { emit } = await import("../scripts/socket.mjs");
+    const { acknowledgePromptDelivery } = await import("../scripts/prompts/prompt-delivery.mjs");
+    emit.openDrawingPrompt = (userId, payload) => acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+    const first = DrawingPromptManager.DEFAULT_OPTIONS.actions.savePrompt.call(manager);
+    await Promise.race([started.promise, first.then(() => assert.fail("Save completed before reaching storage"))]);
+    const pendingContext = await manager._prepareContext({});
+    const second = DrawingPromptManager.DEFAULT_OPTIONS.actions[concurrentAction].call(manager);
+    await new Promise(resolve => setImmediate(resolve));
+    release.resolve();
+    await Promise.all([first, second]);
+    assert.equal(creates, 1, "Save and competing clicks must share one persisted identity");
+    assert.equal(entries.size, 1);
+    assert.equal(pendingContext.canSavePrompt, false);
+    assert.equal(pendingContext.canSend, false);
+    assert.equal(pendingContext.setupLocked, true);
+    assert.ok(contexts.some(context => !context.canSavePrompt && context.setupLocked));
+    assert.equal((await manager._prepareContext({})).canSavePrompt, true);
+  });
+}
+
+test("failed Draft Save releases setup controls and permits a new save", async () => {
+  const manager = new DrawingPromptManager();
+  manager.draft.promptName = "Retry Draft";
+  const contexts = [];
+  manager.render = async () => { contexts.push(await manager._prepareContext({})); return manager; };
+  let creates = 0;
+  globalThis.JournalEntry = { create: async () => { creates++; throw new Error("save unavailable"); } };
+  await DrawingPromptManager.DEFAULT_OPTIONS.actions.savePrompt.call(manager);
+  assert.equal(manager.activePrompt, null);
+  assert.equal(manager.draft.promptName, "Retry Draft");
+  assert.ok(contexts.some(context => context.setupLocked));
+  assert.equal(contexts.at(-1).canSavePrompt, true);
+  assert.equal(contexts.at(-1).canSend, true);
+  await DrawingPromptManager.DEFAULT_OPTIONS.actions.savePrompt.call(manager);
+  assert.equal(creates, 2);
+});
+
+test("Closed Prompt manager displays retained Saved preview without session snapshots", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({
+    id: "closed-preview", gmUserId: "gm", promptName: "Retained", lifecycleStatus: "closed",
+    assignments: { a1: { id: "a1", userId: "u1", status: "cancelled", retainedCapture: {
+      kind: "saved-preview", overlayPath: "retained.webp", receiptTs: 42, width: 512, height: 512
+    } } }
+  });
+  manager.selectedAssignmentId = "a1";
+  const context = await manager._prepareContext({});
+  assert.equal(context.selectedSnapshot, "retained.webp?ts=42");
+  assert.equal(context.selectedPreviewHeading, "Saved preview");
+});
+
+test("withdrawn invitations cannot enable Resend All while cancelled recipients can", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({ id: "resend-membership", gmUserId: "gm", assignments: {
+    withdrawn: { id: "withdrawn", userId: "u1", status: "cancelled", delivery: { status: "withdrawn" } }
+  } });
+  const withdrawn = await manager._prepareContext({});
+  assert.equal(withdrawn.canResendAll, false);
+  assert.equal(withdrawn.rows[0].canResend, false);
+  manager.activePrompt.getAssignment("withdrawn").delivery.status = "received";
+  const cancelled = await manager._prepareContext({});
+  assert.equal(cancelled.canResendAll, true);
+  assert.equal(cancelled.rows[0].canResend, true);
+});
+
+test("Send paints busy feedback before storage, prevents duplicate creation, and recovers from failure", async () => {
+  const manager = new DrawingPromptManager();
+  Object.assign(manager.draft, { promptText: "Draw a bird", promptName: "Bird", canvasWidth: 512, canvasHeight: 512,
+    timerSeconds: 0, selectedUserIds: new Set(["u1"]) });
+  const contexts = [];
+  manager.render = async () => { contexts.push(await manager._prepareContext({})); return manager; };
+  const createStarted = deferred();
+  const storageFailure = deferred();
+  let creates = 0;
+  globalThis.JournalEntry = { create: () => { creates++;
+    createStarted.resolve();
+    return storageFailure.promise;
+  } };
+  const action = DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt;
+  const sending = action.call(manager).catch(() => {});
+  await createStarted.promise;
+  const paintedBeforeStorage = contexts.some(context => context.isSending && !context.canSend);
+  const duplicate = action.call(manager).catch(() => {});
+  const conflictingSave = DrawingPromptManager.DEFAULT_OPTIONS.actions.savePrompt.call(manager);
+  const createCount = creates;
+  storageFailure.reject(new Error("storage unavailable"));
+  await Promise.all([sending, duplicate, conflictingSave]);
+  assert.ok(paintedBeforeStorage, "Sending must be rendered before JournalEntry.create can stall");
+  assert.equal(contexts.find(context => context.isSending)?.sendLabel, "Sending...");
+  assert.equal(createCount, 1, "a second click must not create another prompt");
+  assert.equal(manager.draft.promptText, "Draw a bird");
+  assert.equal(manager.activePrompt, null);
+  assert.equal(contexts.at(-1).canSend, true, "storage failure must release Send");
+});
+
+test("prompt name appears before optional prompt text and a name-only prompt sends", async () => {
+  const template = readFileSync(new URL("../templates/drawing-prompt-manager.hbs", import.meta.url), "utf8");
+  assert.ok(template.indexOf('name="promptName"') < template.indexOf('name="promptText"'));
+
+  const entries = new Map();
+  game.journal = { get: id => entries.get(id), [Symbol.iterator]: function* () { yield* entries.values(); } };
+  globalThis.JournalEntry = { create: async () => {
+    let stored;
+    const entry = { id: `prompt${++sequence}`, getFlag: () => stored,
+      setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; } };
+    entries.set(entry.id, entry);
+    return entry;
+  } };
+  const { emit } = await import("../scripts/socket.mjs");
+  const { acknowledgePromptDelivery } = await import("../scripts/prompts/prompt-delivery.mjs");
+  emit.openDrawingPrompt = (userId, payload) => acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+  const manager = new DrawingPromptManager();
+  Object.assign(manager.draft, { promptName: "crab", promptText: "", canvasWidth: 512, canvasHeight: 512,
+    timerSeconds: 0, selectedUserIds: new Set(["u1"]) });
+  manager.render = async () => manager;
+
+  await DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(manager);
+
+  assert.equal(entries.size, 1);
+  assert.equal(manager.activePrompt.promptName, "crab");
+  assert.equal(manager.activePrompt.promptText, "");
+  assert.equal(manager.activePrompt.deliverySummary.received.length, 1);
+});
+
+test("zero receipts use a separate modal with disabled Continue and Back to setup preserves configuration", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = [null, "back"];
+  const entries = new Map();
+  game.journal = { get: id => entries.get(id), [Symbol.iterator]: function* () { yield* entries.values(); } };
+  globalThis.JournalEntry = { create: async () => {
+    let stored;
+    const entry = { id: `prompt${++sequence}`, getFlag: () => stored,
+      setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; },
+      delete: async () => entries.delete(entry.id) };
+    entries.set(entry.id, entry);
+    return entry;
+  } };
+  const { emit } = await import("../scripts/socket.mjs");
+  emit.openDrawingPrompt = async () => { throw new Error("unreachable"); };
+  emit.cancelDrawingPrompt = async () => {};
+  const manager = new DrawingPromptManager();
+  Object.assign(manager.draft, { promptText: "Keep this prompt", promptName: "Birds", canvasWidth: 640,
+    canvasHeight: 480, timerSeconds: 120, selectedUserIds: new Set(["u1"]) });
+  manager.render = async () => manager;
+  await DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(manager);
+  const setup = await manager._prepareContext({});
+  assert.equal(TestDialogV2.calls.length, 2, "dismissing the modal must present the real choices again");
+  const dialog = TestDialogV2.calls[0];
+  assert.equal(dialog.modal, true);
+  assert.match(dialog.content, /No response from:.*Ada/s);
+  assert.match(dialog.content, /Not enough players to start the drawing\./);
+  assert.deepEqual(dialog.buttons.map(button => [button.action, button.label, Boolean(button.disabled)]), [
+    ["retry", "Retry", false],
+    ["continue", "Continue", true],
+    ["back", "Back to setup", false]
+  ]);
+  assert.equal(setup.canSend, true);
+  assert.equal(setup.deliveryFeedback, null);
+  assert.equal(entries.size, 1, "Back retains the auto-saved Draft in the library");
+  assert.equal(manager.activePrompt?.id, [...entries.keys()][0], "Back keeps editing the retained Draft identity");
+  assert.equal(manager.activePrompt?.lifecycleStatus, "draft");
+  assert.equal(manager.draft.promptText, "Keep this prompt");
+  assert.equal(manager.draft.promptName, "Birds");
+  assert.equal(manager.draft.canvasWidth, 640);
+  assert.equal(manager.draft.canvasHeight, 480);
+  assert.equal(manager.draft.timerSeconds, 120);
+  assert.deepEqual([...manager.draft.selectedUserIds], ["u1"]);
+});
+
+test("Archived Prompt inspection disables assignment mutations", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({
+    id: "archived",
+    gmUserId: "gm",
+    lifecycleStatus: "archived",
+    timerStatus: "paused",
+    assignments: {
+      submitted: { id: "submitted", userId: "u1", userName: "Ada", status: "submitted", delivery: { status: "received" }, assets: { overlayPath: "drawing.webp" } },
+      cancelled: { id: "cancelled", userId: "u2", userName: "Ben", status: "cancelled", delivery: { status: "received" } }
+    }
+  });
+  manager.selectedAssignmentId = "submitted";
+  const context = await manager._prepareContext({});
+  assert.equal(context.archivedReadOnly, true);
+  assert.equal(context.selectedCanSave, false);
+  assert.equal(context.selectedCanPlace, false);
+  assert.equal(context.canCancelAll, false);
+  assert.equal(context.canResendAll, false);
+  assert.equal(context.timerControls.disabled, true);
+  assert.equal(context.rows[0].canReopen, false);
+  assert.equal(context.rows[0].canCancel, false);
+  assert.equal(context.rows[0].canResend, false);
+});
+
+test("Resend controls are available only for Open Prompts", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  for ( const status of ["draft", "open", "closed", "archived"] ) {
+    const manager = new DrawingPromptManager();
+    manager.activePrompt = new DrawingPrompt({
+      id: `resend-${status}`,
+      gmUserId: "gm",
+      lifecycleStatus: status,
+      assignments: {
+        cancelled: { id: `cancelled-${status}`, userId: "u1", status: "cancelled", delivery: { status: "received" } }
+      }
+    });
+    const context = await manager._prepareContext({});
+    assert.equal(context.canResendAll, status === "open", `${status} Resend All`);
+    assert.equal(context.rows[0].canResend, status === "open", `${status} row Resend`);
+  }
+});
+
+test("saved Draft framing actions remain editable, while sent Prompt framing is locked", async () => {
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  const background = {
+    path: "background.webp", naturalWidth: 400, naturalHeight: 200,
+    fitMode: "fit-canvas", framing: { x: 0, y: 0, width: 400, height: 200 }
+  };
+  manager.activePrompt = new DrawingPrompt({ id: "saved-framing", gmUserId: "gm", lifecycleStatus: "draft" });
+  Object.assign(manager.draft, { canvasWidth: 400, canvasHeight: 200, background: structuredClone(background) });
+  const plate = {
+    width: 400, height: 200, clientWidth: 400, clientHeight: 200,
+    toggleAttribute() {},
+    getBoundingClientRect: () => ({ left: 0, top: 0 })
+  };
+  manager.element = {
+    querySelector: selector => selector === "[data-dp-framing-plate]" ? plate : null,
+    querySelectorAll: () => []
+  };
+
+  DrawingPromptManager.DEFAULT_OPTIONS.actions.framingZoomIn.call(manager);
+  assert.equal(manager.draft.background.fitMode, "placed");
+  assert.ok(manager.draft.background.framing.width < 400);
+  DrawingPromptManager.DEFAULT_OPTIONS.actions.framingReset.call(manager);
+  assert.deepEqual(manager.draft.background.framing, background.framing);
+
+  manager.activePrompt.lifecycleStatus = "open";
+  DrawingPromptManager.DEFAULT_OPTIONS.actions.framingZoomIn.call(manager);
+  assert.deepEqual(manager.draft.background.framing, background.framing);
+});
+
+test("partial delivery modal uses the requested Continue explanation", async () => {
+  TestDialogV2.results = ["dismissed-test-dialog"];
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({ id: "partial", gmUserId: "gm", assignments: {
+    received: { id: "received", userId: "u1", userName: "Ada", status: "pending", delivery: { status: "received" } },
+    failed: { id: "failed", userId: "u2", userName: "Ben", status: "pending", delivery: { status: "failed" } }
+  } });
+  await manager.showDeliveryWarning();
+  const dialog = TestDialogV2.calls.at(-1);
+  assert.match(dialog.content, /No response from:.*Ben/s);
+  assert.match(dialog.content, /Continue to start the drawing without these players\./);
+  assert.equal(dialog.buttons.find(button => button.action === "continue").disabled, false);
+});
+
+test("closing the manager closes its in-flight delivery warning dialog", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.dialogs.length = 0;
+  const warningChoice = deferred();
+  TestDialogV2.results = [warningChoice.promise];
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const manager = new DrawingPromptManager();
+  manager.activePrompt = new DrawingPrompt({ id: "dialog-close", gmUserId: "gm", assignments: {
+    received: { id: "received", userId: "u1", userName: "Ada", status: "pending", delivery: { status: "received" } },
+    failed: { id: "failed", userId: "u2", userName: "Ben", status: "pending", delivery: { status: "failed" } }
+  } });
+
+  const showing = manager.showDeliveryWarning();
+  await Promise.resolve();
+  manager._onClose({});
+  assert.equal(TestDialogV2.dialogs[0].closeCalls, 1);
+  warningChoice.resolve(null);
+  await showing;
+});
+
+test("closing during delivery prevents completion render and warning resurrection", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = [];
+  const createStarted = deferred();
+  const releaseCreate = deferred();
+  const entries = new Map();
+  game.journal = { get: id => entries.get(id), [Symbol.iterator]: function* () { yield* entries.values(); } };
+  globalThis.JournalEntry = { create: async data => {
+    createStarted.resolve();
+    await releaseCreate.promise;
+    let stored = structuredClone(data.flags["drawing-prompts"].prompt);
+    const entry = { id: `prompt${++sequence}`, getFlag: () => stored,
+      setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; } };
+    entries.set(entry.id, entry);
+    return entry;
+  } };
+  const { emit } = await import("../scripts/socket.mjs");
+  emit.openDrawingPrompt = async () => { throw new Error("offline"); };
+  const manager = new DrawingPromptManager();
+  Object.assign(manager.draft, { promptText: "", promptName: "Close race", canvasWidth: 512,
+    canvasHeight: 512, timerSeconds: 0, selectedUserIds: new Set(["u1"]) });
+  let renders = 0;
+  manager.render = async () => { renders++; return manager; };
+
+  const sending = DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(manager);
+  await createStarted.promise;
+  manager._onClose({});
+  const rendersAtClose = renders;
+  releaseCreate.resolve();
+  await sending;
+
+  assert.equal(renders, rendersAtClose, "delivery completion must not render a closed manager");
+  assert.equal(TestDialogV2.calls.length, 0, "delivery completion must not open a warning after close");
+});
+
+test("closing and reopening before create resolves makes the registered manager adopt delivery completion", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = ["dismissed-test-dialog"];
+  const createStarted = deferred();
+  const releaseCreate = deferred();
+  const entries = new Map();
+  game.users = new Map([
+    ["u1", { id: "u1", name: "Ada", active: true, can: () => false }],
+    ["u2", { id: "u2", name: "Ben", active: true, can: () => false }]
+  ]);
+  game.journal = { get: id => entries.get(id), [Symbol.iterator]: function* () { yield* entries.values(); } };
+  globalThis.JournalEntry = { create: async data => {
+    createStarted.resolve();
+    await releaseCreate.promise;
+    let stored = structuredClone(data.flags["drawing-prompts"].prompt);
+    const entry = { id: `prompt${++sequence}`, getFlag: () => stored,
+      setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; } };
+    entries.set(entry.id, entry);
+    return entry;
+  } };
+  const { emit } = await import("../scripts/socket.mjs");
+  const { acknowledgePromptDelivery } = await import("../scripts/prompts/prompt-delivery.mjs");
+  emit.openDrawingPrompt = (userId, payload) => userId === "u1"
+    ? acknowledgePromptDelivery(userId, payload.assignment.id, userId)
+    : Promise.reject(new Error("offline"));
+
+  const managerA = await DrawingPromptManager.open();
+  Object.assign(managerA.draft, { promptText: "", promptName: "Close and reopen", canvasWidth: 512,
+    canvasHeight: 512, timerSeconds: 0, selectedUserIds: new Set(["u1", "u2"]) });
+  const sending = DrawingPromptManager.DEFAULT_OPTIONS.actions.sendPrompt.call(managerA);
+  await createStarted.promise;
+  managerA._onClose({});
+  const managerARendersAtClose = managerA.renderCalls;
+  const managerB = await DrawingPromptManager.open();
+  assert.equal(managerB.activePrompt, null, "the prompt must not be visible before persistence completes");
+
+  releaseCreate.resolve();
+  await sending;
+
+  try {
+    assert.notStrictEqual(managerB, managerA);
+    assert.equal(managerB.activePrompt?.promptName, "Close and reopen");
+    assert.equal(managerB.activePrompt?.deliverySummary.received.length, 1);
+    assert.equal(managerB.activePrompt?.deliverySummary.failed.length, 1);
+    assert.equal(managerA.renderCalls, managerARendersAtClose, "the closed manager must never render again");
+    assert.equal(TestDialogV2.calls.length, 1, "delivery completion must warn from the registered manager once");
+  } finally {
+    managerB._onClose({});
+  }
+});
+
+test("opening a persisted zero-receipt prompt renders before showing Retry and Back", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = ["back"];
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const prompt = new DrawingPrompt({ id: "persisted-zero", gmUserId: "gm", assignments: {
+    failed: { id: "failed", userId: "u1", userName: "Ada", status: "pending", delivery: { status: "failed" } }
+  } });
+  let stored = prompt.toObject();
+  const entry = { id: prompt.id, getFlag: () => stored,
+    setFlag: async (_module, _flag, value) => { stored = structuredClone(value); return entry; },
+    delete: async () => game.journal.delete(prompt.id) };
+  game.users = new Map([["u1", { id: "u1", name: "Ada", active: true, can: () => false }]]);
+  game.journal = journalCollection(new Map([[prompt.id, entry]]));
+
+  const manager = await DrawingPromptManager.openPrompt(prompt.id);
+  try {
+    const dialog = TestDialogV2.calls[0];
+    assert.ok(manager.renderCalls > 0, "the adopted prompt must render before the warning resolves");
+    assert.deepEqual(dialog.buttons.filter(button => !button.disabled).map(button => button.action), ["retry", "back"]);
+    assert.equal(TestDialogV2.calls.length, 1);
+  } finally {
+    manager._onClose({});
+  }
+});
+
+test("opening a persisted partial-delivery prompt renders before showing Retry and Continue once", async () => {
+  TestDialogV2.calls.length = 0;
+  TestDialogV2.results = ["dismissed-test-dialog"];
+  const { DrawingPrompt } = await import("../scripts/prompts/prompt-models.mjs");
+  const prompt = new DrawingPrompt({ id: "persisted-partial", gmUserId: "gm", assignments: {
+    received: { id: "received", userId: "u1", userName: "Ada", status: "pending", delivery: { status: "received" } },
+    failed: { id: "failed", userId: "u2", userName: "Ben", status: "pending", delivery: { status: "failed" } }
+  } });
+  const entry = { id: prompt.id, getFlag: () => prompt.toObject() };
+  game.users = new Map([
+    ["u1", { id: "u1", name: "Ada", active: true, can: () => false }],
+    ["u2", { id: "u2", name: "Ben", active: true, can: () => false }]
+  ]);
+  game.journal = journalCollection(new Map([[prompt.id, entry]]));
+
+  const manager = await DrawingPromptManager.openPrompt(prompt.id);
+  try {
+    assert.ok(manager.renderCalls > 0);
+    assert.equal(TestDialogV2.calls.length, 1, "opening must show the unresolved persisted delivery once");
+    const dialog = TestDialogV2.calls[0];
+    assert.deepEqual(dialog.buttons.filter(button => !button.disabled).map(button => button.action), ["retry", "continue"]);
+
+    TestDialogV2.calls.length = 0;
+    await manager.showDeliveryWarning();
+    await DrawingPromptManager.refreshOpen();
+    assert.equal(TestDialogV2.calls.length, 0, "the same settled delivery state must not warn again");
+  } finally {
+    TestDialogV2.started = null;
+    manager._onClose({});
+  }
+});
+
+test("new delivery UI copy is localized with exact English values", () => {
+  const expected = {
+    "DRAWING-PROMPTS.manager.actions.sending": "Sending...",
+    "DRAWING-PROMPTS.manager.validation.promptName": "Prompt name is required.",
+    "DRAWING-PROMPTS.manager.delivery.title": "Delivery warning",
+    "DRAWING-PROMPTS.manager.delivery.noResponse": "No response from:",
+    "DRAWING-PROMPTS.manager.delivery.continueWithoutPlayers": "Continue to start the drawing without these players.",
+    "DRAWING-PROMPTS.manager.delivery.notEnoughPlayers": "Not enough players to start the drawing.",
+    "DRAWING-PROMPTS.manager.delivery.retry": "Retry",
+    "DRAWING-PROMPTS.manager.delivery.continue": "Continue",
+    "DRAWING-PROMPTS.manager.delivery.backToSetup": "Back to setup",
+    "DRAWING-PROMPTS.manager.fields.promptTextOptional": "Prompt text (optional)"
+  };
+  for ( const [key, value] of Object.entries(expected) ) assert.equal(english[key], value, key);
+  const source = readFileSync(new URL("../scripts/apps/drawing-prompt-manager.mjs", import.meta.url), "utf8");
+  const template = readFileSync(new URL("../templates/drawing-prompt-manager.hbs", import.meta.url), "utf8");
+  for ( const value of Object.values(expected) ) {
+    assert.equal(source.includes(`\"${value}\"`) || template.includes(value), false,
+      `user-facing copy must come from localization: ${value}`);
+  }
+});

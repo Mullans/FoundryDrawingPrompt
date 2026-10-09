@@ -4,9 +4,9 @@
 
 import { MODULE_ID, SETTINGS, STATUS } from "../constants.mjs";
 import { PlayerDrawingApp } from "../apps/player-drawing-app.mjs";
-import { CALLS } from "../socket.mjs";
+import { CALLS, emit } from "../socket.mjs";
 import { isStagedSubmission } from "./assignment-save.mjs";
-import { updateStatus, updateTimerState, upsertAssignment } from "./client-store.mjs";
+import { getAssignment as getClientAssignment, updateStatus, updateTimerState, upsertAssignment } from "./client-store.mjs";
 import { clearFramingViewAssets, hasSavedFramingViewAssets } from "./dual-save.mjs";
 import {
   persistSocketSubmission,
@@ -14,9 +14,11 @@ import {
   submissionPreviewSrc,
   submissionValidationContext
 } from "./pending-submission.mjs";
+import { clearRecoveryCopy } from "../drawing/recovery-copy.mjs";
 import { savePrompt } from "./persistence-service.mjs";
 import {
   notifyPlayer,
+  acknowledgePromptDelivery,
   refreshPromptList,
   validateKnownActivePlayerAssignment,
   validateKnownPlayerAssignment,
@@ -36,17 +38,46 @@ import { isValidSnapshotPayload } from "./wire-validation.mjs";
 export function getSocketHandlers() {
   return {
     [CALLS.OPEN]: handleOpenPrompt,
+    [CALLS.RECEIVED]: function(assignmentId, userId, generation = 0) {
+      return acknowledgePromptDelivery(getSocketInitiatorId(this), assignmentId, userId, generation);
+    },
     [CALLS.REOPEN]: handleReopenPrompt,
     [CALLS.TIMER_UPDATED]: handleTimerUpdated,
     [CALLS.CANCEL]: handleCancelPrompt,
     [CALLS.SHOW]: handleShowPrompt,
     [CALLS.REQUEST_SNAPSHOT]: handleRequestSnapshot,
+    [CALLS.REQUEST_RETAINED_CAPTURE]: handleRequestRetainedCapture,
+    [CALLS.CLEAR_RECOVERY]: handleClearRecovery,
     [CALLS.OPENED]: handleAssignmentOpened,
     [CALLS.SNAPSHOT]: handleDrawingSnapshot,
     [CALLS.SUBMITTED]: handleDrawingSubmitted,
     [CALLS.REJECTED]: handleDrawingRejected,
     [CALLS.WINDOW_CLOSED]: handlePlayerWindowClosed
   };
+}
+
+async function handleClearRecovery(identity) {
+  if ( identity?.userId !== game.user.id ) return false;
+  try {
+    assertPromptGmMatchesInitiator(getSocketInitiatorId(this), identity?.gmUserId);
+    await PlayerDrawingApp.clearRecoveryForIdentity(identity);
+    return clearRecoveryCopy(identity);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored invalid Recovery cleanup", err);
+    return false;
+  }
+}
+
+async function handleRequestRetainedCapture(assignmentId, requestId) {
+  const payload = validateKnownActivePlayerAssignment(assignmentId, "request-retained-capture");
+  if ( !payload ) return null;
+  try {
+    assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
+  } catch (err) {
+    console.debug("drawing-prompts | ignored retained capture request", err);
+    return null;
+  }
+  return PlayerDrawingApp.captureRetainedForAssignment(assignmentId, requestId);
 }
 
 /**
@@ -62,11 +93,42 @@ async function handleOpenPrompt(payload) {
     console.debug("drawing-prompts | ignored open prompt", err);
     return;
   }
-  upsertAssignment(payload);
+  // Register before awaiting the GM so a cancellation racing the receipt has a target.
+  const existing = getClientAssignment(payload.assignment.id);
+  const generation = payload.assignment.delivery?.generation ?? 0;
+  const existingGeneration = existing?.assignment.delivery?.generation ?? 0;
+  const adopted = !existing || generation > existingGeneration;
+  if ( existing && generation < existingGeneration ) return { accepted: false, reason: "stale-invitation" };
+  if ( adopted ) upsertAssignment(payload);
+  const receipt = await emit.assignmentReceived(payload.prompt.gmUserId, payload.assignment.id, game.user.id, generation);
+  payload = getClientAssignment(payload.assignment.id);
+  if ( !payload || (payload.assignment.delivery?.generation ?? 0) !== generation ) return { accepted: false, reason: "stale-invitation" };
+  if ( !receipt?.accepted ) {
+    // A delayed duplicate request cannot rewrite an established submission/recipient.
+    if ( (adopted || payload.assignment.delivery?.status !== "received") && [STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) {
+      updateStatus(payload.assignment.id, STATUS.CANCELLED);
+      await PlayerDrawingApp.closeAssignment(payload.assignment.id, { silent: true });
+    }
+    const reason = receipt?.reason ?? "invalid-invitation";
+    if ( reason === "invalid-invitation" && payload.assignment.delivery?.status !== "received"
+      && ![STATUS.SUBMITTED, STATUS.REJECTED].includes(payload.assignment.status) ) {
+      ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.errors.invalidInvitation"));
+    }
+    return { accepted: false, reason };
+  }
+  if ( !payload || ![STATUS.PENDING, STATUS.OPENED].includes(payload.assignment.status) ) return;
+  Object.assign(payload.prompt, receipt.timerState);
+  payload.assignment.delivery = { ...payload.assignment.delivery, status: "received" };
   notifyPlayer("DRAWING-PROMPTS.player.notifications.received");
   await refreshPromptList();
+  if ( ![STATUS.PENDING, STATUS.OPENED].includes(getClientAssignment(payload.assignment.id)?.assignment.status) ) return;
   if ( game.settings.get(MODULE_ID, SETTINGS.AUTO_OPEN_PLAYER_WINDOW) ) {
+    const openStarted = performance.now();
     await PlayerDrawingApp.open(payload, { mode: "live" });
+    if ( ![STATUS.PENDING, STATUS.OPENED].includes(getClientAssignment(payload.assignment.id)?.assignment.status) ) {
+      await PlayerDrawingApp.closeAssignment(payload.assignment.id, { silent: true });
+    }
+    Hooks.callAll("drawing-prompts.deliveryTiming", { promptId: payload.prompt.id, assignmentId: payload.assignment.id, stage: "client-render", elapsedMs: performance.now() - openStarted });
   }
 }
 
@@ -115,9 +177,10 @@ async function handleTimerUpdated(assignmentId, timerState) {
  * @param {string} assignmentId Assignment id.
  * @returns {Promise<void>}
  */
-async function handleCancelPrompt(assignmentId) {
+async function handleCancelPrompt(assignmentId, generation = 0) {
   const payload = validateKnownActivePlayerAssignment(assignmentId, "cancel");
   if ( !payload ) return;
+  if ( generation < (payload.assignment.delivery?.generation ?? 0) ) return;
   try {
     assertPromptGmMatchesInitiator(this?.socketdata?.userId, payload.prompt?.gmUserId);
   } catch (err) {

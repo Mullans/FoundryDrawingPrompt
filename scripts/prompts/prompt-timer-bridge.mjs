@@ -72,6 +72,7 @@ function updatePromptTimer(promptId, transition) {
     if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
     assertPromptOwner(prompt);
     prompt.timerState = transition(prompt.timerState, prompt, Date.now());
+    prompt.initialTimerHeld = false;
     await savePrompt(prompt, { timerOnly: true });
     Hooks.callAll("drawing-prompts.timerUpdated", prompt, prompt.timerState);
     await broadcastTimerState(prompt);

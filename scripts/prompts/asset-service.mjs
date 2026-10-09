@@ -102,6 +102,20 @@ export async function browseFiles(dir) {
   }
 }
 
+/** Delete one exact module-owned data-source file without touching its parent folder. */
+export async function deleteDataFile(path) {
+  assertGM();
+  const target = normalizePath(path);
+  if ( !target ) return false;
+  try {
+    await getFilePicker().delete("data", target, { notify: false });
+    return true;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not delete module-owned file`, target, err);
+    return false;
+  }
+}
+
 /**
  * Ensure a data-source directory path exists, creating segments as needed.
  * @param {string} path Directory path in the data source.
@@ -183,7 +197,7 @@ export async function stageSubmissionImages(assignmentId, submission) {
   if ( !canStageUploads() ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.fileUploadRequired"));
   // FILES_UPLOAD permits uploads into EXISTING directories only — createDirectory
   // requires browse rights players usually lack. The GM pre-creates the staging
-  // directory at send time (see createAndSendPrompt); if it is missing the upload
+  // directory at send time (see sendPrompt); if it is missing the upload
   // rejects and the caller falls back to the socket lane.
   const dir = stagingDir();
   const basename = String(assignmentId || "assignment");

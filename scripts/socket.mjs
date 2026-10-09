@@ -3,11 +3,14 @@ import { assertGmInitiator } from "./prompts/socket-auth.mjs";
 
 export const CALLS = Object.freeze({
   OPEN: "openDrawingPrompt",
+  RECEIVED: "assignmentReceived",
   REOPEN: "reopenDrawingPrompt",
   TIMER_UPDATED: "timerUpdated",
   CANCEL: "cancelDrawingPrompt",
   SHOW: "showDrawingPrompt",
   REQUEST_SNAPSHOT: "requestSnapshot",
+  REQUEST_RETAINED_CAPTURE: "requestRetainedCapture",
+  CLEAR_RECOVERY: "clearRecoveryCopy",
   OPENED: "assignmentOpened",
   SNAPSHOT: "drawingSnapshot",
   SUBMITTED: "drawingSubmitted",
@@ -64,7 +67,9 @@ const PLAYER_GM_INITIATED_CALLS = new Set([
   CALLS.TIMER_UPDATED,
   CALLS.CANCEL,
   CALLS.SHOW,
-  CALLS.REQUEST_SNAPSHOT
+  CALLS.REQUEST_SNAPSHOT,
+  CALLS.REQUEST_RETAINED_CAPTURE,
+  CALLS.CLEAR_RECOVERY
 ]);
 
 /**
@@ -85,6 +90,10 @@ function requireSocket() {
 }
 
 export const emit = {
+  /** Request an authenticated receipt decision from the prompt-owning GM. */
+  assignmentReceived(gmUserId, assignmentId, userId, generation = 0) {
+    return requireSocket().executeAsUser(CALLS.RECEIVED, gmUserId, assignmentId, userId, generation);
+  },
   /**
    * Ask a player client to open a drawing prompt.
    * @param {string} userId Target user id.
@@ -122,8 +131,8 @@ export const emit = {
    * @param {string} assignmentId Assignment id.
    * @returns {Promise<*>}
    */
-  cancelDrawingPrompt(userId, assignmentId) {
-    return requireSocket().executeAsUser(CALLS.CANCEL, userId, assignmentId);
+  cancelDrawingPrompt(userId, assignmentId, generation = 0) {
+    return requireSocket().executeAsUser(CALLS.CANCEL, userId, assignmentId, generation);
   },
 
   /**
@@ -146,6 +155,16 @@ export const emit = {
    */
   requestSnapshot(userId, assignmentId, { includeOverlay = false } = {}) {
     return requireSocket().executeAsUser(CALLS.REQUEST_SNAPSHOT, userId, assignmentId, { includeOverlay });
+  },
+
+  /** Request a correlated, full-quality, non-submitting retained capture. */
+  requestRetainedCapture(userId, assignmentId, requestId) {
+    return requireSocket().executeAsUser(CALLS.REQUEST_RETAINED_CAPTURE, userId, assignmentId, requestId);
+  },
+
+  /** Ask a player to remove one exact browser-local Recovery copy. */
+  clearRecoveryCopy(userId, identity) {
+    return requireSocket().executeAsUser(CALLS.CLEAR_RECOVERY, userId, identity);
   },
 
   /**
