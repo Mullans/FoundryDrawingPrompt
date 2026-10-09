@@ -308,7 +308,8 @@ export async function closePrompt(promptId, { closeWithoutCaptures = false, avai
       throw error;
     }
   }
-  for ( const assignment of Object.values(prompt.assignments) ) {
+  for ( const assignmentId of Object.keys(prompt.assignments) ) {
+    const assignment = prompt.getAssignment(assignmentId);
     if ( !assignment.isActive ) continue;
     assignment.markCancelled(now);
     await savePrompt(prompt, { assignmentOnly: assignment.id });
@@ -331,7 +332,8 @@ export async function closePrompt(promptId, { closeWithoutCaptures = false, avai
 }
 
 async function retainAvailablePreviews(prompt, previews) {
-  for ( const assignment of Object.values(prompt.assignments) ) {
+  for ( const assignmentId of Object.keys(prompt.assignments) ) {
+    const assignment = prompt.getAssignment(assignmentId);
     const dataUrl = previews[assignment.id];
     if ( !dataUrl || assignment.retainedCapture?.kind === "full-submission" ) continue;
     try {
@@ -354,10 +356,19 @@ async function retainAvailablePreviews(prompt, previews) {
 
 async function retainFullCaptures(prompt) {
   const failures = [];
-  for ( const assignment of Object.values(prompt.assignments) ) {
+  for ( const assignmentId of Object.keys(prompt.assignments) ) {
+    const assignment = prompt.getAssignment(assignmentId);
     try {
-      if ( assignment.retainedCapture?.kind === "full-submission" && assignment.retainedCapture.overlayPath ) continue;
-      if ( assignment.assets?.overlayPath ) {
+      const captureLiveWork = assignment.isActive && game.users.get(assignment.userId)?.active;
+      let submission;
+      if ( captureLiveWork ) {
+        const requestId = foundry.utils.randomID();
+        const response = await emit.requestRetainedCapture(assignment.userId, assignment.id, requestId);
+        if ( response?.requestId !== requestId || response?.assignmentId !== assignment.id ) throw new Error("Stale retained capture response");
+        submission = response.submission;
+      } else if ( assignment.retainedCapture?.kind === "full-submission" && assignment.retainedCapture.overlayPath ) {
+        continue;
+      } else if ( assignment.assets?.overlayPath ) {
         assignment.retainedCapture = {
           kind: "full-submission",
           receiptTs: assignment.submittedAt ?? Date.now(),
@@ -369,13 +380,7 @@ async function retainFullCaptures(prompt) {
         await savePrompt(prompt, { assignmentOnly: assignment.id });
         continue;
       }
-      let submission = getPendingSubmission(assignment.id);
-      if ( !submission && assignment.isActive && game.users.get(assignment.userId)?.active ) {
-        const requestId = foundry.utils.randomID();
-        const response = await emit.requestRetainedCapture(assignment.userId, assignment.id, requestId);
-        if ( response?.requestId !== requestId || response?.assignmentId !== assignment.id ) throw new Error("Stale retained capture response");
-        submission = response.submission;
-      }
+      if ( !captureLiveWork ) submission = getPendingSubmission(assignment.id);
       if ( !submission || Number(submission.width) !== prompt.canvasWidth || Number(submission.height) !== prompt.canvasHeight || submission.wireScaled ) {
         if ( assignment.isActive ) failures.push(assignment);
         continue;
