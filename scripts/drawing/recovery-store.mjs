@@ -5,6 +5,7 @@ const RECORD_SCHEMA = 2;
 const DB_VERSION = 3;
 const TILE_BATCH_SIZE = 32;
 const TRANSPARENT_ID = "transparent";
+const STAGING_LEASE_MS = 60_000;
 
 /** Player-local Recovery with artwork-first generations and shared immutable tiles. */
 export function createRecoveryStore({ adapter = createIndexedDbRecoveryAdapter(),
@@ -36,47 +37,69 @@ export function createRecoveryStore({ adapter = createIndexedDbRecoveryAdapter()
       const artwork = artworkSnapshot(snapshot); const artworkIds = referencedIds(artwork);
       let tilesWritten = 0;
       let record = { schema: RECORD_SCHEMA, generationId, writerId, savedAt: now(), identity: normalized,
-        artwork: withoutVersions(artwork), history: null, stagingIds: [...artworkIds], complete: false };
+        artwork: withoutVersions(artwork), history: null, stagingIds: [...artworkIds], complete: false,
+        leaseUntil: now() + STAGING_LEASE_MS };
+      const publish = async value => {
+        const next = { ...value, leaseUntil: now() + STAGING_LEASE_MS };
+        if ( !await adapter.replaceGeneration(next) ) throw evictedGenerationError();
+        record = next;
+      };
+      const renewLease = () => publish(record);
+      let completed = false;
       try {
-        await adapter.putGeneration(record);
-        tilesWritten += await writeMissingTiles(adapter, artworkIds, versions, yieldTask, isCurrent);
-        if ( !isCurrent() ) {
-          await discardGeneration(adapter, generationId);
-          return { generationId, historySaved: false, tilesWritten, stale: true };
-        }
-        record = { ...record, stagingIds: [], complete: true };
-        await adapter.putGeneration(record);
-      } catch (error) {
-        await discardGeneration(adapter, generationId);
-        throw error;
-      }
-
-      let historySaved = false;
-      if ( !artworkOnly && snapshot.entries.length ) {
-        const historyIds = referencedIds(snapshot);
         try {
-          await adapter.putGeneration({ ...record, stagingIds: [...historyIds] });
-          tilesWritten += await writeMissingTiles(adapter, historyIds, versions, yieldTask, isCurrent);
-          if ( isCurrent() ) {
-            record = { ...record, history: withoutVersions(snapshot), stagingIds: [] };
-            await adapter.putGeneration(record); historySaved = true;
-          } else {
-            record = { ...record, stagingIds: [] };
-            await adapter.putGeneration(record);
-          }
-        } catch (_error) {
           await adapter.putGeneration(record);
+          tilesWritten += await writeMissingTiles(adapter, artworkIds, versions, yieldTask, isCurrent, renewLease);
+          if ( !isCurrent() ) {
+            await discardGeneration(adapter, generationId);
+            return { generationId, historySaved: false, tilesWritten, stale: true };
+          }
+          await publish({ ...record, stagingIds: [], complete: true });
+        } catch (error) {
+          await discardGeneration(adapter, generationId);
+          throw error;
+        }
+
+        let historySaved = false;
+        if ( !artworkOnly && snapshot.entries.length ) {
+          const historyIds = referencedIds(snapshot);
+          try {
+            await publish({ ...record, stagingIds: [...historyIds] });
+            tilesWritten += await writeMissingTiles(adapter, historyIds, versions, yieldTask, isCurrent, renewLease);
+            if ( isCurrent() ) {
+              await publish({ ...record, history: withoutVersions(snapshot), stagingIds: [] }); historySaved = true;
+            } else {
+              await publish({ ...record, stagingIds: [] });
+            }
+          } catch (_error) {
+            await publish({ ...record, stagingIds: [] });
+          }
+        }
+        if ( !isCurrent() ) { await garbageCollectTiles(adapter); return { generationId, historySaved: false, tilesWritten, stale: true }; }
+
+        const priorGenerations = await adapter.getGenerations();
+        // A newer edit may start while the adapter reads the cleanup candidates.
+        if ( !isCurrent() ) return { generationId, historySaved: false, tilesWritten, stale: true };
+        for ( const prior of priorGenerations ) {
+          if ( prior.generationId !== generationId && prior.writerId === writerId && sameIdentity(prior.identity, normalized) ) await adapter.deleteGeneration(prior.generationId);
+        }
+        record = await enforceQuota(adapter, generationId, quotaBytes, now);
+        historySaved = Boolean(record?.history);
+        await garbageCollectTiles(adapter);
+        if ( !await adapter.releaseGenerationLease(generationId) ) throw evictedGenerationError();
+        completed = true;
+        return { generationId, historySaved, tilesWritten };
+      } catch (error) {
+        // Newer edits may have already removed this generation. That is normal
+        // preemption, whereas eviction of the current writer is a storage failure.
+        if ( !isCurrent() ) return { generationId, historySaved: false, tilesWritten, stale: true };
+        throw error;
+      } finally {
+        if ( !completed ) {
+          await adapter.releaseGenerationLease(generationId);
+          await garbageCollectTiles(adapter);
         }
       }
-      if ( !isCurrent() ) { await garbageCollectTiles(adapter); return { generationId, historySaved: false, tilesWritten, stale: true }; }
-
-      for ( const prior of await adapter.getGenerations() ) {
-        if ( prior.generationId !== generationId && prior.writerId === writerId && sameIdentity(prior.identity, normalized) ) await adapter.deleteGeneration(prior.generationId);
-      }
-      record = await enforceQuota(adapter, generationId, quotaBytes);
-      historySaved = Boolean(record?.history);
-      await garbageCollectTiles(adapter);
-      return { generationId, historySaved, tilesWritten };
     },
 
     async load(identity) {
@@ -86,7 +109,11 @@ export function createRecoveryStore({ adapter = createIndexedDbRecoveryAdapter()
       for ( const record of records ) {
         if ( record.history ) {
           try { return { kind: "history", generationId: record.generationId, snapshot: await hydrate(adapter, record.history, normalized) }; }
-          catch (_error) { record.history = null; record.stagingIds = []; await adapter.putGeneration(record); await garbageCollectTiles(adapter); }
+          catch (_error) {
+            await adapter.clearHistoryIfMatches(record.generationId, record.history);
+            record.history = null;
+            await garbageCollectTiles(adapter);
+          }
         }
         try { return { kind: "artwork", generationId: record.generationId, snapshot: await hydrate(adapter, record.artwork, normalized) }; }
         catch (_error) { await adapter.deleteGeneration(record.generationId); await garbageCollectTiles(adapter); }
@@ -120,6 +147,25 @@ export function createRecoveryStore({ adapter = createIndexedDbRecoveryAdapter()
 export function createMapRecoveryAdapter(generations = new Map(), tiles = new Map()) {
   return {
     async putGeneration(record) { generations.set(record.generationId, clone(record)); },
+    async replaceGeneration(record) {
+      if ( !generations.has(record.generationId) ) return false;
+      generations.set(record.generationId, clone(record)); return true;
+    },
+    async releaseGenerationLease(id) {
+      const record = generations.get(id);
+      if ( !record ) return false;
+      generations.set(id, { ...record, leaseUntil: null, stagingIds: [] }); return true;
+    },
+    async evictGenerationIfExpired(id, at) {
+      const record = generations.get(id);
+      if ( !record || Number(record.leaseUntil) > at ) return false;
+      generations.delete(id); return true;
+    },
+    async clearHistoryIfMatches(id, history) {
+      const record = generations.get(id);
+      if ( !record || !sameHistory(record.history, history) ) return false;
+      generations.set(id, { ...record, history: null }); return true;
+    },
     async getGenerations() { return [...generations.values()].map(clone); },
     async deleteGeneration(id) { generations.delete(id); },
     async missingTileIds(ids) { return ids.filter(id => id !== TRANSPARENT_ID && !tiles.has(id)); },
@@ -160,8 +206,31 @@ export function createIndexedDbRecoveryAdapter(indexedDB = globalThis.indexedDB,
       transaction.onabort = () => reject(transaction.error ?? new Error("Recovery transaction aborted"));
     });
   };
+  const mutateGeneration = async (id, mutate) => {
+    const db = await database();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(GENERATION_STORE, "readwrite");
+      const store = transaction.objectStore(GENERATION_STORE);
+      const request = store.get(id);
+      let modified = false;
+      request.onsuccess = () => {
+        if ( !request.result ) return;
+        const next = mutate(request.result);
+        if ( next === undefined ) return;
+        if ( next === null ) store.delete(id);
+        else store.put(next);
+        modified = true;
+      };
+      transaction.oncomplete = () => resolve(modified);
+      transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error("Recovery generation transaction failed"));
+    });
+  };
   return {
     putGeneration: record => transact(GENERATION_STORE, "readwrite", tx => tx.objectStore(GENERATION_STORE).put(record)),
+    replaceGeneration: record => mutateGeneration(record.generationId, () => record),
+    releaseGenerationLease: id => mutateGeneration(id, record => ({ ...record, leaseUntil: null, stagingIds: [] })),
+    evictGenerationIfExpired: (id, at) => mutateGeneration(id, record => Number(record.leaseUntil) > at ? undefined : null),
+    clearHistoryIfMatches: (id, history) => mutateGeneration(id, record => sameHistory(record.history, history) ? { ...record, history: null } : undefined),
     getGenerations: () => transact(GENERATION_STORE, "readonly", tx => tx.objectStore(GENERATION_STORE).getAll()).then(value => value ?? []),
     deleteGeneration: id => transact(GENERATION_STORE, "readwrite", tx => tx.objectStore(GENERATION_STORE).delete(id)),
     missingTileIds: async ids => { const db = await database(); return new Promise((resolve, reject) => {
@@ -198,10 +267,11 @@ export function createIndexedDbRecoveryAdapter(indexedDB = globalThis.indexedDB,
 
 export const recoveryStore = createRecoveryStore();
 
-async function writeMissingTiles(adapter, ids, versions, yieldTask, shouldContinue = () => true) {
+async function writeMissingTiles(adapter, ids, versions, yieldTask, shouldContinue = () => true, renewLease = async () => {}) {
   const missing = await adapter.missingTileIds([...ids]); let written = 0;
   for ( let offset = 0; offset < missing.length; offset += TILE_BATCH_SIZE ) {
     if ( !shouldContinue() ) break;
+    await renewLease();
     const batch = missing.slice(offset, offset + TILE_BATCH_SIZE).map(id => versions.get(id));
     if ( batch.some(value => !value) ) throw new Error("Recovery snapshot references a missing tile");
     await adapter.putTiles(batch); written += batch.length;
@@ -224,13 +294,17 @@ function artworkSnapshot(snapshot) { const ids = new Set(snapshot.current.map(([
 function withoutVersions(snapshot) { const { versions: _versions, ...value } = snapshot; return value; }
 function referencedIds(snapshot) { const ids = new Set(snapshot?.current?.map(([, id]) => id) ?? []); for ( const entry of snapshot?.entries ?? [] ) for ( const [, id] of entry.changes ?? [] ) ids.add(id); ids.delete(TRANSPARENT_ID); return ids; }
 
-async function enforceQuota(adapter, currentId, quotaBytes) {
+async function enforceQuota(adapter, currentId, quotaBytes, now) {
   await garbageCollectTiles(adapter); let records = await adapter.getGenerations(); let total = await storedBytes(adapter, records);
   for ( const record of records.filter(value => value.generationId !== currentId).sort((a, b) => Number(a.savedAt) - Number(b.savedAt)) ) {
-    if ( total <= quotaBytes ) break; await adapter.deleteGeneration(record.generationId); await garbageCollectTiles(adapter); records = await adapter.getGenerations(); total = await storedBytes(adapter, records);
+    if ( total <= quotaBytes ) break;
+    // Eligibility is rechecked against the live record in the deletion transaction.
+    // Active writers renew a bounded lease; abandoned writers become reclaimable.
+    if ( !await adapter.evictGenerationIfExpired(record.generationId, now()) ) continue;
+    await garbageCollectTiles(adapter); records = await adapter.getGenerations(); total = await storedBytes(adapter, records);
   }
   let current = records.find(value => value.generationId === currentId);
-  if ( total > quotaBytes && current?.history ) { current = { ...current, history: null, stagingIds: [] }; await adapter.putGeneration(current); await garbageCollectTiles(adapter); }
+  if ( total > quotaBytes && current?.history ) { current = { ...current, history: null, stagingIds: [] }; if ( !await adapter.replaceGeneration(current) ) throw evictedGenerationError(); await garbageCollectTiles(adapter); }
   return current;
 }
 async function garbageCollectTiles(adapter) { await adapter.collectGarbage(); }
@@ -266,3 +340,5 @@ function positiveInteger(value) { const number = optionalPositiveInteger(value);
 function optionalPositiveInteger(value) { const number = Number(value); return Number.isSafeInteger(number) && number > 0 ? number : null; }
 function clone(value) { return structuredClone(value); }
 function defaultYieldTask() { return new Promise(resolve => globalThis.setTimeout(resolve, 0)); }
+function evictedGenerationError() { return new Error("Recovery generation was evicted before its save completed"); }
+function sameHistory(left, right) { return JSON.stringify(left) === JSON.stringify(right); }

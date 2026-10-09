@@ -176,6 +176,44 @@ try {
     };
     await store.save(identity, snapshot);
     const recovered = await store.load(identity);
+    // Separate native IndexedDB connections must not evict another writer's
+    // staged tiles, even when quota pressure occurs before publication resumes.
+    const quotaAdapter = createIndexedDbRecoveryAdapter(indexedDB, { dbName });
+    let releaseStaging;
+    let signalStaging;
+    const stagingBlocked = new Promise(resolve => { releaseStaging = resolve; });
+    const atStaging = new Promise(resolve => { signalStaging = resolve; });
+    const protectedIdentity = { ...identity, assignmentId: "runtime-protected" };
+    const quotaIdentity = { ...identity, assignmentId: "runtime-quota" };
+    const protectedStore = createRecoveryStore({ writerId: "runtime-protected", adapter: {
+      ...adapter, async putTiles(versions) {
+        await adapter.putTiles(versions);
+        signalStaging();
+        await stagingBlocked;
+      }
+    } });
+    const quotaStore = createRecoveryStore({ adapter: quotaAdapter, writerId: "runtime-quota", quotaBytes: 1 });
+    const protectedSnapshot = { ...snapshot, writerId: "protected-pixels", cursor: 0, entries: [],
+      current: [[0, "protected-pixels:1"]],
+      versions: [{ id: "protected-pixels:1", kind: "uniform", rgba: [9, 8, 7, 255] }] };
+    const saving = protectedStore.save(protectedIdentity, protectedSnapshot, { artworkOnly: true });
+    await atStaging;
+    try {
+      await quotaStore.save(quotaIdentity, { ...protectedSnapshot, writerId: "quota-pixels",
+        current: [[0, "quota-pixels:1"]],
+        versions: [{ id: "quota-pixels:1", kind: "uniform", rgba: [4, 5, 6, 255] }] }, { artworkOnly: true });
+    } finally {
+      releaseStaging();
+      await quotaStore.close();
+    }
+    await saving;
+    const protectedRecovery = await protectedStore.load(protectedIdentity);
+    if ( protectedRecovery?.kind !== "artwork"
+      || protectedRecovery.snapshot.versions[0]?.rgba[0] !== 9 ) {
+      throw new Error("Native IndexedDB quota eviction corrupted an acknowledged staged save");
+    }
+    await protectedStore.clear(protectedIdentity);
+    await store.clear(quotaIdentity);
     await store.clear(identity);
     await store.close();
     await new Promise((resolve, reject) => {
