@@ -197,7 +197,7 @@ export async function stageSubmissionImages(assignmentId, submission) {
   if ( !canStageUploads() ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.fileUploadRequired"));
   // FILES_UPLOAD permits uploads into EXISTING directories only — createDirectory
   // requires browse rights players usually lack. The GM pre-creates the staging
-  // directory at send time (see createAndSendPrompt); if it is missing the upload
+  // directory at send time (see sendPrompt); if it is missing the upload
   // rejects and the caller falls back to the socket lane.
   const dir = stagingDir();
   const basename = String(assignmentId || "assignment");

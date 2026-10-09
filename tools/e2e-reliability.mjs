@@ -55,8 +55,8 @@ try {
   const assignments = [];
   for ( let i = 0; i < 2; i++ ) {
     assignments.push(await gm.evaluate(async ({ userId, text }) => {
-      const prompt = await game.modules.get("drawing-prompts").api.createPrompt({
-        promptText: text, drawingName: text, canvasWidth: 256, canvasHeight: 256,
+      const prompt = await game.modules.get("drawing-prompts").api.sendPrompt({
+        promptText: text, promptName: text, canvasWidth: 256, canvasHeight: 256,
         background: { sourceType: "blank" }, selectedUserIds: [userId], awaitDeliveries: true
       });
       return { promptId: prompt.id, assignmentId: Object.keys(prompt.assignments)[0] };
@@ -154,7 +154,7 @@ try {
   await gm.evaluate(async ({ promptId, assignmentId }) => {
     const { loadPrompt } = await import("/modules/drawing-prompts/scripts/prompts/persistence-service.mjs");
     const { FRAMING_VIEW } = await import("/modules/drawing-prompts/scripts/constants.mjs");
-    await game.modules.get("drawing-prompts").api.openPromptManager();
+    await game.modules.get("drawing-prompts").api.openPrompt(promptId);
     const manager = foundry.applications.instances.get("drawing-prompts-manager");
     manager.activePrompt = loadPrompt(promptId);
     // A local, unsaved source plate fixture avoids leaving files on the server.

@@ -7,12 +7,15 @@ import {
   archivePrompt,
   restorePrompt,
   deletePrompt,
-  finishPrompt,
   createPrompt,
+  updatePrompt,
+  sendPrompt,
   getAssignment,
   getPrompt,
-  openPromptManager,
   openPromptLibrary,
+  openNewPrompt,
+  openPrompt,
+  openPromptCopy,
   placeAssignmentAsTile,
   placeAssignmentAsToken,
   reopenAssignment,
@@ -26,7 +29,12 @@ import {
 export function registerAPI() {
   game.modules.get(MODULE_ID).api = {
     createPrompt,
-    openPromptManager,
+    updatePrompt,
+    sendPrompt,
+    openPromptLibrary,
+    openNewPrompt,
+    openPrompt,
+    openPromptCopy,
     getPrompt,
     getAssignment,
     saveAssignment,
@@ -39,8 +47,6 @@ export function registerAPI() {
     reopenPrompt,
     archivePrompt,
     restorePrompt,
-    deletePrompt,
-    finishPrompt,
-    openPromptLibrary
+    deletePrompt
   };
 }

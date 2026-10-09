@@ -2,7 +2,7 @@ import { MODULE_ID } from "./constants.mjs";
 import { registerAPI } from "./api.mjs";
 import { registerSettings, migrateLegacySettings } from "./settings.mjs";
 import { initSocket } from "./socket.mjs";
-import { getSocketHandlers, openPlayerPromptList, openPromptManager } from "./prompts/prompt-service.mjs";
+import { getSocketHandlers, openPlayerPromptList, openPromptLibrary } from "./prompts/prompt-service.mjs";
 import { loadAllPrompts } from "./prompts/persistence-service.mjs";
 import { recoverInterruptedPromptDeliveries } from "./prompts/prompt-delivery.mjs";
 import { renderTokenTransformHUD } from "./foundry/token-transform-service.mjs";
@@ -47,7 +47,7 @@ Hooks.on("getSceneControlButtons", controls => {
     order: Object.keys(tokenControls.tools).length + 50,
     button: true,
     visible: true,
-    onChange: () => game.user.isGM ? openPromptManager() : openPlayerPromptList()
+    onChange: () => game.user.isGM ? openPromptLibrary() : openPlayerPromptList()
   };
 });
 

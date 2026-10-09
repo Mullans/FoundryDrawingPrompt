@@ -95,7 +95,7 @@ export function playerPromptPayload(prompt) {
     id: prompt.id,
     gmUserId: prompt.gmUserId,
     promptText: prompt.promptText,
-    drawingName: prompt.drawingName,
+    promptName: prompt.promptName,
     canvasWidth: prompt.canvasWidth,
     canvasHeight: prompt.canvasHeight,
     background: serializeBackgroundForPlayer(prompt),

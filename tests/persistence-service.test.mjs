@@ -170,3 +170,31 @@ test("lifecycle saves preserve newer assignment state while freezing the timer",
   assert.equal(storedPrompt.remainingMs, 12_000);
   assert.equal(storedPrompt.assignments.a1.delivery.status, "received");
 });
+
+test("Draft-only saves preserve identity, timestamps, and concurrent assignment data", async () => {
+  storedPrompt = {
+    ...storedPrompt,
+    promptName: "Old name",
+    promptText: "Old text",
+    lifecycleStatus: PROMPT_STATUS.DRAFT,
+    createdAt: 123,
+    selectedUserIds: ["u1"]
+  };
+  const update = DrawingPrompt.fromObject(structuredClone(storedPrompt));
+  update.promptName = "New name";
+  update.promptText = "New text";
+  update.selectedUserIds = ["u1", "u2"];
+
+  await savePrompt(update, { draftOnly: true });
+
+  assert.equal(storedPrompt.promptName, "New name");
+  assert.equal(storedPrompt.promptText, "New text");
+  assert.equal(storedPrompt.createdAt, 123);
+  assert.deepEqual(storedPrompt.selectedUserIds, ["u1", "u2"]);
+  assert.equal(storedPrompt.assignments.a1.status, STATUS.OPENED);
+});
+
+test("Draft-only saves reject lifecycle changes", async () => {
+  const update = DrawingPrompt.fromObject({ ...structuredClone(storedPrompt), lifecycleStatus: PROMPT_STATUS.DRAFT });
+  await assert.rejects(() => savePrompt(update, { draftOnly: true }), /Illegal Draft update/);
+});

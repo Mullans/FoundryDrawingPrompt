@@ -1,11 +1,14 @@
 /**
- * Refresh the GM manager if present.
+ * Refresh open GM Prompt surfaces if present.
  * @returns {Promise<void>}
  */
 export async function refreshManager() {
   if ( !game.user.isGM ) return;
-  const { DrawingPromptManager } = await import("../apps/drawing-prompt-manager.mjs");
-  await DrawingPromptManager.refreshOpen();
+  const [{ DrawingPromptManager }, { PromptLibrary }] = await Promise.all([
+    import("../apps/drawing-prompt-manager.mjs"),
+    import("../apps/prompt-library.mjs")
+  ]);
+  await Promise.all([DrawingPromptManager.refreshOpen(), PromptLibrary.refreshOpen()]);
 }
 
 /**

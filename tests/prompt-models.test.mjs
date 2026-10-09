@@ -152,7 +152,7 @@ test("DrawingAssignment primaryImagePath prefers merged assets and falls back to
 test("DrawingPrompt creates per-user assignments and round-trips JSON data", () => {
   const prompt = DrawingPrompt.create({
     promptText: "Draw a door",
-    drawingName: "Door",
+    promptName: "Door",
     canvasWidth: 640,
     canvasHeight: 480,
     background: { sourceType: "blank", path: null, fitMode: "fit-width" },
@@ -170,6 +170,7 @@ test("DrawingPrompt creates per-user assignments and round-trips JSON data", () 
 
   const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(prompt.toObject())));
   assert.equal(roundTrip.promptText, "Draw a door");
+  assert.equal(roundTrip.promptName, "Door");
   assert.equal(roundTrip.isActive, true);
   assert.equal(roundTrip.assignmentForUser("u2").userName, "Bert");
   assert.deepEqual(roundTrip.timerState, {
@@ -206,6 +207,33 @@ test("DrawingPrompt migrates legacy lifecycle state and enforces retained transi
 
   const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(legacy.toObject())));
   assert.equal(roundTrip.lifecycleStatus, PROMPT_STATUS.OPEN);
+});
+
+test("DrawingPrompt preserves saved Draft selections and restores archived Drafts", () => {
+  const draft = DrawingPrompt.fromObject({
+    id: "p-draft", promptName: "Later", lifecycleStatus: PROMPT_STATUS.DRAFT,
+    createdAt: 100, selectedUserIds: ["u1", "u1", "u2"]
+  });
+  assert.deepEqual(draft.selectedUserIds, ["u1", "u2"]);
+  assert.deepEqual(draft.assignments, {});
+
+  draft.markArchived(200);
+  assert.equal(draft.archivedFromStatus, PROMPT_STATUS.DRAFT);
+  draft.markRestored();
+  assert.equal(draft.lifecycleStatus, PROMPT_STATUS.DRAFT);
+  assert.equal(draft.archivedFromStatus, null);
+
+  const roundTrip = DrawingPrompt.fromObject(JSON.parse(JSON.stringify(draft.toObject())));
+  assert.equal(roundTrip.promptName, "Later");
+  assert.deepEqual(roundTrip.selectedUserIds, ["u1", "u2"]);
+});
+
+test("new Drafts have no creation timestamp until persistence", () => {
+  const draft = DrawingPrompt.create({ promptName: "Unsaved", lifecycleStatus: PROMPT_STATUS.DRAFT });
+  assert.equal(draft.createdAt, null);
+  draft.markSent(500);
+  assert.equal(draft.lifecycleStatus, PROMPT_STATUS.OPEN);
+  assert.equal(draft.sentAt, 500);
 });
 
 test("DrawingPrompt round-trips paused overtime timer state", () => {

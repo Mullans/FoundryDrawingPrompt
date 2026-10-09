@@ -205,6 +205,34 @@ export function registerSettings() {
     default: true
   });
 
+  game.settings.register(MODULE_ID, SETTINGS.DEFAULT_LIBRARY_SORT_FIELD, {
+    scope: "client",
+    config: true,
+    name: `${PREFIX}.defaultLibrarySortField.name`,
+    hint: `${PREFIX}.defaultLibrarySortField.hint`,
+    type: String,
+    choices: {
+      status: "DRAWING-PROMPTS.choices.librarySortField.status",
+      name: "DRAWING-PROMPTS.choices.librarySortField.name",
+      createdAt: "DRAWING-PROMPTS.choices.librarySortField.createdAt",
+      closedAt: "DRAWING-PROMPTS.choices.librarySortField.closedAt"
+    },
+    default: "createdAt"
+  });
+
+  game.settings.register(MODULE_ID, SETTINGS.DEFAULT_LIBRARY_SORT_DIRECTION, {
+    scope: "client",
+    config: true,
+    name: `${PREFIX}.defaultLibrarySortDirection.name`,
+    hint: `${PREFIX}.defaultLibrarySortDirection.hint`,
+    type: String,
+    choices: {
+      asc: "DRAWING-PROMPTS.choices.librarySortDirection.ascending",
+      desc: "DRAWING-PROMPTS.choices.librarySortDirection.descending"
+    },
+    default: "desc"
+  });
+
   game.settings.register(MODULE_ID, INTERNAL.LEGACY_FIT_MODE_MIGRATED, {
     scope: "world",
     config: false,
