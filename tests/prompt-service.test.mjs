@@ -211,6 +211,62 @@ test("Close reports incremental retained-capture persistence failure through the
   }
 });
 
+test("Close persists captures for every assignment across scoped saves", async () => {
+  storedPrompt.assignments["a-second"] = new DrawingAssignment({
+    id: "a-second", promptId: "p-save", userId: "u2", userName: "Bob",
+    status: STATUS.SUBMITTED, assets: { overlayPath: "drawings/bob.webp" }
+  });
+  const closed = await closePrompt("p-save");
+  for ( const id of ["a-saved", "a-second"] ) {
+    assert.equal(closed.getAssignment(id).retainedCapture.kind, "full-submission");
+    assert.equal(storedPrompt.assignments[id].retainedCapture.overlayPath,
+      storedPrompt.assignments[id].assets.overlayPath);
+  }
+});
+
+test("Close cancels every active assignment and reopen preserves cancellations", async () => {
+  storedPrompt.assignments["a-saved"].status = STATUS.OPENED;
+  storedPrompt.assignments["a-second"] = new DrawingAssignment({
+    id: "a-second", promptId: "p-save", userId: "u2", userName: "Bob", status: STATUS.OPENED
+  });
+  await closePrompt("p-save", { closeWithoutCaptures: true });
+  const reopened = await reopenPrompt("p-save");
+  for ( const id of ["a-saved", "a-second"] ) {
+    assert.equal(reopened.getAssignment(id).status, STATUS.CANCELLED);
+    assert.equal(storedPrompt.assignments[id].status, STATUS.CANCELLED);
+  }
+});
+
+test("Close captures reopened online work before reusing old saved or retained images", async () => {
+  const assignment = storedPrompt.assignments["a-saved"];
+  assignment.status = STATUS.OPENED;
+  assignment.retainedCapture = {
+    kind: "full-submission", receiptTs: 1, width: 512, height: 512,
+    overlayPath: "drawings/old-retained.webp", mergedPath: null
+  };
+  game.users.get("u1").active = true;
+  const originalCapture = emit.requestRetainedCapture;
+  const originalCancel = emit.cancelDrawingPrompt;
+  const requests = [];
+  emit.cancelDrawingPrompt = async () => {};
+  emit.requestRetainedCapture = async (userId, assignmentId, requestId) => {
+    requests.push([userId, assignmentId]);
+    return { requestId, assignmentId, submission: {
+      mode: "staged", staged: { overlayPath: "pending/new-work.webp", mergedPath: null },
+      width: 512, height: 512, receiptTs: 999_999
+    } };
+  };
+  try {
+    const closed = await closePrompt("p-save");
+    assert.deepEqual(requests, [["u1", "a-saved"]]);
+    assert.equal(closed.getAssignment("a-saved").retainedCapture.overlayPath, "pending/new-work.webp");
+    assert.equal(storedPrompt.assignments["a-saved"].retainedCapture.receiptTs, 999_999);
+  } finally {
+    emit.requestRetainedCapture = originalCapture;
+    emit.cancelDrawingPrompt = originalCancel;
+  }
+});
+
 test("Prompt lifecycle archives Closed Prompts and restores them", async () => {
   await assert.rejects(() => archivePrompt("p-save"), /Illegal transition/);
   await closePrompt("p-save");
