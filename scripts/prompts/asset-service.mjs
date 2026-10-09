@@ -90,15 +90,34 @@ function runtimePathProvider() {
 /**
  * Browse existing file paths in a data-source folder.
  * @param {string} dir Target folder.
+ * @param {{strict?: boolean}} [options] Require successful discovery, allowing only confirmed missing folders.
  * @returns {Promise<string[]>}
  */
-export async function browseFiles(dir) {
+export async function browseFiles(dir, { strict = false } = {}) {
   assertGM();
   try {
-    const result = await getFilePicker().browse("data", normalizePath(dir));
+    const result = strict ? await browseExistingDirectory(normalizePath(dir))
+      : await getFilePicker().browse("data", normalizePath(dir));
+    if ( !result ) return [];
+    if ( strict && !Array.isArray(result.files) ) throw new Error("Invalid file discovery result");
     return Array.isArray(result?.files) ? result.files : [];
-  } catch (_err) {
+  } catch (err) {
+    if ( strict ) throw err;
     return [];
+  }
+}
+
+/** Prove a failed directory is missing through its parent listing; never swallow a failure for an existing folder. */
+async function browseExistingDirectory(dir) {
+  try {
+    return await getFilePicker().browse("data", dir);
+  } catch (err) {
+    const separator = dir.lastIndexOf("/");
+    if ( separator < 0 ) throw err;
+    const parent = await browseExistingDirectory(dir.slice(0, separator));
+    if ( !parent ) return null;
+    if ( !Array.isArray(parent.dirs) || parent.dirs.some(path => normalizePath(path) === dir) ) throw err;
+    return null;
   }
 }
 
@@ -107,8 +126,16 @@ export async function deleteDataFile(path) {
   assertGM();
   const target = normalizePath(path);
   if ( !target ) return false;
+  const picker = getFilePicker();
+  if ( typeof picker.delete !== "function" ) {
+    // Core Foundry exposes no file deletion API. Permit a retry after the host
+    // removes the exact file, but retain the Prompt while any file still exists.
+    const files = await browseFiles(target.slice(0, target.lastIndexOf("/")), { strict: true });
+    if ( !files.includes(target) ) return true;
+    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.fileCleanupUnsupported"));
+  }
   try {
-    await getFilePicker().delete("data", target, { notify: false });
+    await picker.delete("data", target, { notify: false });
     return true;
   } catch (err) {
     console.warn(`${MODULE_ID} | could not delete module-owned file`, target, err);
@@ -186,14 +213,15 @@ export async function uploadJson(dir, filename, data) {
 
 /**
  * Stage full-resolution submission images from an upload-capable player.
- * Staged filenames are deterministic per assignment and overwrite on
- * resubmission; Foundry exposes no client-side delete API, so orphaned staging
- * files are bounded by assignment id.
+ * Ordinary submissions use deterministic assignment filenames. Retained captures
+ * use a correlated suffix so an older asynchronous capture never overwrites Submit.
  * @param {string} assignmentId Assignment id.
  * @param {object} submission Full-resolution submission payload.
+ * @param {{captureId?: string|null}} [options] Optional correlated retained-capture identity.
  * @returns {Promise<{overlayPath: string, mergedPath: string|null}>} Staged file paths.
  */
-export async function stageSubmissionImages(assignmentId, submission) {
+export async function stageSubmissionImages(assignmentId, submission, { captureId = null } = {}) {
+  if ( captureId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(captureId) ) throw new Error("Invalid capture id");
   if ( !canStageUploads() ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.fileUploadRequired"));
   // FILES_UPLOAD permits uploads into EXISTING directories only — createDirectory
   // requires browse rights players usually lack. The GM pre-creates the staging
@@ -202,7 +230,8 @@ export async function stageSubmissionImages(assignmentId, submission) {
   const dir = stagingDir();
   const basename = String(assignmentId || "assignment");
   const overlayBlob = await dataUrlToBlob(submission?.overlay?.dataUrl);
-  const overlayFilename = `${basename}-overlay.${extensionFor(submission?.overlay?.format)}`;
+  const suffix = captureId === null ? "" : `-capture-${captureId}`;
+  const overlayFilename = `${basename}-overlay${suffix}.${extensionFor(submission?.overlay?.format)}`;
   const uploads = [
     uploadBlobForCurrentUser(dir, overlayFilename, overlayBlob)
   ];
@@ -210,7 +239,7 @@ export async function stageSubmissionImages(assignmentId, submission) {
   const hasMerged = Boolean(submission?.merged?.dataUrl);
   if ( hasMerged ) {
     const mergedBlob = await dataUrlToBlob(submission.merged.dataUrl);
-    const mergedFilename = `${basename}-merged.${extensionFor(submission.merged.format)}`;
+    const mergedFilename = `${basename}-merged${suffix}.${extensionFor(submission.merged.format)}`;
     uploads.push(uploadBlobForCurrentUser(dir, mergedFilename, mergedBlob));
   }
 

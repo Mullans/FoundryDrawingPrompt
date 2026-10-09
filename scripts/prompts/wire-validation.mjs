@@ -108,7 +108,7 @@ export function isAllowedStagedPath(assignmentId, path, stagingRoot, { forge = f
   if ( !root || !normalized || !normalized.startsWith(`${root}/`) ) return false;
   const basename = normalized.slice(root.length + 1);
   const kind = expectedKind === "overlay" || expectedKind === "merged" ? expectedKind : "(overlay|merged)";
-  return new RegExp(`^${escapeRegex(String(assignmentId))}-${kind}\\.(webp|png)$`).test(basename);
+  return new RegExp(`^${escapeRegex(String(assignmentId))}-${kind}(?:-capture-[A-Za-z0-9_-]{1,64})?\\.(webp|png)$`).test(basename);
 }
 
 /**
@@ -125,7 +125,7 @@ export function isAllowedPendingPath(assignmentId, path, pendingRoot, { forge = 
   if ( !root || !normalized || !normalized.startsWith(`${root}/`) ) return false;
   const basename = normalized.slice(root.length + 1);
   const kind = expectedKind === "overlay" || expectedKind === "merged" ? expectedKind : "(overlay|merged)";
-  return new RegExp(`^${kind}\\.(webp|png)$`).test(basename);
+  return new RegExp(`^${kind}(?:-capture-[A-Za-z0-9_-]{1,64})?\\.(webp|png)$`).test(basename);
 }
 
 /**

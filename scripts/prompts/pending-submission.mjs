@@ -286,17 +286,20 @@ export function submissionValidationContext(assignmentId) {
  * Persist a socket-lane submission to the GM pending folder and rewrite as staged paths.
  * @param {string} assignmentId Assignment id.
  * @param {object} submission Socket submission payload.
+ * @param {{captureId?: string|null}} [options] Isolate retained-capture uploads from accepted submission filenames.
  * @returns {Promise<object>} Staged-shaped persisted submission.
  */
-export async function persistSocketSubmission(assignmentId, submission) {
+export async function persistSocketSubmission(assignmentId, submission, { captureId = null } = {}) {
+  if ( captureId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(captureId) ) throw new Error("Invalid capture id");
   const dir = pendingDir(assignmentId);
   await ensureDir(dir);
   const hasMerged = Boolean(submission.merged?.dataUrl);
   const overlayExt = extensionFor(submission.overlay?.format);
-  const overlay = await uploadDataUrl(dir, `overlay.${overlayExt}`, submission.overlay.dataUrl);
+  const suffix = captureId === null ? "" : `-capture-${captureId}`;
+  const overlay = await uploadDataUrl(dir, `overlay${suffix}.${overlayExt}`, submission.overlay.dataUrl);
   let merged = null;
   if ( hasMerged ) {
-    merged = await uploadDataUrl(dir, `merged.${extensionFor(submission.merged.format)}`, submission.merged.dataUrl);
+    merged = await uploadDataUrl(dir, `merged${suffix}.${extensionFor(submission.merged.format)}`, submission.merged.dataUrl);
   }
   return {
     mode: "staged",

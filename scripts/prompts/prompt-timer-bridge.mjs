@@ -38,7 +38,7 @@ export function resumePromptTimer(promptId) {
  * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
  */
 export function adjustPromptTimer(promptId, deltaMs) {
-  return updatePromptTimer(promptId, (state, prompt, now) => adjustTimer(state, deltaMs, now));
+  return updatePromptTimer(promptId, (state, prompt, now) => adjustTimer(state, deltaMs, now), { releaseInitialHold: false });
 }
 
 /**
@@ -65,15 +65,22 @@ export function stopPromptTimer(promptId) {
  * @param {Function} transition Pure timer transition.
  * @returns {Promise<import("./prompt-models.mjs").DrawingPrompt>}
  */
-function updatePromptTimer(promptId, transition) {
+function updatePromptTimer(promptId, transition, { releaseInitialHold = true } = {}) {
   return timerUpdateQueue.enqueue(promptId, async () => {
     assertGM();
     const prompt = loadPrompt(promptId);
     if ( !prompt ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.promptNotFound"));
     assertPromptOwner(prompt);
-    prompt.timerState = transition(prompt.timerState, prompt, Date.now());
-    prompt.initialTimerHeld = false;
-    await savePrompt(prompt, { timerOnly: true });
+    await savePrompt(prompt, {
+      timerOnly: true,
+      timerTransition: latest => {
+        assertPromptOwner(latest);
+        return {
+          timerState: transition(latest.timerState, latest, Date.now()),
+          initialTimerHeld: releaseInitialHold ? false : latest.initialTimerHeld
+        };
+      }
+    });
     Hooks.callAll("drawing-prompts.timerUpdated", prompt, prompt.timerState);
     await broadcastTimerState(prompt);
     await refreshManager();

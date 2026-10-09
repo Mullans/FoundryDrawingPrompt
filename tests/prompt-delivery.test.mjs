@@ -85,6 +85,39 @@ for ( const action of ["retryPromptDeliveries", "continuePromptDeliveries"] ) {
   });
 }
 
+test("an adjustment queued behind initial delivery settlement adjusts the latest running timer", async () => {
+  const { adjustPromptTimer } = await import("../scripts/prompts/prompt-timer-bridge.mjs");
+  emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
+  emit.timerUpdated = async () => {};
+  const prompt = await lifecycle.sendPrompt(draft);
+  const entry = entries.get(prompt.id);
+  const originalSetFlag = entry.setFlag;
+  const enteredSettlement = deferred();
+  const releaseSettlement = deferred();
+  let held = false;
+  let settledDeadline;
+  entry.setFlag = async (...args) => {
+    const value = args[2];
+    if ( !held && value.lifecycleStatus === "open" && value.initialDeliveryPending === false ) {
+      held = true;
+      settledDeadline = value.deadlineAt;
+      enteredSettlement.resolve();
+      await releaseSettlement.promise;
+    }
+    return originalSetFlag(...args);
+  };
+  emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+  const retried = lifecycle.retryPromptDeliveries(prompt.id);
+  await enteredSettlement.promise;
+  const adjusted = adjustPromptTimer(prompt.id, 15_000);
+  await new Promise(resolve => setImmediate(resolve));
+  releaseSettlement.resolve();
+  await Promise.all([retried, adjusted]);
+  assert.equal(stored.timerStatus, "running");
+  assert.equal(stored.initialTimerHeld, false);
+  assert.equal(stored.deadlineAt, settledDeadline + 15_000);
+});
+
 test("initial-delivery recovery respects an explicit GM timer pause", async () => {
   const { pausePromptTimer } = await import("../scripts/prompts/prompt-timer-bridge.mjs");
   emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
@@ -96,6 +129,27 @@ test("initial-delivery recovery respects an explicit GM timer pause", async () =
   assert.equal(retried.timerStatus, "paused");
   assert.equal(stored.initialDeliveryPending, false);
 });
+
+for ( const action of ["retryPromptDeliveries", "continuePromptDeliveries"] ) {
+  test(`adjusting an automatically held timer preserves its initial start on ${action}`, async () => {
+    const { adjustPromptTimer } = await import("../scripts/prompts/prompt-timer-bridge.mjs");
+    emit.openDrawingPrompt = async () => { throw new Error("unavailable"); };
+    emit.cancelDrawingPrompt = async () => {};
+    emit.timerUpdated = async () => {};
+    const prompt = await lifecycle.sendPrompt({ ...draft, selectedUserIds: ["u1", "u2"] });
+    if ( action === "continuePromptDeliveries" ) stored.assignments.a1.delivery.status = "received";
+    await adjustPromptTimer(prompt.id, 15_000);
+    assert.equal(stored.initialTimerHeld, true);
+    assert.equal(stored.timerStatus, "paused");
+    assert.equal(stored.remainingMs, 75_000);
+    emit.openDrawingPrompt = async (userId, payload) => delivery.acknowledgePromptDelivery(userId, payload.assignment.id, userId);
+    const startedAt = Date.now();
+    const settled = await lifecycle[action](prompt.id);
+    assert.equal(settled.timerStatus, "running");
+    assert.equal(stored.initialTimerHeld, false);
+    assert.ok(settled.deadlineAt >= startedAt + 75_000 && settled.deadlineAt <= Date.now() + 75_000);
+  });
+}
 
 test("awaitDeliveries false returns while the actual OPEN transport is unresolved", async () => {
   let release;

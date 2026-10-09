@@ -113,15 +113,21 @@ export async function createPromptEntry(prompt) {
  * @param {DrawingPrompt} prompt Prompt model to save.
  * @param {object} [options] Save options.
  * @param {boolean} [options.timerOnly=false] Persist only the timer state.
+ * @param {Function|null} [options.timerTransition=null] Compute a timer-only transition against the queued latest Prompt.
  * @param {boolean} [options.draftOnly=false] Persist editable Draft configuration.
  * @param {string|null} [options.assignmentOnly=null] Persist only this assignment and the asset folder name.
+ * @param {{assignmentId: string, capture: object, revision: string}|null} [options.retainedCaptureOnly=null] Merge only retained capture metadata if accepted assignment state is unchanged.
+ * @param {string|null} [options.cancelActiveOnly=null] Cancel only a still-active latest assignment, preserving a concurrent Submit.
  * @returns {Promise<JournalEntry>}
  */
 export async function savePrompt(prompt, {
   timerOnly = false,
+  timerTransition = null,
   lifecycleOnly = false,
   draftOnly = false,
   assignmentOnly = null,
+  retainedCaptureOnly = null,
+  cancelActiveOnly = null,
   deliveryOnly = null,
   restartInvitation = false,
   expectedLifecycle = null
@@ -177,10 +183,36 @@ export async function savePrompt(prompt, {
       latest.initialDeliveryPending = prompt.initialDeliveryPending;
       latest.initialTimerHeld = prompt.initialTimerHeld;
     } else if ( latest && timerOnly ) {
-      latest.timerState = prompt.timerState;
-      latest.initialTimerHeld = prompt.initialTimerHeld;
+      if ( timerTransition ) {
+        const transition = timerTransition(latest);
+        latest.timerState = transition.timerState;
+        latest.initialTimerHeld = transition.initialTimerHeld;
+      } else {
+        latest.timerState = prompt.timerState;
+        latest.initialTimerHeld = prompt.initialTimerHeld;
+      }
+      savedPrompt = latest;
+      prompt.timerState = latest.timerState;
+      prompt.initialTimerHeld = latest.initialTimerHeld;
+      prompt.initialDeliveryPending = latest.initialDeliveryPending;
+      prompt.assignments = latest.assignments;
+      prompt.assetFolderName = latest.assetFolderName;
+    } else if ( latest && retainedCaptureOnly ) {
+      const { assignmentId, capture, revision } = retainedCaptureOnly;
+      const current = latest.getAssignment(assignmentId);
+      if ( !current ) throw new Error(`Assignment not found: ${assignmentId}`);
+      if ( assignmentRetentionRevision(current) === revision ) current.retainedCapture = capture;
       savedPrompt = latest;
       prompt.assignments = latest.assignments;
+      prompt.timerState = latest.timerState;
+      prompt.assetFolderName = latest.assetFolderName;
+    } else if ( latest && cancelActiveOnly ) {
+      const current = latest.getAssignment(cancelActiveOnly);
+      if ( !current ) throw new Error(`Assignment not found: ${cancelActiveOnly}`);
+      if ( current.isActive ) current.markCancelled(Date.now());
+      savedPrompt = latest;
+      prompt.assignments = latest.assignments;
+      prompt.timerState = latest.timerState;
       prompt.assetFolderName = latest.assetFolderName;
     } else if ( latest && assignmentOnly ) {
       const assignment = prompt.getAssignment(assignmentOnly);
@@ -205,6 +237,14 @@ export async function savePrompt(prompt, {
     indexPromptAssignments(savedPrompt);
     return entry.setFlag(MODULE_ID, FLAG_PROMPT, savedPrompt.toObject());
   });
+}
+
+/** Identify accepted drawing/lifecycle state independently from transient delivery metadata. */
+export function assignmentRetentionRevision(assignment) {
+  return JSON.stringify([assignment.status, assignment.openedAt, assignment.submittedAt,
+    assignment.rejectedAt, assignment.cancelledAt, assignment.reopenedCount,
+    assignment.pendingSubmission?.receiptTs,
+    assignment.delivery.generation]);
 }
 
 /** Persist the first successful settled delivery and release only its automatic timer hold. */

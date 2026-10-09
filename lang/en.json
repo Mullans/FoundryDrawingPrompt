@@ -328,6 +328,7 @@
   "DRAWING-PROMPTS.errors.assignmentNotFound": "Drawing assignment not found.",
   "DRAWING-PROMPTS.errors.promptNotFound": "Drawing prompt not found.",
   "DRAWING-PROMPTS.errors.uploadFailed": "Drawing asset upload failed.",
+  "DRAWING-PROMPTS.errors.fileCleanupUnsupported": "This host cannot delete uploaded files. The prompt has been kept. Remove its internal capture files on the server, then retry Delete.",
   "DRAWING-PROMPTS.errors.fileUploadRequired": "Upload New Files permission is required to stage drawing submissions.",
   "DRAWING-PROMPTS.errors.invalidSubmissionPayload": "The submitted drawing payload was invalid and was ignored.",
   "DRAWING-PROMPTS.errors.unauthorizedSocketInitiator": "That Drawing Prompts socket message was rejected because it did not come from a GM.",

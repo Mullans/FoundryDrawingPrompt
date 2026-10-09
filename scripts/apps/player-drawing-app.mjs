@@ -154,7 +154,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     const format = game.settings.get(MODULE_ID, SETTINGS.EXPORT_FORMAT) || "webp";
     const quality = Number(game.settings.get(MODULE_ID, SETTINGS.WEBP_QUALITY) ?? 0.9);
     const submission = canStageUploads()
-      ? await app.#buildStagedSubmissionPayload({ format, quality })
+      ? await app.#buildStagedSubmissionPayload({ format, quality, captureId: requestId })
       : await buildFullSubmission(app.#engine, { format, quality });
     return { requestId, assignmentId, submission };
   }
@@ -340,10 +340,10 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @param {{format: string, quality: number}} options Export options.
    * @returns {Promise<object>} Submission payload.
    */
-  async #buildStagedSubmissionPayload({ format, quality }) {
+  async #buildStagedSubmissionPayload({ format, quality, captureId = null }) {
     const fullSubmission = await buildFullSubmission(this.#engine, { format, quality });
     try {
-      const staged = await stageSubmissionImages(this.assignmentPayload.assignment.id, fullSubmission);
+      const staged = await stageSubmissionImages(this.assignmentPayload.assignment.id, fullSubmission, { captureId });
       return {
         mode: "staged",
         staged,

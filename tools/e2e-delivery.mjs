@@ -90,7 +90,7 @@ async function openSetup() {
   }, null, { timeout: 20000 });
 }
 
-async function send(name, selected) {
+async function send(name, selected, { timerSeconds = null } = {}) {
   await openSetup();
   progress(`fill/send ${name}`);
   const manager = gm.locator(".drawing-prompts-manager");
@@ -98,6 +98,7 @@ async function send(name, selected) {
   await manager.locator("input[name='promptName']").fill(`${RUN}-${name}`);
   await manager.locator("input[name='canvasWidth']").fill("256");
   await manager.locator("input[name='canvasHeight']").fill("256");
+  if ( timerSeconds !== null ) await manager.locator("input[name='timerSeconds']").fill(String(timerSeconds));
   // Snapshot identifiers, not nth() locators over a shrinking :checked collection.
   const checkedIds = await manager.locator("input[name='selectedUserIds']:checked").evaluateAll(inputs => inputs.map(input => input.value));
   for ( const id of checkedIds ) {
@@ -120,6 +121,56 @@ async function waitDelivery(name, statuses) {
     return JSON.stringify(actual) === JSON.stringify([...statuses].sort());
   }, { text: `${RUN}-${name}`, statuses }, { timeout: 20000 });
   return prompt(name);
+}
+
+async function adjustHeldTimer(name, promptId) {
+  const initial = await prompt(name);
+  assert.equal(initial.timerSeconds, 60, "the timer fixture explicitly starts at 60 seconds");
+  assert.equal(initial.timerStatus, "paused", "unresolved initial delivery holds drawing time");
+  assert.equal(initial.initialTimerHeld, true);
+  assert.equal(initial.remainingMs, 60_000);
+  // The delivery warning is modal, so the manager's timer controls are inert.
+  // Use the same timer service as those controls, retaining real UI Retry/Continue.
+  await gm.evaluate(async promptId => {
+    const { adjustPromptTimer } = await import("/modules/drawing-prompts/scripts/prompts/prompt-service.mjs");
+    await adjustPromptTimer(promptId, 15_000);
+  }, promptId);
+  const adjusted = await prompt(name);
+  assert.equal(adjusted.timerStatus, "paused");
+  assert.equal(adjusted.initialTimerHeld, true, "changing duration must preserve the automatic hold");
+  assert.equal(adjusted.remainingMs, 75_000, "the held duration includes the adjustment");
+}
+
+async function waitAdjustedTimerStarted(name, after) {
+  await gm.waitForFunction(text => {
+    const prompt = game.journal.map(entry => entry.getFlag("drawing-prompts", "prompt")).find(value => value?.promptText === text);
+    return prompt?.timerStatus === "running" && prompt.initialDeliveryPending === false && prompt.initialTimerHeld === false;
+  }, `${RUN}-${name}`, { timeout: 20000 });
+  const result = await gm.evaluate(text => ({
+    prompt: game.journal.map(entry => entry.getFlag("drawing-prompts", "prompt")).find(value => value?.promptText === text),
+    now: Date.now()
+  }), `${RUN}-${name}`);
+  assert.equal(result.prompt.remainingMs, null);
+  assert.ok(result.prompt.deadlineAt >= after + 75_000 && result.prompt.deadlineAt <= result.now + 75_000,
+    "delivery settlement starts the full adjusted duration without charging delivery time");
+}
+
+async function adjustRunningTimer(name, promptId) {
+  const initial = await prompt(name);
+  assert.equal(initial.timerSeconds, 60);
+  assert.equal(initial.timerStatus, "running", "settled initial delivery with a recipient has started drawing time");
+  assert.equal(initial.initialTimerHeld, false);
+  assert.equal(initial.initialDeliveryPending, false);
+  assert.equal(initial.remainingMs, null);
+  await gm.evaluate(async promptId => {
+    const { adjustPromptTimer } = await import("/modules/drawing-prompts/scripts/prompts/prompt-service.mjs");
+    await adjustPromptTimer(promptId, 15_000);
+  }, promptId);
+  const adjusted = await prompt(name);
+  assert.equal(adjusted.timerStatus, "running");
+  assert.equal(adjusted.initialTimerHeld, false);
+  assert.equal(adjusted.deadlineAt, initial.deadlineAt + 15_000, "duration adjustment extends the existing deadline");
+  return adjusted.deadlineAt;
 }
 
 async function blockDelivery(ids) {
@@ -267,14 +318,31 @@ try {
   const retried = await waitDelivery("retry", ["received", "received"]);
   assert.deepEqual(Object.keys(retried.assignments).sort(), originalIds);
 
+  // A zero-receipt automatic hold survives a duration adjustment until real Retry.
+  await blockDelivery([userIds[0]]);
+  await send("timer-zero-retry", [userIds[0]], { timerSeconds: 60 });
+  const zeroTimer = await waitDelivery("timer-zero-retry", ["failed"]);
+  progress("adjust zero-receipt held timer, then click Retry");
+  await adjustHeldTimer("timer-zero-retry", zeroTimer.id);
+  await restoreOpen();
+  const retryTimerAfter = await gm.evaluate(() => Date.now());
+  await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='retry']").last().click();
+  await waitDelivery("timer-zero-retry", ["received"]);
+  await waitAdjustedTimerStarted("timer-zero-retry", retryTimerAfter);
+
   // Continue withdraws only unresolved invitation; a real late receipt cannot revive it.
   await blockDelivery([userIds[1]]);
-  await send("continue", userIds);
+  await send("continue", userIds, { timerSeconds: 60 });
   const unresolved = await waitDelivery("continue", ["received", "failed"]);
   const failed = Object.values(unresolved.assignments).find(a => a.userId === userIds[1]);
+  progress("adjust partial-receipt running timer before Continue");
+  const continueDeadline = await adjustRunningTimer("continue", unresolved.id);
   progress("click Continue and reject late receipt");
   await gm.locator("dialog.dp-delivery-warning-dialog button[data-action='continue']").last().click();
-  await waitDelivery("continue", ["received", "withdrawn"]);
+  const continued = await waitDelivery("continue", ["received", "withdrawn"]);
+  assert.equal(continued.timerStatus, "running");
+  assert.equal(continued.initialTimerHeld, false);
+  assert.equal(continued.deadlineAt, continueDeadline, "Continue preserves the running timer rather than restarting drawing time");
   const late = await other.evaluate(async ({ gmId, id }) => {
     const { emit } = await import("/modules/drawing-prompts/scripts/socket.mjs");
     return emit.assignmentReceived(gmId, id, game.user.id);
@@ -456,7 +524,7 @@ try {
   const unexpectedErrors = errors.filter(message => !expectedDisconnect.includes(message));
   assert.deepEqual(unexpectedErrors, [], "GM/player consoles contain unexpected errors");
   console.log(JSON.stringify({ timing }, null, 2));
-  console.log(`e2e-delivery: PASS (Sending, receipt/render independence, Retry, Continue, zero receipts, actual GM reload recovery, membership, socket identity; ${expectedDisconnect.length} expected socketlib disconnect diagnostics). Local Foundry only; Forge not verified.`);
+  console.log(`e2e-delivery: PASS (Sending, receipt/render independence, Retry, Continue, held timer duration adjustments, zero receipts, actual GM reload recovery, membership, socket identity; ${expectedDisconnect.length} expected socketlib disconnect diagnostics). Local Foundry only; Forge not verified.`);
 } catch (error) {
   console.error(`e2e-delivery: FAIL at ${stage}`, error);
   if ( errors.length ) console.error("Browser errors captured:", errors);
