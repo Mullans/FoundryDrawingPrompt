@@ -47,9 +47,8 @@ export function canStageUploads() {
 }
 
 /**
- * Get the player-side submission staging directory. Staged files use
- * deterministic names and overwrite on resubmission; there is no client-side
- * delete API, so abandoned staged files are bounded by assignment id.
+ * Get the player-side submission staging directory. Upload attempts have unique
+ * names so orphan cleanup cannot remove a replacement image at the same path.
  * @returns {string} Staging directory.
  */
 export function stagingDir() {
@@ -90,29 +89,34 @@ function runtimePathProvider() {
 /**
  * Browse existing file paths in a data-source folder.
  * @param {string} dir Target folder.
+ * @param {{strict?: boolean}} [options] Require successful discovery, allowing only confirmed missing folders.
  * @returns {Promise<string[]>}
  */
-export async function browseFiles(dir) {
+export async function browseFiles(dir, { strict = false } = {}) {
   assertGM();
   try {
-    const result = await getFilePicker().browse("data", normalizePath(dir));
+    const result = strict ? await browseExistingDirectory(normalizePath(dir))
+      : await getFilePicker().browse("data", normalizePath(dir));
+    if ( !result ) return [];
+    if ( strict && !Array.isArray(result.files) ) throw new Error("Invalid file discovery result");
     return Array.isArray(result?.files) ? result.files : [];
-  } catch (_err) {
+  } catch (err) {
+    if ( strict ) throw err;
     return [];
   }
 }
 
-/** Delete one exact module-owned data-source file without touching its parent folder. */
-export async function deleteDataFile(path) {
-  assertGM();
-  const target = normalizePath(path);
-  if ( !target ) return false;
+/** Prove a failed directory is missing through its parent listing; never swallow a failure for an existing folder. */
+async function browseExistingDirectory(dir) {
   try {
-    await getFilePicker().delete("data", target, { notify: false });
-    return true;
+    return await getFilePicker().browse("data", dir);
   } catch (err) {
-    console.warn(`${MODULE_ID} | could not delete module-owned file`, target, err);
-    return false;
+    const separator = dir.lastIndexOf("/");
+    if ( !dir ) throw err;
+    const parent = await browseExistingDirectory(separator < 0 ? "" : dir.slice(0, separator));
+    if ( !parent ) return null;
+    if ( !Array.isArray(parent.dirs) || parent.dirs.some(path => normalizePath(path) === dir) ) throw err;
+    return null;
   }
 }
 
@@ -186,39 +190,74 @@ export async function uploadJson(dir, filename, data) {
 
 /**
  * Stage full-resolution submission images from an upload-capable player.
- * Staged filenames are deterministic per assignment and overwrite on
- * resubmission; Foundry exposes no client-side delete API, so orphaned staging
- * files are bounded by assignment id.
+ * Each attempt has unique filenames, including correlated retained captures.
  * @param {string} assignmentId Assignment id.
  * @param {object} submission Full-resolution submission payload.
+ * @param {{captureId?: string|null}} [options] Optional correlated retained-capture identity.
  * @returns {Promise<{overlayPath: string, mergedPath: string|null}>} Staged file paths.
  */
-export async function stageSubmissionImages(assignmentId, submission) {
+export async function stageSubmissionImages(assignmentId, submission, { captureId = null } = {}) {
+  if ( captureId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(captureId) ) throw new Error("Invalid capture id");
   if ( !canStageUploads() ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.fileUploadRequired"));
-  // FILES_UPLOAD permits uploads into EXISTING directories only — createDirectory
+  // FILES_UPLOAD permits uploads into EXISTING directories only; createDirectory
   // requires browse rights players usually lack. The GM pre-creates the staging
   // directory at send time (see sendPrompt); if it is missing the upload
   // rejects and the caller falls back to the socket lane.
   const dir = stagingDir();
   const basename = String(assignmentId || "assignment");
   const overlayBlob = await dataUrlToBlob(submission?.overlay?.dataUrl);
-  const overlayFilename = `${basename}-overlay.${extensionFor(submission?.overlay?.format)}`;
+  const mergedBlob = submission?.merged?.dataUrl ? await dataUrlToBlob(submission.merged.dataUrl) : null;
+  const attemptId = foundry.utils.randomID();
+  const suffix = `${captureId === null ? "" : `-capture-${captureId}`}-upload-${attemptId}`;
+  const overlayFilename = `${basename}-overlay${suffix}.${extensionFor(submission?.overlay?.format)}`;
   const uploads = [
-    uploadBlobForCurrentUser(dir, overlayFilename, overlayBlob)
+    uploadInternalImage(assignmentId, dir, overlayFilename, overlayBlob,
+      { attemptId, kind: "overlay", purpose: captureId ? "retained-capture" : "staging" })
   ];
 
-  const hasMerged = Boolean(submission?.merged?.dataUrl);
-  if ( hasMerged ) {
-    const mergedBlob = await dataUrlToBlob(submission.merged.dataUrl);
-    const mergedFilename = `${basename}-merged.${extensionFor(submission.merged.format)}`;
-    uploads.push(uploadBlobForCurrentUser(dir, mergedFilename, mergedBlob));
+  if ( mergedBlob ) {
+    const mergedFilename = `${basename}-merged${suffix}.${extensionFor(submission.merged.format)}`;
+    uploads.push(uploadInternalImage(assignmentId, dir, mergedFilename, mergedBlob,
+      { attemptId, kind: "merged", purpose: captureId ? "retained-capture" : "staging" }));
   }
 
-  const [overlay, merged] = await Promise.all(uploads);
+  const results = await Promise.allSettled(uploads);
+  const failure = results.find(result => result.status === "rejected");
+  if ( failure ) {
+    const { settleInternalUploads, reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
+    try { await settleInternalUploads([attemptId]); }
+    catch (_error) { /* Same-session recovery can repair the persisted intent. */ }
+    void reconcileFileCleanup().catch(() => {});
+    throw failure.reason;
+  }
+  const [overlay, merged] = results.map(result => result.value);
   return {
     overlayPath: overlay.path,
     mergedPath: merged?.path ?? null
   };
+}
+
+/** Upload one registered internal image; intentionally exported artwork uses other helpers. */
+async function uploadInternalImage(assignmentId, dir, filename, blob, { attemptId, kind, purpose }) {
+  const { beginInternalUpload, completeInternalUpload } = await import("./file-cleanup-service.mjs");
+  const reservationId = await beginInternalUpload({
+    assignmentId, attemptId, kind, purpose, expectedPath: `${normalizePath(dir)}/${filename}`
+  });
+  let uploaded;
+  try {
+    uploaded = await uploadBlobForCurrentUser(dir, filename, blob);
+    await completeInternalUpload(reservationId, { path: uploaded.path });
+    return uploaded;
+  } catch (error) {
+    await completeInternalUpload(reservationId, { path: uploaded?.path, error: "Upload did not complete" }).catch(() => {});
+    throw error;
+  }
+}
+
+/** GM-side internal pending/capture upload with durable registration before file creation. */
+export async function uploadInternalDataUrl(assignmentId, dir, filename, dataUrl, identity) {
+  assertGM();
+  return uploadInternalImage(assignmentId, dir, filename, await dataUrlToBlob(dataUrl), identity);
 }
 
 /**

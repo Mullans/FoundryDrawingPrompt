@@ -13,6 +13,7 @@ This repository owns Drawing Prompts product documentation, architectural histor
 - [docs/verification/](verification/): product walkthrough cases and sign-off evidence.
 - mockups/: tracked HTML UI references.
 - [tools/forge-probe.md](../tools/forge-probe.md): module-specific Forge path-probe snippets.
+- [docs/research/forge-asset-cleanup.md](research/forge-asset-cleanup.md): first-party evidence for automatic Forge file deletion and remaining runtime acceptance checks.
 
 ## Shared FoundryHub guidance
 

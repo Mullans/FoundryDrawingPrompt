@@ -4,7 +4,7 @@
 
 import { FILES_UPLOAD_PERMISSION, INTERNAL, MODULE_ID, PROMPT_STATUS, STATUS } from "../constants.mjs";
 import { emit } from "../socket.mjs";
-import { deleteDataFile, ensureDir, stagingDir } from "./asset-service.mjs";
+import { ensureDir, stagingDir } from "./asset-service.mjs";
 import { clearFramingViewAssets, hasSavedFramingViewAssets } from "./dual-save.mjs";
 import { prepareFramedBackgroundForSend } from "./framed-delivery.mjs";
 import {
@@ -18,6 +18,7 @@ import {
 import { isStagedSubmission } from "./assignment-save.mjs";
 import {
   createPromptEntry,
+  assignmentRetentionRevision,
   deletePromptEntry,
   loadAllPrompts,
   loadPrompt,
@@ -38,7 +39,6 @@ import { pauseTimer } from "./timer-service.mjs";
 import { validateDraft } from "./draft-validation.mjs";
 import { TimerUpdateQueue } from "./timer-update-queue.mjs";
 import { validateSubmissionPayload } from "./transitions.mjs";
-import { isAllowedPendingPath, isAllowedStagedPath } from "./wire-validation.mjs";
 
 const draftLifecycleQueue = new TimerUpdateQueue();
 
@@ -317,10 +317,11 @@ export async function closePrompt(promptId, { closeWithoutCaptures = false, avai
     }
   }
   for ( const assignmentId of Object.keys(prompt.assignments) ) {
-    const assignment = prompt.getAssignment(assignmentId);
+    let assignment = prompt.getAssignment(assignmentId);
     if ( !assignment.isActive ) continue;
-    assignment.markCancelled(now);
-    await savePrompt(prompt, { assignmentOnly: assignment.id });
+    await savePrompt(prompt, { cancelActiveOnly: assignment.id });
+    assignment = prompt.getAssignment(assignmentId);
+    if ( assignment.status !== STATUS.CANCELLED ) continue;
     if ( game.users.get(assignment.userId)?.active ) {
       try {
         await emit.cancelDrawingPrompt(assignment.userId, assignment.id, assignment.delivery.generation);
@@ -335,6 +336,8 @@ export async function closePrompt(promptId, { closeWithoutCaptures = false, avai
   prompt.markClosed(now);
   await savePrompt(prompt, { lifecycleOnly: true, expectedLifecycle: PROMPT_STATUS.OPEN });
   Hooks.callAll("drawing-prompts.promptClosed", prompt);
+  const { reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
+  void reconcileFileCleanup().catch(error => console.warn("drawing-prompts | deferred file cleanup", error?.message));
   await refreshManager();
   return prompt;
 }
@@ -342,22 +345,27 @@ export async function closePrompt(promptId, { closeWithoutCaptures = false, avai
 async function retainAvailablePreviews(prompt, previews) {
   for ( const assignmentId of Object.keys(prompt.assignments) ) {
     const assignment = prompt.getAssignment(assignmentId);
+    const revision = assignmentRetentionRevision(assignment);
     const dataUrl = previews[assignment.id];
     if ( !dataUrl || assignment.retainedCapture?.kind === "full-submission" ) continue;
+    let completedPaths = [];
     try {
       const format = /^data:image\/png/i.test(dataUrl) ? "png" : "webp";
       const stored = await persistSocketSubmission(assignment.id, {
         overlay: { dataUrl, format }, width: prompt.canvasWidth, height: prompt.canvasHeight,
         receiptTs: Date.now()
-      });
-      assignment.retainedCapture = {
+      }, { captureId: foundry.utils.randomID() });
+      completedPaths = Object.values(stored.staged ?? {}).filter(path => typeof path === "string");
+      const capture = {
         kind: "saved-preview", receiptTs: stored.receiptTs,
         width: prompt.canvasWidth, height: prompt.canvasHeight,
         overlayPath: stored.staged.overlayPath, mergedPath: null
       };
-      await savePrompt(prompt, { assignmentOnly: assignment.id });
+      await savePrompt(prompt, { retainedCaptureOnly: { assignmentId: assignment.id, capture, revision } });
     } catch (err) {
       console.warn("drawing-prompts | could not retain available preview", assignment.id, err);
+    } finally {
+      await settleCompletedCapture(completedPaths);
     }
   }
 }
@@ -366,6 +374,8 @@ async function retainFullCaptures(prompt) {
   const failures = [];
   for ( const assignmentId of Object.keys(prompt.assignments) ) {
     const assignment = prompt.getAssignment(assignmentId);
+    const revision = assignmentRetentionRevision(assignment);
+    let completedPaths = [];
     try {
       const captureLiveWork = assignment.isActive && game.users.get(assignment.userId)?.active;
       let submission;
@@ -378,14 +388,19 @@ async function retainFullCaptures(prompt) {
           throw new Error("Invalid retained capture response");
         }
       } else submission = await resolveRestorationSubmission(assignment, prompt);
+      if ( submission && isStagedSubmission(submission) ) {
+        completedPaths = Object.values(submission.staged ?? {}).filter(path => typeof path === "string");
+      }
       if ( !submission || Number(submission.width) !== prompt.canvasWidth || Number(submission.height) !== prompt.canvasHeight || submission.wireScaled ) {
-        if ( assignment.isActive ) failures.push(assignment);
+        const current = loadPrompt(prompt.id)?.getAssignment(assignment.id);
+        if ( current?.isActive ) failures.push(current);
         continue;
       }
       submission = { ...submission, recoveryKind: "full-submission", assignmentId: assignment.id, receiptTs: submission.receiptTs ?? Date.now() };
-      if ( !isStagedSubmission(submission) ) submission = await persistSocketSubmission(assignment.id, submission);
-      setPendingSubmission(assignment.id, submission);
-      assignment.retainedCapture = {
+      if ( !isStagedSubmission(submission) ) submission = await persistSocketSubmission(assignment.id, submission,
+        { captureId: foundry.utils.randomID() });
+      completedPaths = Object.values(submission.staged ?? {}).filter(path => typeof path === "string");
+      const capture = {
         kind: "full-submission",
         receiptTs: submission.receiptTs,
         width: prompt.canvasWidth,
@@ -393,13 +408,30 @@ async function retainFullCaptures(prompt) {
         overlayPath: submission.staged?.overlayPath ?? null,
         mergedPath: submission.staged?.mergedPath ?? null
       };
-      await savePrompt(prompt, { assignmentOnly: assignment.id });
+      await savePrompt(prompt, { retainedCaptureOnly: { assignmentId: assignment.id, capture, revision } });
+      const current = prompt.getAssignment(assignment.id);
+      if ( current.isActive && current.retainedCapture !== capture ) failures.push(current);
     } catch (err) {
       console.warn("drawing-prompts | retained capture failed", assignment.id, err);
-      if ( assignment.isActive ) failures.push(assignment);
+      const current = loadPrompt(prompt.id)?.getAssignment(assignment.id);
+      if ( current?.isActive ) failures.push(current);
+    } finally {
+      await settleCompletedCapture(completedPaths);
     }
   }
   return failures;
+}
+
+async function settleCompletedCapture(paths) {
+  if ( !paths.length ) return;
+  try {
+    const { settleInternalUploads } = await import("./file-cleanup-service.mjs");
+    await settleInternalUploads(paths);
+  } catch (error) {
+    // Persisted capture references remain protective; a failed registry write
+    // leaves completed uploads conservatively protected for later recovery.
+    console.warn("drawing-prompts | capture settlement deferred", error?.message);
+  }
 }
 
 /** Reopen a Closed Prompt with its remaining timer paused. */
@@ -447,35 +479,15 @@ export async function deletePrompt(promptId, { confirmed = false } = {}) {
   if ( prompt.lifecycleStatus === PROMPT_STATUS.OPEN ) {
     throw new Error("Cannot delete an open prompt. Please close from the Prompt Manager and try again.");
   }
-  const internalPaths = moduleOwnedPromptPaths(prompt);
-  const deleted = await Promise.all(internalPaths.map(path => deleteDataFile(path)));
-  if ( deleted.some(result => !result) ) throw new Error("Could not remove all module-owned Prompt data.");
+  const { preparePromptCleanup, reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
+  await preparePromptCleanup(prompt);
   await deletePromptEntry(promptId);
   for ( const assignment of Object.values(prompt.assignments) ) clearPendingSubmission(assignment.id);
   await queueRecoveryTombstones(prompt);
   Hooks.callAll("drawing-prompts.promptDeleted", prompt);
   await refreshManager();
+  void reconcileFileCleanup().catch(error => console.warn("drawing-prompts | deferred file cleanup", error?.message));
   return true;
-}
-
-function moduleOwnedPromptPaths(prompt) {
-  const paths = new Set();
-  for ( const assignment of Object.values(prompt.assignments)) {
-    const exported = new Set(Object.values(assignment.assets ?? {}).filter(value => typeof value === "string"));
-    const pending = getPendingSubmission(assignment.id);
-    const context = submissionValidationContext(assignment.id);
-    for ( const [kind, path] of [
-      ["overlay", pending?.staged?.overlayPath],
-      ["merged", pending?.staged?.mergedPath],
-      ["overlay", assignment.retainedCapture?.overlayPath],
-      ["merged", assignment.retainedCapture?.mergedPath]
-    ]) {
-      if ( typeof path === "string" && path && !exported.has(path)
-        && (isAllowedStagedPath(assignment.id, path, context.stagingRoot, { forge: context.forge, expectedKind: kind })
-          || isAllowedPendingPath(assignment.id, path, context.pendingRoot, { forge: context.forge, expectedKind: kind })) ) paths.add(path);
-    }
-  }
-  return [...paths];
 }
 
 /** Clear queued browser Recovery copies for a player and retain only unacknowledged work. */

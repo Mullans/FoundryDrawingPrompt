@@ -16,6 +16,22 @@ import {
 
 const SNAPSHOT_PREFIX = "data:image/webp;base64,";
 
+test("capture paths retain exact assignment, image role, and directory boundaries", () => {
+  const staging = "worlds/test/drawing-prompts/staging";
+  const pending = "worlds/test/drawing-prompts/pending/a1";
+  assert.equal(isAllowedStagedPath("a1", `${staging}/a1-overlay-capture-request_1.webp`, staging,
+    { expectedKind: "overlay" }), true);
+  assert.equal(isAllowedPendingPath("a1", `${pending}/merged-capture-request_1.png`, pending,
+    { expectedKind: "merged" }), true);
+  for ( const path of ["a2-overlay-capture-request.webp", "a1-merged-capture-request.webp",
+    "a1-overlay-capture-.webp", "a1-overlay-capture-../outside.webp"] ) {
+    assert.equal(isAllowedStagedPath("a1", `${staging}/${path}`, staging, { expectedKind: "overlay" }), false);
+  }
+  assert.equal(isAllowedPendingPath("a1", `${pending}/merged-capture-request.webp`, pending,
+    { expectedKind: "overlay" }), false);
+  assert.equal(isAllowedPendingPath("a1", `${pending}/../a2/overlay-capture-request.webp`, pending), false);
+});
+
 /**
  * Build a snapshot data URL of an exact total length.
  * @param {number} totalLength Desired data URL length.
@@ -152,4 +168,15 @@ test("local allowlists retain exact root-relative path behavior when Forge is fa
   const root = "worlds/test-world/drawing-prompts/staging";
   assert.equal(isAllowedStagedPath("a1", `${root}/a1-overlay.webp`, root, { forge: false }), true);
   assert.equal(isAllowedStagedPath("a1", `https://assets.forge-vtt.com/account/${root}/a1-overlay.webp`, root, { forge: false }), false);
+});
+
+test("unique upload names remain assignment scoped and accept legacy captures", () => {
+  const staging = "worlds/test/drawing-prompts/staging";
+  const pending = "worlds/test/drawing-prompts/pending/a1";
+  for ( const suffix of ["", "-capture-c1", "-upload-u1", "-capture-c1-upload-u2"] ) {
+    assert.equal(isAllowedStagedPath("a1", `${staging}/a1-overlay${suffix}.webp`, staging), true);
+    assert.equal(isAllowedPendingPath("a1", `${pending}/merged${suffix}.png`, pending), true);
+  }
+  assert.equal(isAllowedStagedPath("a1", `${staging}/a2-overlay-upload-u1.webp`, staging), false);
+  assert.equal(isAllowedPendingPath("a1", `${pending}/overlay-upload-.webp`, pending), false);
 });

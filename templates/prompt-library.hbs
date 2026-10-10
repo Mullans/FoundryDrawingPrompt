@@ -18,6 +18,9 @@
     <button class="dp-library-archive-toggle" type="button" data-action="toggleArchived" aria-pressed="{{showArchived}}" aria-label="{{archiveToggleLabel}}" title="{{archiveToggleLabel}}">
       <i class="fa-solid {{archiveToggleIcon}}" inert></i><span>{{archiveToggleText}}</span>
     </button>
+    <button class="dp-library-orphans" type="button" data-action="orphanFiles" aria-label="{{orphanCountLabel}}" title="{{orphanCountLabel}}">
+      <i class="fa-solid fa-file-circle-exclamation" inert></i><span>{{orphanCount}}</span>
+    </button>
   </div>
 
   {{#if hasRows}}

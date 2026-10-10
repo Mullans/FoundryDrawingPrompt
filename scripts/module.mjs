@@ -6,6 +6,7 @@ import { getSocketHandlers, openPlayerPromptList, openPromptLibrary } from "./pr
 import { loadAllPrompts } from "./prompts/persistence-service.mjs";
 import { recoverInterruptedPromptDeliveries } from "./prompts/prompt-delivery.mjs";
 import { renderTokenTransformHUD } from "./foundry/token-transform-service.mjs";
+import { reconcileFileCleanup } from "./prompts/file-cleanup-service.mjs";
 
 Hooks.once("init", () => {
   registerSettings();
@@ -23,11 +24,15 @@ Hooks.once("ready", async () => {
     await recoverInterruptedPromptDeliveries();
     const activeCount = loadAllPrompts().filter(prompt => prompt.needsAttention).length;
     if ( activeCount ) ui.notifications.info(game.i18n.format("DRAWING-PROMPTS.notifications.activePrompts", { count: activeCount }));
+    void reconcileFileCleanup({ scan: true, retry: true }).catch(reportCleanupFailure);
   }
   console.log(`${MODULE_ID} | ready`);
 });
 
 Hooks.on("userConnected", (user, connected) => {
+  if ( game.user.isGM ) {
+    void reconcileFileCleanup({ userId: connected ? user.id : null, scan: Boolean(user.isGM), retry: connected }).catch(reportCleanupFailure);
+  }
   if ( connected && game.user.isGM ) {
     import("./prompts/prompt-service.mjs").then(async s => {
       await s.processRecoveryTombstonesForUser(user.id);
@@ -52,6 +57,18 @@ Hooks.on("getSceneControlButtons", controls => {
 });
 
 Hooks.on("renderTokenHUD", renderTokenTransformHUD);
+
+Hooks.on("drawing-prompts.fileCleanupChanged", () => {
+  if ( !game.user.isGM ) return;
+  void Promise.all([import("./apps/prompt-library.mjs"), import("./apps/orphan-files.mjs")])
+      .then(([{ PromptLibrary }, { OrphanFiles }]) => {
+        return Promise.all([PromptLibrary.refreshOpen(), OrphanFiles.refreshOpen()]);
+    }).catch(reportCleanupFailure);
+});
+
+function reportCleanupFailure(error) {
+  console.warn(`${MODULE_ID} | file cleanup could not complete`, error?.message ?? "Unknown error");
+}
 
 /**
  * Refresh open Drawing Prompts applications after external user state changes.

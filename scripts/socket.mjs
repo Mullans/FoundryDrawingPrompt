@@ -15,7 +15,9 @@ export const CALLS = Object.freeze({
   SNAPSHOT: "drawingSnapshot",
   SUBMITTED: "drawingSubmitted",
   REJECTED: "drawingRejected",
-  WINDOW_CLOSED: "playerWindowClosed"
+  WINDOW_CLOSED: "playerWindowClosed",
+  CLEANUP_OPERATION: "fileCleanupOperation",
+  CLEANUP_FILE: "fileCleanupFile"
 });
 
 let socket = null;
@@ -69,7 +71,8 @@ const PLAYER_GM_INITIATED_CALLS = new Set([
   CALLS.SHOW,
   CALLS.REQUEST_SNAPSHOT,
   CALLS.REQUEST_RETAINED_CAPTURE,
-  CALLS.CLEAR_RECOVERY
+  CALLS.CLEAR_RECOVERY,
+  CALLS.CLEANUP_FILE
 ]);
 
 /**
@@ -90,6 +93,16 @@ function requireSocket() {
 }
 
 export const emit = {
+  /** Route registry operations to the one authoritative GM writer. */
+  cleanupOperation(payload) {
+    const gm = game.users.activeGM;
+    if ( !gm ) throw new Error("No active GM is available to track uploaded files.");
+    return requireSocket().executeAsUser(CALLS.CLEANUP_OPERATION, gm.id, payload);
+  },
+  /** Ask the authenticated file-owning client to check/delete one registered file. */
+  cleanupFile(userId, payload) {
+    return requireSocket().executeAsUser(CALLS.CLEANUP_FILE, userId, payload);
+  },
   /** Request an authenticated receipt decision from the prompt-owning GM. */
   assignmentReceived(gmUserId, assignmentId, userId, generation = 0) {
     return requireSocket().executeAsUser(CALLS.RECEIVED, gmUserId, assignmentId, userId, generation);

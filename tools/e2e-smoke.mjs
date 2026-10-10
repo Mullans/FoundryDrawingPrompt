@@ -237,7 +237,8 @@ async function submitDrawing(page) {
   await page.locator(".drawing-prompts-player button[data-action='submit']").first().click();
   // DialogV2 renders a native <dialog>; the confirm button carries data-action="yes".
   await page.locator("dialog [data-action='yes']").last().click();
-  await page.locator(".drawing-prompts-player").waitFor({ state: "hidden", timeout: 10000 });
+  // Submit now durably registers each upload and awaits GM adoption before close.
+  await page.locator(".drawing-prompts-player").waitFor({ state: "hidden", timeout: 30000 });
 }
 
 async function saveSubmittedDrawing(page) {
@@ -246,7 +247,7 @@ async function saveSubmittedDrawing(page) {
   const dialog = page.locator("dialog").last();
   await dialog.locator("input[name='name']").fill(DRAWING_NAME);
   await dialog.locator("button[type='submit'], [data-action='ok']").first().click();
-  await manager.locator(".dp-saved-indicator").waitFor({ state: "visible", timeout: 15000 });
+  await manager.locator(".dp-saved-indicator").waitFor({ state: "visible", timeout: 30000 });
 }
 
 /**

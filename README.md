@@ -44,7 +44,7 @@ Players receive a non-blocking drawing window. They can brush, erase, fill, samp
 
 Drawing submissions use two transport lanes. Players with the core `Upload New Files` permission (`FILES_UPLOAD`) stage full-resolution overlay and merged images directly into the configured asset folder under `staging`, then only the staged paths and operation log cross the socket. Players without that permission use the socket fallback lane; the module may reduce image quality or resolution to stay under Foundry socket-size limits.
 
-Staged filenames are deterministic per assignment, such as `{assignmentId}-overlay.webp` and `{assignmentId}-merged.webp`, so resubmitting overwrites that player's prior staged files. Foundry does not expose a client-side delete API, so abandoned staged files can remain, but they are bounded to one overlay and one merged file per assignment id.
+Each internal upload uses a unique attempt filename. On Forge, Drawing Prompts automatically cleans up internal files once they are no longer needed, using the existing Forge authentication. Saved artwork and scene assets are preserved. Other hosts, unavailable file owners, denied access, and failed or unconfirmed deletions leave entries in the GM's Orphaned files window, opened from the Prompt Library. Refresh removes entries after files have been manually deleted; Retry Cleanup attempts automatic deletion again. No separate API-key setup is required.
 
 ## Settings
 

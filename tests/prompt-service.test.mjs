@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { before, beforeEach, test } from "node:test";
+import { afterEach, before, beforeEach, test } from "node:test";
 
 import { FLAG_PROMPT, MODULE_ID, PROMPT_STATUS, STATUS } from "../scripts/constants.mjs";
 
@@ -22,11 +22,13 @@ let deletedFiles;
 let failSetFlagAt;
 let setFlagCalls;
 let clearPendingSubmission;
+let cleanup;
+let nextUploadId = 0;
 
 before(async () => {
   class ApplicationV2 {}
   globalThis.foundry = {
-    utils: { randomID: () => "capture-request" },
+    utils: { randomID: () => `capture-request-${++nextUploadId}` },
     applications: {
       api: {
         ApplicationV2,
@@ -34,6 +36,7 @@ before(async () => {
         HandlebarsApplicationMixin: Base => class extends Base {}
       },
       apps: { FilePicker: class {
+        static async browse() { return { files: [], dirs: [] }; }
         static async delete(_source, path) { deletedFiles.push(path); }
       } }
     }
@@ -54,9 +57,12 @@ before(async () => {
   } = await import("../scripts/prompts/prompt-service.mjs"));
   ({ emit } = await import("../scripts/socket.mjs"));
   ({ clearPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs"));
+  cleanup = await import("../scripts/prompts/file-cleanup-service.mjs");
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Lifecycle cleanup is deliberately deferred; drain its queue before replacing the world fixture.
+  if ( globalThis.game?.settings ) await cleanup.reconcileFileCleanup();
   clearPendingSubmission("a-saved");
   clearPendingSubmission("a-second");
   deletedFiles = [];
@@ -103,13 +109,15 @@ beforeEach(() => {
     user: { id: "gm1", isGM: true },
     journal,
     users: new Map([
+      ["gm1", { id: "gm1", name: "GM", isGM: true, active: true }],
       ["u1", { id: "u1", name: "Ada", active: false }]
     ]),
     i18n: { localize: key => key },
     world: { id: "test-world" },
+    scenes: [], actors: [],
     settings: {
       values: new Map(),
-      get(_module, key) { return this.values.get(key) ?? []; },
+      get(_module, key) { return this.values.get(key) ?? (key === "fileCleanupRegistry" ? { version: 1, records: [], exports: [] } : []); },
       async set(_module, key, value) { this.values.set(key, structuredClone(value)); return value; }
     }
   };
@@ -121,6 +129,8 @@ beforeEach(() => {
     removeItem(key) { this.store.delete(key); }
   };
 });
+
+afterEach(async () => { await cleanup.waitForFileCleanupIdle(); });
 
 test("Archive cannot override Send while its Open flag write is pending", async () => {
   storedPrompt = { ...storedPrompt, lifecycleStatus: PROMPT_STATUS.DRAFT,
@@ -148,7 +158,7 @@ test("Archive cannot override Send while its Open flag write is pending", async 
   await rejected;
   assert.equal(storedPrompt.lifecycleStatus, PROMPT_STATUS.OPEN);
   assert.equal(Object.keys(storedPrompt.assignments).length, 1);
-  assert.equal(storedPrompt.assignments["capture-request"].status, STATUS.PENDING);
+  assert.equal(Object.values(storedPrompt.assignments)[0].status, STATUS.PENDING);
 });
 
 for ( const [firstAction, staleAction, source, target] of [
@@ -279,6 +289,12 @@ test("Close reports incremental retained-capture persistence failure through the
   assignment.assets = {};
   game.users.get("u1").active = true;
   const originalCapture = emit.requestRetainedCapture;
+  const failedCapturePath = "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp";
+  await game.settings.set(MODULE_ID, "fileCleanupRegistry", { version: 1, exports: [], records: [{
+    id: "failed-capture", assignmentId: "a-saved", promptId: "p-save", sourceUserId: "u1",
+    path: failedCapturePath, kind: "overlay", purpose: "retained-capture", state: "ready", status: "pending",
+    stagingRoot: "worlds/test-world/drawing-prompts/staging", revision: 1, leases: []
+  }] });
   emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
     requestId, assignmentId,
     submission: { mode: "staged", formats: { overlay: "webp" }, staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp", mergedPath: null }, width: 512, height: 512 }
@@ -287,6 +303,9 @@ test("Close reports incremental retained-capture persistence failure through the
   try {
     await assert.rejects(() => closePrompt("p-save"), error =>
       error.code === "RETAINED_CAPTURE_FAILED" && error.assignmentIds?.includes("a-saved"));
+    await cleanup.waitForFileCleanupIdle();
+    assert.equal(game.settings.get(MODULE_ID, "fileCleanupRegistry").records
+      .find(record => record.id === "failed-capture")?.state, "settled", "failed adoption releases the completed upload");
   } finally {
     emit.requestRetainedCapture = originalCapture;
   }
@@ -302,6 +321,235 @@ test("Close persists captures for every assignment across scoped saves", async (
     assert.equal(closed.getAssignment(id).retainedCapture.kind, "full-submission");
     assert.equal(storedPrompt.assignments[id].retainedCapture.overlayPath,
       storedPrompt.assignments[id].assets.overlayPath);
+  }
+});
+
+for ( const gap of ["capture response", "queued capture persistence", "failed capture response", "missing capture image"] ) {
+  test(`Close preserves a newly accepted submission during ${gap}`, async () => {
+    const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+    const { getPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");
+    const assignment = storedPrompt.assignments["a-saved"];
+    assignment.status = STATUS.OPENED;
+    assignment.assets = {};
+    assignment.delivery = { status: "received", generation: 0 };
+    game.users.get("u1").active = true;
+    const originalCapture = emit.requestRetainedCapture;
+    const originalCancel = emit.cancelDrawingPrompt;
+    let resolveCapture;
+    let captureStarted;
+    const captureRequested = new Promise(resolve => { captureStarted = resolve; });
+    emit.requestRetainedCapture = (_user, assignmentId, requestId) => new Promise((resolve, reject) => {
+      resolveCapture = () => gap === "failed capture response" ? reject(new Error("Capture unavailable"))
+        : resolve({ requestId, assignmentId, submission: gap === "missing capture image" ? null : {
+        mode: "staged", formats: { overlay: "webp" }, width: 512, height: 512,
+        staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp" }, receiptTs: 1
+      } });
+      captureStarted();
+    });
+    const cancellations = [];
+    emit.cancelDrawingPrompt = async (...args) => cancellations.push(args);
+    let releaseSubmission;
+    let submissionStarted;
+    const submissionCommitting = new Promise(resolve => { submissionStarted = resolve; });
+    const entry = game.journal.get("p-save");
+    const originalSetFlag = entry.setFlag;
+    if ( gap === "queued capture persistence" ) entry.setFlag = async (...args) => {
+      if ( args[2].assignments["a-saved"].status === STATUS.SUBMITTED && !releaseSubmission ) {
+        submissionStarted();
+        await new Promise(resolve => { releaseSubmission = resolve; });
+      }
+      return originalSetFlag(...args);
+    };
+    try {
+      const closing = closePrompt("p-save");
+      await captureRequested;
+      const submitted = getSocketHandlers().drawingSubmitted.call({ socketdata: { userId: "u1" } }, "a-saved", "u1", {
+        mode: "staged", formats: { overlay: "webp" }, width: 512, height: 512,
+        staged: { overlayPath: "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp" }
+      });
+      if ( gap === "queued capture persistence" ) await submissionCommitting;
+      else await submitted;
+      resolveCapture();
+      if ( releaseSubmission ) { await new Promise(resolve => setImmediate(resolve)); releaseSubmission(); }
+      await submitted;
+      const closed = await closing;
+      assert.equal(closed.getAssignment("a-saved").status, STATUS.SUBMITTED);
+      assert.equal(storedPrompt.assignments["a-saved"].status, STATUS.SUBMITTED);
+      assert.equal(storedPrompt.assignments["a-saved"].pendingSubmission.staged.overlayPath,
+        "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp");
+      assert.equal(getPendingSubmission("a-saved").staged.overlayPath,
+        "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp");
+      assert.deepEqual(cancellations, []);
+    } finally {
+      releaseSubmission?.();
+      emit.requestRetainedCapture = originalCapture;
+      emit.cancelDrawingPrompt = originalCancel;
+    }
+  });
+}
+
+test("Close retains both available previews and cancellations after reloading", async () => {
+  const { loadPrompt } = await import("../scripts/prompts/persistence-service.mjs");
+  storedPrompt.assignments["a-saved"].status = STATUS.OPENED;
+  storedPrompt.assignments["a-second"] = new DrawingAssignment({
+    id: "a-second", promptId: "p-save", userId: "u2", userName: "Bob", status: STATUS.OPENED
+  });
+  const picker = foundry.applications.apps.FilePicker;
+  picker.createDirectory = async () => {};
+  picker.upload = async (_source, dir, file) => ({ path: `${dir}/${file.name}` });
+  const dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+  const closed = await closePrompt("p-save", { closeWithoutCaptures: true,
+    availablePreviews: { "a-saved": dataUrl, "a-second": dataUrl } });
+  const reloaded = loadPrompt("p-save");
+  for ( const id of ["a-saved", "a-second"] ) {
+    for ( const prompt of [closed, reloaded] ) {
+      assert.equal(prompt.getAssignment(id).status, STATUS.CANCELLED);
+      assert.equal(prompt.getAssignment(id).retainedCapture.kind, "saved-preview");
+      assert.ok(prompt.getAssignment(id).retainedCapture.overlayPath.includes(`/${id}/`));
+    }
+  }
+});
+
+test("committed Submission acknowledges success when registry settlement fails", async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { getPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");
+  storedPrompt.assignments["a-saved"].status = STATUS.OPENED;
+  storedPrompt.assignments["a-saved"].assets = {};
+  const path = "worlds/test-world/drawing-prompts/staging/a-saved-overlay-upload-postcommit.png";
+  const reservationId = await cleanup.beginInternalUpload({ assignmentId: "a-saved", attemptId: "postcommit", kind: "overlay", expectedPath: path });
+  await cleanup.completeInternalUpload(reservationId, { path });
+  const entry = game.journal.get("p-save");
+  const originalFlag = entry.setFlag;
+  const originalSet = game.settings.set;
+  let committed = false;
+  let settlementFailures = 0;
+  entry.setFlag = async (...args) => {
+    const result = await originalFlag(...args);
+    committed = true;
+    return result;
+  };
+  game.settings.set = async function(...args) {
+    if ( committed && args[1] === "fileCleanupRegistry" && !settlementFailures ) {
+      settlementFailures++;
+      throw new Error("temporary post-commit registry failure");
+    }
+    return originalSet.apply(this, args);
+  };
+  try {
+    await assert.doesNotReject(getSocketHandlers().drawingSubmitted.call({ socketdata: { userId: "u1" } }, "a-saved", "u1", {
+      mode: "staged", width: 512, height: 512, formats: { overlay: "png" }, staged: { overlayPath: path }
+    }));
+    assert.equal(settlementFailures, 1);
+    assert.equal(storedPrompt.assignments["a-saved"].status, STATUS.SUBMITTED);
+    assert.equal(storedPrompt.assignments["a-saved"].pendingSubmission.staged.overlayPath, path);
+    assert.equal(getPendingSubmission("a-saved").staged.overlayPath, path);
+    await cleanup.waitForFileCleanupIdle();
+    assert.ok(game.settings.get(MODULE_ID, "fileCleanupRegistry").records.some(record => record.path === path));
+    assert.deepEqual(cleanup.getOrphanFiles(), [], "accepted Submission protects its file while settlement recovers");
+  } finally { entry.setFlag = originalFlag; game.settings.set = originalSet; }
+});
+
+for ( const receiptTs of [999, 1001] ) test(`submission timing uses receipt ${receiptTs} before cleanup writes cross the deadline`, async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { getPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");
+  storedPrompt.assignments["a-saved"].status = STATUS.OPENED;
+  storedPrompt.assignments["a-saved"].assets = {};
+  Object.assign(storedPrompt, { timerStatus: "running", deadlineAt: 1000, remainingMs: null });
+  const originalNow = Date.now;
+  const originalSet = game.settings.set;
+  let now = receiptTs;
+  Date.now = () => now;
+  game.settings.set = async function(...args) {
+    if ( args[1] === "fileCleanupRegistry" ) now = 1500;
+    return originalSet.apply(this, args);
+  };
+  try {
+    await getSocketHandlers().drawingSubmitted.call({ socketdata: { userId: "u1" } }, "a-saved", "u1", {
+      mode: "staged", width: 512, height: 512, formats: { overlay: "png" },
+      staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.png" }
+    });
+    assert.equal(now, 1500, "tracking writes advanced the clock past the deadline");
+    assert.equal(storedPrompt.assignments["a-saved"].submittedAt, receiptTs);
+    assert.equal(getPendingSubmission("a-saved").receiptTs, receiptTs);
+    assert.equal(storedPrompt.assignments["a-saved"].late, receiptTs > 1000);
+    assert.equal(storedPrompt.assignments["a-saved"].overtimeMs, receiptTs > 1000 ? 1 : null);
+    await cleanup.waitForFileCleanupIdle();
+  } finally { Date.now = originalNow; game.settings.set = originalSet; }
+});
+
+test("Close upload cannot overwrite submission pixels accepted while capture upload is pending", async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { getPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");
+  storedPrompt.assignments["a-saved"].status = STATUS.OPENED;
+  storedPrompt.assignments["a-saved"].assets = {};
+  storedPrompt.assignments["a-saved"].delivery = { status: "received", generation: 0 };
+  game.users.get("u1").active = true;
+  const originalCapture = emit.requestRetainedCapture;
+  const originalCancel = emit.cancelDrawingPrompt;
+  const picker = foundry.applications.apps.FilePicker;
+  const originalUpload = picker.upload;
+  const originalCreateDirectory = picker.createDirectory;
+  let release;
+  let signal;
+  const started = new Promise(resolve => { signal = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const files = new Map();
+  picker.createDirectory = async () => {};
+  picker.upload = async (_source, dir, file) => {
+    const pixels = new Uint8Array(await file.arrayBuffer())[0];
+    if ( pixels === 65 ) { signal(); await gate; }
+    const path = `${dir}/${file.name}`;
+    files.set(path, pixels);
+    return { path };
+  };
+  const image = value => ({ overlay: { dataUrl: `data:image/png;base64,${value}`, format: "png" }, width: 512, height: 512 });
+  emit.requestRetainedCapture = async (_user, assignmentId, requestId) => ({
+    requestId, assignmentId, submission: image("QQ==")
+  });
+  const cancelled = [];
+  emit.cancelDrawingPrompt = async (...args) => cancelled.push(args);
+  try {
+    const closing = closePrompt("p-save");
+    await started;
+    await getSocketHandlers().drawingSubmitted.call({ socketdata: { userId: "u1" } }, "a-saved", "u1", image("Qg=="));
+    const accepted = getPendingSubmission("a-saved");
+    release();
+    await closing;
+    assert.equal(files.get(accepted.staged.overlayPath), 66, "accepted submission pixels remain unchanged");
+    assert.equal(storedPrompt.assignments["a-saved"].status, STATUS.SUBMITTED);
+    assert.equal(getPendingSubmission("a-saved").receiptTs, accepted.receiptTs);
+    assert.deepEqual(cancelled, []);
+  } finally {
+    release();
+    picker.upload = originalUpload;
+    picker.createDirectory = originalCreateDirectory;
+    emit.requestRetainedCapture = originalCapture;
+    emit.cancelDrawingPrompt = originalCancel;
+  }
+});
+
+test("player staged captures and submissions upload to distinct assignment-owned files", async () => {
+  const { stageSubmissionImages } = await import("../scripts/prompts/asset-service.mjs");
+  const picker = foundry.applications.apps.FilePicker;
+  const originalUpload = picker.upload;
+  game.user.can = () => true;
+  picker.upload = async (_source, dir, file) => ({ path: `${dir}/${file.name}` });
+  const image = { overlay: { dataUrl: "data:image/png;base64,QQ==", format: "png" },
+    merged: { dataUrl: "data:image/png;base64,Qg==", format: "png" } };
+  try {
+    const submitted = await stageSubmissionImages("a-saved", image);
+    const captured = await stageSubmissionImages("a-saved", image, { captureId: "request-1" });
+    assert.notEqual(captured.overlayPath, submitted.overlayPath);
+    assert.notEqual(captured.mergedPath, submitted.mergedPath);
+    assert.match(captured.overlayPath, /\/a-saved-overlay-capture-request-1-upload-[A-Za-z0-9_-]+\.png$/);
+    const nextSubmission = await stageSubmissionImages("a-saved", image);
+    assert.notEqual(nextSubmission.overlayPath, submitted.overlayPath);
+    const registry = game.settings.get(MODULE_ID, "fileCleanupRegistry");
+    assert.equal(registry.records.length, 6);
+    assert.ok(registry.records.every(record => record.path && record.attemptId));
+    await assert.rejects(stageSubmissionImages("a-saved", image, { captureId: "../other" }), /Invalid capture id/);
+  } finally {
+    picker.upload = originalUpload;
   }
 });
 
@@ -390,6 +638,136 @@ test("Delete never removes a recorded capture outside assignment-owned paths", a
   assert.deepEqual(deletedFiles, []);
 });
 
+test("Delete durably retains correlated capture cleanup when the host cannot delete files", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const path = "worlds/test-world/drawing-prompts/pending/a-saved/overlay-capture-request_1.webp";
+  storedPrompt.assignments["a-saved"].retainedCapture = { kind: "full-submission", overlayPath: path };
+  await deletePrompt("p-save", { confirmed: true });
+  await cleanup.reconcileFileCleanup();
+  assert.equal(storedPrompt, null);
+  assert.deepEqual(deletedFiles, []);
+  assert.ok(cleanup.getOrphanFiles().some(record => record.path === path && record.status === "unsupported"));
+});
+
+test("Delete collects superseded and discarded captures while preserving exports and unrelated files", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const staging = "worlds/test-world/drawing-prompts/staging";
+  const pending = "worlds/test-world/drawing-prompts/pending/a-saved";
+  const superseded = `${staging}/a-saved-overlay-capture-old.webp`;
+  const discarded = `${pending}/merged-capture-discarded.png`;
+  const exported = `${staging}/a-saved-merged-capture-exported.webp`;
+  storedPrompt.assignments["a-second"] = new DrawingAssignment({
+    id: "a-second", promptId: "p-save", userId: "u2", status: STATUS.SUBMITTED,
+    assets: { overlayPath: exported }
+  });
+  const picker = foundry.applications.apps.FilePicker;
+  const originalBrowse = picker.browse;
+  const browsed = [];
+  picker.browse = async (_source, dir) => {
+    browsed.push(dir);
+    return { target: dir, dirs: [], files: dir === staging ? [superseded, exported,
+      `${staging}/a-other-overlay-capture-request.webp`, `${staging}/a-saved-overlay.webp`,
+      `${staging}/unrelated.webp`]
+      : dir === pending ? [discarded, `${pending}/overlay.webp`] : [] };
+  };
+  try {
+    await deletePrompt("p-save", { confirmed: true });
+    await cleanup.reconcileFileCleanup({ retry: true });
+    assert.deepEqual(deletedFiles, [], "legacy FilePicker.delete is never used");
+    const tracked = cleanup.getOrphanFiles().map(record => record.path);
+    assert.ok(tracked.includes(superseded));
+    assert.ok(tracked.includes(discarded));
+    assert.equal(tracked.includes(exported), false);
+    assert.equal(tracked.some(path => path.includes("a-other") || path.includes("unrelated") || path.includes("../")), false);
+    assert.ok(browsed.includes(staging));
+    assert.ok(browsed.includes(pending));
+  } finally {
+    picker.browse = originalBrowse;
+  }
+});
+
+for ( const failedDir of ["staging", "pending/a-saved"] ) test(`Delete preserves attribution for deferred ${failedDir} discovery`, async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const picker = foundry.applications.apps.FilePicker;
+  const originalBrowse = picker.browse;
+  let unavailable = true;
+  const root = `worlds/test-world/drawing-prompts/${failedDir}`;
+  const known = failedDir === "staging" ? `${root}/a-saved-overlay-capture-late.webp` : `${root}/overlay-capture-late.webp`;
+  const unrelated = `${root}/a-other-overlay-capture-late.webp`;
+  picker.browse = async (_source, dir) => {
+    if ( dir === root && unavailable ) throw new Error("Discovery unavailable");
+    return { target: dir, files: dir === root ? [known, unrelated] : [], dirs: ["worlds/test-world/drawing-prompts/staging", "worlds/test-world/drawing-prompts/pending/a-saved"] };
+  };
+  try {
+    await deletePrompt("p-save", { confirmed: true });
+    await cleanup.reconcileFileCleanup();
+    assert.equal(storedPrompt, null);
+    const registry = game.settings.get(MODULE_ID, "fileCleanupRegistry");
+    assert.ok(registry.pendingScans?.some(context => context.assignmentId === "a-saved"), "attribution survives the deleted Prompt");
+    unavailable = false;
+    await cleanup.reconcileFileCleanup({ retry: true, scan: true });
+    assert.deepEqual(game.settings.get(MODULE_ID, "fileCleanupRegistry").pendingScans, []);
+    assert.ok(cleanup.getOrphanFiles().some(record => record.path === known));
+    assert.equal(cleanup.getOrphanFiles().some(record => record.path === unrelated), false);
+    assert.deepEqual(deletedFiles, []);
+  } finally { picker.browse = originalBrowse; }
+});
+
+test("Delete accepts a confirmed missing pending folder", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const picker = foundry.applications.apps.FilePicker;
+  const originalBrowse = picker.browse;
+  picker.browse = async (_source, dir) => {
+    if ( dir.endsWith("pending/a-saved") ) throw new Error("Missing folder");
+    return { files: [], dirs: [] };
+  };
+  try {
+    await deletePrompt("p-save", { confirmed: true });
+    assert.equal(storedPrompt, null);
+  } finally { picker.browse = originalBrowse; }
+});
+
+test("Delete succeeds without a deletion API and Refresh clears fallback after manual cleanup", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const path = "worlds/test-world/drawing-prompts/pending/a-saved/overlay-capture-request.webp";
+  storedPrompt.assignments["a-saved"].retainedCapture = { kind: "full-submission", overlayPath: path };
+  const picker = foundry.applications.apps.FilePicker;
+  const originalDelete = picker.delete;
+  const originalBrowse = picker.browse;
+  let files = [path];
+  picker.delete = undefined;
+  picker.browse = async (_source, dir) => ({ target: dir, files, dirs: [] });
+  try {
+    await deletePrompt("p-save", { confirmed: true });
+    await cleanup.reconcileFileCleanup();
+    assert.equal(storedPrompt, null);
+    assert.ok(cleanup.getOrphanFiles().some(record => record.path === path));
+    assert.deepEqual(deletedFiles, []);
+    files = [];
+    await cleanup.refreshOrphanFiles();
+    assert.deepEqual(cleanup.getOrphanFiles(), []);
+  } finally { picker.delete = originalDelete; picker.browse = originalBrowse; }
+});
+
+test("Delete confirms a removed single-segment custom asset folder through the data root", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const picker = foundry.applications.apps.FilePicker;
+  const originalBrowse = picker.browse;
+  game.settings.values.set("assetFolder", "art");
+  const browsed = [];
+  picker.browse = async (_source, dir) => {
+    browsed.push(dir);
+    if ( dir ) throw new Error("Missing folder");
+    return { target: dir, files: [], dirs: ["worlds"] };
+  };
+  try {
+    await deletePrompt("p-save", { confirmed: true });
+    await cleanup.reconcileFileCleanup({ retry: true });
+    assert.equal(storedPrompt, null);
+    assert.ok(browsed.includes(""), "successful root listing proves custom folder is absent");
+  } finally { picker.browse = originalBrowse; }
+});
+
 test("Archived assignment cannot reopen before Restore", async () => {
   storedPrompt.lifecycleStatus = PROMPT_STATUS.ARCHIVED;
   const before = structuredClone(storedPrompt);
@@ -427,20 +805,22 @@ test("Delete requires explicit confirmation and removes the Prompt entry", async
   }]);
 });
 
-test("Delete failure preserves the Prompt and does not queue Recovery cleanup", async () => {
+test("Registry write failure preserves the Prompt and does not queue Recovery cleanup", async () => {
   storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
-  const FilePicker = foundry.applications.apps.FilePicker;
-  const originalDelete = FilePicker.delete;
+  const originalSet = game.settings.set;
   storedPrompt.assignments["a-saved"].retainedCapture = {
     kind: "saved-preview", overlayPath: "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp"
   };
-  FilePicker.delete = async () => { throw new Error("simulated file deletion failure"); };
+  game.settings.set = async function(moduleId, key, value) {
+    if ( key === "fileCleanupRegistry" ) throw new Error("simulated registry write failure");
+    return originalSet.call(this, moduleId, key, value);
+  };
   try {
-    await assert.rejects(() => deletePrompt("p-save", { confirmed: true }), /Could not remove all module-owned Prompt data/);
+    await assert.rejects(() => deletePrompt("p-save", { confirmed: true }), /simulated registry write failure/);
     assert.notEqual(storedPrompt, null);
     assert.deepEqual(game.settings.get("drawing-prompts", "recoveryTombstones"), []);
   } finally {
-    FilePicker.delete = originalDelete;
+    game.settings.set = originalSet;
   }
 });
 
@@ -465,7 +845,7 @@ test("Recovery tombstones clear on the player's next connection acknowledgement"
   }
 });
 
-test("Delete removes only recorded internal capture files and preserves exported assets", async () => {
+test("Delete tracks only recorded internal files and permanently preserves exported assets", async () => {
   storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
   const assignment = storedPrompt.assignments["a-saved"];
   assignment.pendingSubmission = { staged: {
@@ -478,13 +858,41 @@ test("Delete removes only recorded internal capture files and preserves exported
   assignment.assets.overlayPath = "drawings/exported.webp";
 
   await deletePrompt("p-save", { confirmed: true });
-
-  assert.deepEqual(deletedFiles.sort(), [
+  await cleanup.reconcileFileCleanup();
+  assert.deepEqual(cleanup.getOrphanFiles().map(record => record.path).sort(), [
     "worlds/test-world/drawing-prompts/staging/a-saved-merged.webp",
     "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp",
     "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp"
   ].sort());
-  assert.equal(deletedFiles.includes("drawings/exported.webp"), false);
+  assert.deepEqual(deletedFiles, []);
+  assert.ok(game.settings.get(MODULE_ID, "fileCleanupRegistry").exports.includes("drawings/exported.webp"));
+});
+
+test("Delete preserves internal paths referenced by scene textures and Revert metadata", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const first = "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp";
+  const second = "worlds/test-world/drawing-prompts/staging/a-saved-merged.webp";
+  storedPrompt.assignments["a-saved"].retainedCapture = { kind: "full-submission", overlayPath: first, mergedPath: second };
+  game.scenes = [{ toObject: () => ({ tiles: [{ texture: { src: first } }], tokens: [{ flags: { [MODULE_ID]: { originalTexture: second } } }] }) }];
+  await deletePrompt("p-save", { confirmed: true });
+  await cleanup.reconcileFileCleanup();
+  assert.equal(storedPrompt, null);
+  assert.deepEqual(cleanup.getOrphanFiles(), []);
+  assert.deepEqual(deletedFiles, []);
+  assert.equal(game.settings.get(MODULE_ID, "fileCleanupRegistry").records.length, 2);
+});
+
+test("Prompt document deletion failure leaves registered captures protected", async () => {
+  storedPrompt.lifecycleStatus = PROMPT_STATUS.CLOSED;
+  const path = "worlds/test-world/drawing-prompts/pending/a-saved/overlay.webp";
+  storedPrompt.assignments["a-saved"].retainedCapture = { kind: "full-submission", overlayPath: path };
+  game.journal.get("p-save").delete = async () => { throw new Error("Document deletion failed"); };
+  await assert.rejects(deletePrompt("p-save", { confirmed: true }), /Document deletion failed/);
+  await cleanup.reconcileFileCleanup();
+  assert.ok(storedPrompt);
+  assert.deepEqual(cleanup.getOrphanFiles(), []);
+  assert.deepEqual(deletedFiles, []);
+  assert.deepEqual(game.settings.get(MODULE_ID, "recoveryTombstones"), []);
 });
 
 test("saveAssignment backfills the save gate timestamp when cached submission data is gone", async () => {

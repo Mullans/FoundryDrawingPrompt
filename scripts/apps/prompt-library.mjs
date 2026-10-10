@@ -106,6 +106,18 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
       return DrawingPromptManager.openPromptCopy(promptId);
     });
     this.activePromptId = dependencies.activePromptId ?? (() => null);
+    this.getOrphanFiles = dependencies.getOrphanFiles ?? (async () => {
+      const service = await import("../prompts/file-cleanup-service.mjs");
+      return service.getOrphanFiles();
+    });
+    this.getPendingCleanupScans = dependencies.getPendingCleanupScans ?? (async () => {
+      const service = await import("../prompts/file-cleanup-service.mjs");
+      return service.getPendingCleanupScans?.() ?? [];
+    });
+    this.openOrphanFiles = dependencies.openOrphanFiles ?? (async () => {
+      const { OrphanFiles } = await import("./orphan-files.mjs");
+      return OrphanFiles.open();
+    });
     this.#sortField = dependencies.sortField ?? setting("defaultLibrarySortField", DEFAULT_SORT_FIELD);
     this.#sortDirection = dependencies.sortDirection ?? setting("defaultLibrarySortDirection", DEFAULT_SORT_DIRECTION);
   }
@@ -118,7 +130,8 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
     actions: {
       newPrompt: PromptLibrary.#onNew, openPrompt: PromptLibrary.#onOpen, openCopy: PromptLibrary.#onOpenCopy,
       toggleArchived: PromptLibrary.#onToggleArchived, showArchived: PromptLibrary.#onShowArchived,
-      archivePrompt: PromptLibrary.#onArchive, restorePrompt: PromptLibrary.#onRestore, deletePrompt: PromptLibrary.#onDelete
+      archivePrompt: PromptLibrary.#onArchive, restorePrompt: PromptLibrary.#onRestore, deletePrompt: PromptLibrary.#onDelete,
+      orphanFiles: PromptLibrary.#onOrphanFiles
     }
   };
 
@@ -159,6 +172,7 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
   }
 
   async _prepareContext() {
+    if ( !game.user.isGM ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.gmOnly"));
     const all = this.loadPrompts().filter(prompt => prompt.gmUserId === game.user.id);
     const filtered = filterAndSortPrompts([...all], { query: this.#query, showArchived: this.#showArchived, sortField: this.#sortField, sortDirection: this.#sortDirection });
     const needle = this.#query.trim().toLocaleLowerCase();
@@ -166,8 +180,14 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
       && (!needle || `${prompt.promptName ?? ""}\n${prompt.promptText ?? ""}`.toLocaleLowerCase().includes(needle)));
     const activeId = this.activePromptId();
     const rows = filtered.map(prompt => this.#rowContext(prompt, activeId));
+    const fileCount = (await this.getOrphanFiles()).length;
+    const scanCount = (await this.getPendingCleanupScans()).length;
+    const orphanCountLabel = localize("DRAWING-PROMPTS.orphans.countLabel", "Orphaned files: {files} files, {folders} unfinished folder checks")
+      .replace("{files}", fileCount).replace("{folders}", scanCount);
     return {
       rows,
+      orphanCount: fileCount + scanCount,
+      orphanCountLabel,
       hasRows: rows.length > 0,
       emptyMessage: !all.length ? localize("DRAWING-PROMPTS.library.emptyAll", "No prompts have been saved.")
         : hiddenArchivedMatch ? localize("DRAWING-PROMPTS.library.emptyArchived", "Matching archived prompts are hidden.")
@@ -213,6 +233,7 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
   }
 
   static async #onNew() { await this.openNew(); await this.render({ parts: ["body"] }); }
+  static async #onOrphanFiles() { await this.openOrphanFiles(); }
   static async #onOpen(_event, target) { await this.openManager(target.dataset.promptId); await this.render({ parts: ["body"] }); }
   static async #onOpenCopy(_event, target) { await this.openCopy(target.dataset.promptId); await this.render({ parts: ["body"] }); }
   static async #onToggleArchived() { this.#showArchived = !this.#showArchived; await this.render({ parts: ["body"] }); }

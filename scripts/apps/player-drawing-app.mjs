@@ -154,7 +154,7 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
     const format = game.settings.get(MODULE_ID, SETTINGS.EXPORT_FORMAT) || "webp";
     const quality = Number(game.settings.get(MODULE_ID, SETTINGS.WEBP_QUALITY) ?? 0.9);
     const submission = canStageUploads()
-      ? await app.#buildStagedSubmissionPayload({ format, quality })
+      ? await app.#buildStagedSubmissionPayload({ format, quality, captureId: requestId })
       : await buildFullSubmission(app.#engine, { format, quality });
     return { requestId, assignmentId, submission };
   }
@@ -330,7 +330,17 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.player.warnings.wireScaled"));
     }
     this.#closeReason = "submit";
-    await emit.drawingSubmitted(this.assignmentPayload.prompt.gmUserId, this.assignmentPayload.assignment.id, game.user.id, submissionPayload);
+    try {
+      await emit.drawingSubmitted(this.assignmentPayload.prompt.gmUserId, this.assignmentPayload.assignment.id, game.user.id, submissionPayload);
+    } finally {
+      // The GM may have closed/deleted the Assignment before this payload arrived.
+      // A settled upload remains protected by adopted references or an active Save.
+      const paths = Object.values(submissionPayload.staged ?? {}).filter(path => typeof path === "string");
+      if ( paths.length ) {
+        const { settleInternalUploads } = await import("../prompts/file-cleanup-service.mjs");
+        void settleInternalUploads(paths).catch(error => console.warn("drawing-prompts | upload settlement deferred", error?.message));
+      }
+    }
     updateStatus(this.assignmentPayload.assignment.id, STATUS.SUBMITTED);
     await this.close();
   }
@@ -340,10 +350,10 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
    * @param {{format: string, quality: number}} options Export options.
    * @returns {Promise<object>} Submission payload.
    */
-  async #buildStagedSubmissionPayload({ format, quality }) {
+  async #buildStagedSubmissionPayload({ format, quality, captureId = null }) {
     const fullSubmission = await buildFullSubmission(this.#engine, { format, quality });
     try {
-      const staged = await stageSubmissionImages(this.assignmentPayload.assignment.id, fullSubmission);
+      const staged = await stageSubmissionImages(this.assignmentPayload.assignment.id, fullSubmission, { captureId });
       return {
         mode: "staged",
         staged,

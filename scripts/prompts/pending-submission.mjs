@@ -5,7 +5,7 @@
 
 import { MODULE_ID } from "../constants.mjs";
 import { isForge } from "../foundry/path-provider.mjs";
-import { ensureDir, pendingDir, stagingDir, uploadDataUrl } from "./asset-service.mjs";
+import { ensureDir, pendingDir, stagingDir, uploadInternalDataUrl } from "./asset-service.mjs";
 import { isStagedSubmission } from "./assignment-save.mjs";
 import { getAssignment } from "./prompt-context.mjs";
 
@@ -286,17 +286,32 @@ export function submissionValidationContext(assignmentId) {
  * Persist a socket-lane submission to the GM pending folder and rewrite as staged paths.
  * @param {string} assignmentId Assignment id.
  * @param {object} submission Socket submission payload.
+ * @param {{captureId?: string|null}} [options] Isolate retained-capture uploads from accepted submission filenames.
  * @returns {Promise<object>} Staged-shaped persisted submission.
  */
-export async function persistSocketSubmission(assignmentId, submission) {
+export async function persistSocketSubmission(assignmentId, submission, { captureId = null } = {}) {
+  if ( captureId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(captureId) ) throw new Error("Invalid capture id");
   const dir = pendingDir(assignmentId);
   await ensureDir(dir);
   const hasMerged = Boolean(submission.merged?.dataUrl);
   const overlayExt = extensionFor(submission.overlay?.format);
-  const overlay = await uploadDataUrl(dir, `overlay.${overlayExt}`, submission.overlay.dataUrl);
+  const attemptId = foundry.utils.randomID();
+  const suffix = `${captureId === null ? "" : `-capture-${captureId}`}-upload-${attemptId}`;
+  const purpose = captureId ? "retained-capture" : "pending";
+  let overlay;
   let merged = null;
-  if ( hasMerged ) {
-    merged = await uploadDataUrl(dir, `merged.${extensionFor(submission.merged.format)}`, submission.merged.dataUrl);
+  try {
+    overlay = await uploadInternalDataUrl(assignmentId, dir, `overlay${suffix}.${overlayExt}`, submission.overlay.dataUrl,
+      { attemptId, kind: "overlay", purpose });
+    if ( hasMerged ) {
+      merged = await uploadInternalDataUrl(assignmentId, dir, `merged${suffix}.${extensionFor(submission.merged.format)}`, submission.merged.dataUrl,
+        { attemptId, kind: "merged", purpose });
+    }
+  } catch (error) {
+    const { settleInternalUploads, reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
+    await settleInternalUploads([attemptId]);
+    void reconcileFileCleanup().catch(() => {});
+    throw error;
   }
   return {
     mode: "staged",

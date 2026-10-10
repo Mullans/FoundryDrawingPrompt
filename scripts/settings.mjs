@@ -246,6 +246,13 @@ export function registerSettings() {
     type: Object,
     default: []
   });
+  game.settings.register(MODULE_ID, INTERNAL.FILE_CLEANUP_REGISTRY, {
+    scope: "world",
+    config: false,
+    type: Object,
+    default: { version: 1, records: [], exports: [] },
+    onChange: () => Hooks.callAll("drawing-prompts.fileCleanupChanged")
+  });
 }
 
 /**

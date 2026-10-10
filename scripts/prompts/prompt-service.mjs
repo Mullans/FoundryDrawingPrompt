@@ -139,25 +139,32 @@ export async function saveAssignment(assignmentId, { name, folder } = {}) {
   const submission = peekMemoryOrCachedSubmission(assignment.id);
   if ( !submission && !alreadySaved ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.pendingSubmissionLost"));
 
-  if ( submission ) {
-    await saveAssignmentAssets({
-      prompt,
-      assignment,
-      submission,
-      name: resolvedName,
-      folder
-    });
-    clearPendingSubmission(assignment.id);
-  } else if ( alreadySaved && assignment.status === STATUS.SUBMITTED && assignment.primaryImagePath ) {
-    assignment.savedSubmissionTs ??= assignment.submittedAt;
-    assignment.assets.name = resolvedName;
-  }
+  const { withFileCleanupProtection, protectExportedFiles, reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
+  const saved = await withFileCleanupProtection(Object.values(submission?.staged ?? {}).filter(path => typeof path === "string"), async () => {
+    await protectExportedFiles(Object.entries(assignment.assets ?? {})
+      .filter(([key, value]) => key.endsWith("Path") && typeof value === "string").map(([, value]) => value));
+    if ( submission ) {
+      await saveAssignmentAssets({
+        prompt,
+        assignment,
+        submission,
+        name: resolvedName,
+        folder
+      });
+      clearPendingSubmission(assignment.id);
+    } else if ( alreadySaved && assignment.status === STATUS.SUBMITTED && assignment.primaryImagePath ) {
+      assignment.savedSubmissionTs ??= assignment.submittedAt;
+      assignment.assets.name = resolvedName;
+    }
 
-  await savePrompt(prompt, { assignmentOnly: assignment.id });
-  Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
-  Hooks.callAll("drawing-prompts.assignmentSaved", prompt, assignment);
-  await refreshManager();
-  return assignment;
+    await savePrompt(prompt, { assignmentOnly: assignment.id });
+    Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
+    Hooks.callAll("drawing-prompts.assignmentSaved", prompt, assignment);
+    await refreshManager();
+    return assignment;
+  });
+  void reconcileFileCleanup().catch(error => console.warn("drawing-prompts | deferred file cleanup", error?.message));
+  return saved;
 }
 
 /**
