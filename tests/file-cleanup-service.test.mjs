@@ -146,14 +146,14 @@ test("cache-busting artwork references preserve the underlying file", async () =
   assert.equal(value.records.length, 1);
   assert.deepEqual(cleanup.getOrphanFiles(), []);
 });
-test("prior-session reservations recover without expiring active current-session work", async () => {
+test("replacement browser sessions preserve uncertain uploads from the issuing session", async () => {
   await upload();
   await cleanup.reconcileFileCleanup({ scan: true });
   assert.equal(value.records.find(record => record.path === uploadPath).state, "ready");
   value.records[0].sessionId = "old-browser-session";
   value.records[0].attemptId = "old-attempt";
   await cleanup.reconcileFileCleanup({ scan: true });
-  assert.equal(value.records.find(record => record.path === uploadPath).state, "settled");
+  assert.equal(value.records.find(record => record.path === uploadPath).state, "ready");
 });
 test("startup recovers recorded paths from their original folder after configuration changes", async () => {
   const original = "old/staging/assignment-overlay.webp";
@@ -279,4 +279,75 @@ test("settlement schedules one cleanup while adopted files and idempotent mutati
   await cleanup.settleInternalUploads([uploadPath]);
   await cleanup.waitForFileCleanupIdle();
   assert.equal(cleanup.getOrphanFiles()[0].status, "unsupported");
+});
+test("session recovery preserves a legacy Save lease acquired after its snapshot", async () => {
+  const original = emit.cleanupFile;
+  let resumePlayer, queriedPlayer, finishSave, acquiredSave;
+  const playerQueried = new Promise(resolve => { queriedPlayer = resolve; });
+  const saveAcquired = new Promise(resolve => { acquiredSave = resolve; });
+  const saveFinished = new Promise(resolve => { finishSave = resolve; });
+  for ( const [index, sourceUserId] of ["gm", "player"].entries() ) value.records.push({
+    id: `waiting-${index}`, sourceUserId, assignmentId: "assignment", promptId: "prompt", kind: "overlay",
+    attemptId: `waiting${index}`, path: `art/staging/assignment-overlay-upload-waiting${index}.webp`,
+    stagingRoot: "art/staging", pendingRoot: "art/pending/assignment", revision: 1,
+    state: "uploading", sessionId: "prior-session", status: "pending", leases: []
+  });
+  emit.cleanupFile = async (_userId, payload) => {
+    if ( payload.action !== "sessions" ) throw new Error("Unexpected remote call");
+    queriedPlayer();
+    return new Promise(resolve => { resumePlayer = () => resolve({ sessionId: "player-session", attempts: [], leases: [] }); });
+  };
+  let saveRun;
+  try {
+    const recovery = cleanup.reconcileFileCleanup({ scan: true });
+    await playerQueried; // The GM's earlier session response contained no lease.
+    saveRun = cleanup.withFileCleanupProtection(["art/legacy-source.webp"], async () => { acquiredSave(); await saveFinished; });
+    await saveAcquired;
+    const heldId = value.readLeases[0].id;
+    resumePlayer();
+    await recovery;
+    assert.ok(value.readLeases.some(lease => lease.id === heldId));
+    finishSave();
+    await saveRun;
+    assert.deepEqual(value.readLeases, []);
+  } finally { emit.cleanupFile = original; finishSave(); resumePlayer?.(); if ( saveRun ) await saveRun; }
+});
+test("a disconnected upload intent survives absence and a late HTTP completion", async () => {
+  prompt.lifecycleStatus = "open";
+  prompt.assignments.assignment.status = "opened";
+  const reservationId = await cleanup.handleCleanupOperation("player", { type: "begin", assignmentId: "assignment", attemptId: "attempt", kind: "overlay", expectedPath: uploadPath, sessionId: "issuing-player-session" });
+  game.users.get("player").active = false;
+  prompt = null;
+  files = [];
+  await cleanup.reconcileFileCleanup({ scan: true });
+  assert.equal(value.records[0].state, "uploading");
+  files = [uploadPath]; // The already-issued HTTP upload finishes after disconnect.
+  await cleanup.reconcileFileCleanup({ scan: true });
+  assert.equal(value.records[0].state, "uploading");
+  await cleanup.handleCleanupOperation("player", { type: "complete", reservationId, path: uploadPath });
+  await cleanup.reconcileFileCleanup({ scan: true });
+  assert.equal(value.records[0].state, "settled");
+  assert.equal(cleanup.getOrphanFiles()[0].path, uploadPath);
+});
+test("disconnected or replacement Save sessions cannot release outstanding read leases", async () => {
+  const original = emit.cleanupFile;
+  await upload();
+  prompt.assignments.assignment.pendingSubmission = { staged: { overlayPath: uploadPath } };
+  await cleanup.settleInternalUploads([uploadPath]);
+  await cleanup.waitForFileCleanupIdle();
+  prompt = null;
+  game.users.set("saving-gm", { id: "saving-gm", isGM: true, active: false });
+  value.readLeases = [{ id: "held-save", userId: "saving-gm", sessionId: "issuing-save-session", paths: [uploadPath] }];
+  value.records[0].leases = [{ id: "held-save", userId: "saving-gm", sessionId: "issuing-save-session" }];
+  try {
+    await cleanup.reconcileFileCleanup({ scan: true });
+    assert.equal(value.readLeases.length, 1);
+    assert.equal(value.records[0].leases.length, 1);
+    game.users.get("saving-gm").active = true;
+    emit.cleanupFile = async () => ({ sessionId: "replacement-browser", attempts: [], leases: [] });
+    await cleanup.reconcileFileCleanup({ scan: true });
+    assert.equal(value.readLeases.length, 1);
+    assert.equal(value.records[0].leases.length, 1);
+    assert.deepEqual(cleanup.getOrphanFiles(), []);
+  } finally { emit.cleanupFile = original; }
 });

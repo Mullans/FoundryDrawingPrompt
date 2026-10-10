@@ -11,6 +11,13 @@ function displayDate(value) {
     : game.i18n.localize(`${PREFIX}unknown`);
 }
 
+function localizedReason(record) {
+  const supported = new Set(["unsupported", "unavailable", "denied", "unconfirmed", "unableToVerify", "failed"]);
+  const reason = record.uncertainDeletion ? "uncertainDeletion" : record.deferred ? "deferred"
+    : supported.has(record.status) ? record.status : "failed";
+  return game.i18n.localize(`${PREFIX}reason.${reason}`);
+}
+
 /** GM reference window. All verification/deletion decisions belong to the cleanup service. */
 export class OrphanFiles extends HandlebarsApplicationMixin(ApplicationV2) {
   static #instance = null;
@@ -71,7 +78,7 @@ export class OrphanFiles extends HandlebarsApplicationMixin(ApplicationV2) {
       folder: record.folder,
       orphanedDate: displayDate(record.orphanedAt),
       status: game.i18n.localize(`${PREFIX}status.${record.status}`),
-      error: record.error
+      error: localizedReason(record)
     }));
     return { rows, hasRows: rows.length > 0, busy: Boolean(this.#busy), count: rows.length };
   }

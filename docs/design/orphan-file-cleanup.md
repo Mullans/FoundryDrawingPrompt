@@ -15,6 +15,8 @@ Approved 2026-10-09; replaces the manual-only cleanup proposal. API evidence is 
 
 Internal uploads reserve a registry record before creating a file, use unique attempt names, and record each provider-returned path independently. A completed upload remains protected until the adopting Submission/capture is persisted or the attempt definitively fails. Save obtains a durable usage lease before reading internal files. Registry mutations are serialized through the active GM and remote actions authenticate the transport initiator.
 
+Disconnection or a replacement browser session does not prove that an outstanding provider request or Save finished. Keep uncertain upload intents and read leases protected; a missing-file listing cannot discard an unsettled upload reservation.
+
 Prompt Delete requires its usual confirmation and close-first rule. Persist all attributable cleanup candidates before deleting the Prompt. Registry failure preserves the Prompt; journal deletion failure preserves its file references. Physical deletion runs after Prompt deletion and never blocks it once outstanding cleanup is durably recorded.
 
 Every GM startup runs additive recovery against retained Prompts, even when registry records exist. Preserve original folders/accounts and existing fallback records. Scan only attributable directories and filenames, with at most two provider requests in flight. Unknown or unattributed historical files remain outside cleanup.

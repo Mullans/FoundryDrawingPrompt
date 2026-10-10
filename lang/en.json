@@ -363,6 +363,14 @@
   "DRAWING-PROMPTS.orphans.status.unconfirmed": "Deletion unconfirmed",
   "DRAWING-PROMPTS.orphans.status.unableToVerify": "Unable to verify",
   "DRAWING-PROMPTS.orphans.status.failed": "Cleanup failed",
+  "DRAWING-PROMPTS.orphans.reason.unsupported": "This host does not support automatic file deletion. Remove the file manually, then Refresh.",
+  "DRAWING-PROMPTS.orphans.reason.unavailable": "The file owner's connection, authentication, or storage service is unavailable. Retry when access is restored, or remove the file manually.",
+  "DRAWING-PROMPTS.orphans.reason.denied": "The storage service did not permit or complete deletion. Check access or remove the file manually, then Refresh.",
+  "DRAWING-PROMPTS.orphans.reason.unconfirmed": "Deletion could not be confirmed. Refresh to check whether the file still exists.",
+  "DRAWING-PROMPTS.orphans.reason.unableToVerify": "File existence could not be verified. Restore access and Refresh; the file remains listed until absence is confirmed.",
+  "DRAWING-PROMPTS.orphans.reason.failed": "Automatic cleanup failed. Retry Cleanup or remove the file manually, then Refresh.",
+  "DRAWING-PROMPTS.orphans.reason.deferred": "Automatic cleanup paused after reaching its work limit. Use Retry Cleanup or allow another attempt at the next startup.",
+  "DRAWING-PROMPTS.orphans.reason.uncertainDeletion": "A deletion request may still be running. Refresh to verify whether the file remains.",
   "DRAWING-PROMPTS.journal.folderName": "Drawing Prompts",
   "DRAWING-PROMPTS.journal.entryName": "Drawing Prompt: {name}"
 }

@@ -480,22 +480,35 @@ async function recoverSessions(state, budget = cycleBudget(true)) {
   }
   await serialize(async () => {
   const latest = registry();
+  const before = JSON.stringify(latest);
+  const observedLeaseIds = new Set((state.readLeases ?? []).map(lease => lease.id));
   latest.readLeases = latest.readLeases.filter(lease => {
+    if ( !observedLeaseIds.has(lease.id) ) return true;
     const client = byUser.get(lease.userId);
-    return !client || (!client.inactive && client.leases.includes(lease.id));
+    // Offline clients and a replacement browser cannot attest that an old HTTP
+    // request finished. Only the issuing session can release an absent lease.
+    return !client || client.inactive || client.sessionId !== lease.sessionId || client.leases.includes(lease.id);
   });
+  const protectedFiles = protectedPaths(latest);
   for ( const record of latest.records ) {
     if ( state.records.find(item => item.id === record.id)?.revision !== record.revision ) continue;
+    const prior = JSON.stringify(record);
     const owner = byUser.get(record.sourceUserId);
-    // Legacy intents without a client session cannot be proven abandoned online.
+    // A completed upload cannot be adopted into a deleted Prompt, but a pending
+    // upload may finish after disconnect and must never be inferred absent.
+    const completedWithoutPrompt = record.state === "ready" && !loadPrompt(record.promptId)
+      && !protectedFiles.has(record.path) && !(record.leases?.length)
+      && !latest.readLeases.some(lease => lease.paths.includes(record.path));
     if ( ["uploading", "ready"].includes(record.state) && owner
-      && (owner.inactive || (record.sessionId && !owner.attempts.includes(record.attemptId))) ) record.state = "settled";
+      && record.sessionId && owner.sessionId === record.sessionId && !owner.attempts.includes(record.attemptId) ) record.state = "settled";
+    if ( completedWithoutPrompt ) record.state = "settled";
     record.leases = (record.leases ?? []).filter(lease => {
       const client = byUser.get(lease.userId);
-      return !client || (!client.inactive && client.leases.includes(lease.id));
+      return !client || client.inactive || client.sessionId !== lease.sessionId || client.leases.includes(lease.id);
     });
+    if ( JSON.stringify(record) !== prior ) record.revision++;
   }
-  await persist(latest);
+  if ( JSON.stringify(latest) !== before ) await persist(latest);
   });
 }
 

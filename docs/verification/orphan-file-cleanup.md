@@ -8,6 +8,21 @@ The local Foundry 14 retained-capture harness creates disposable player files, o
 
 The native lifecycle passed on Foundry 14.364 at 2026-10-10 04:43 UTC. The earlier 120-second harness deadline was too short for its complete upload, deletion, reload, reconciliation, and cleanup sequence; the bounded harness now allows four minutes and reports the active step on timeout.
 
+Final integration evidence: 586 Node tests passed (`20261010-045912-58016-node.log`); the full drawing/manager smoke passed (`20261010-045114-63104-node.log`), and deletion/reload/manual Refresh passed with bounded cleanup (`20261010-045258-49956-node.log`). Logs live under the development-only `.artifacts/test-logs/` folder.
+
+## Final paired review
+
+The single Standards/Spec pair compared the implementation with starting commit `ba5236b`.
+
+| Axis | Verified finding | Resolution |
+| --- | --- | --- |
+| Standards | A stale session snapshot could remove a newly acquired Save lease. | Preserve leases absent from the starting snapshot; add the paused-RPC regression. |
+| Standards | Persisted English failure diagnostics appeared directly in the UI. | Render localized status/operation reasons; keep diagnostics in the registry. |
+| Spec | A disconnected client could still have an upload or Save in flight. | Preserve uncertain intents and leases across disconnects and replacement sessions; test late completion. |
+| Spec | Failed capture adoption left completed uploads protected indefinitely. | Settle completed paths in `finally`, preserving any successfully persisted references; test failed Journal persistence. |
+
+Both axes' findings were fixed and validated locally without another broad review pair. A small shared helper for repeated exported-path selection remains a deferred optimization. The cohesive cleanup service does not need splitting solely because of its length.
+
 ## Forge acceptance still required
 
 First-party API evidence is in [Forge asset cleanup research](../research/forge-asset-cleanup.md). Mocked Forge tests and local Foundry runs do not establish live Forge credential scopes.

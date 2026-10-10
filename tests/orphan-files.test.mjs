@@ -47,7 +47,19 @@ test("fallback metadata preserves original ownership and reports access failure"
   assert.equal(rows[0].playerName, "Pat");
   assert.equal(rows[0].account, "account");
   assert.equal(rows[0].status, "Access denied");
-  assert.equal(rows[0].error, "Forbidden");
+  assert.equal(rows[0].error, english["DRAWING-PROMPTS.orphans.reason.denied"]);
+  assert.equal(rows[0].error.includes("Forbidden"), false);
+});
+
+test("fallback explanations localize stable statuses and deferred or uncertain request states", async () => {
+  const records = [
+    ...["unsupported", "unavailable", "denied", "unconfirmed", "unableToVerify", "failed"].map(status => ({ ...record, id: status, status })),
+    { ...record, id: "deferred", deferred: true },
+    { ...record, id: "uncertainDeletion", deferred: true, uncertainDeletion: true }
+  ];
+  const app = new OrphanFiles({}, { service: async () => service({ getOrphanFiles: () => records }) });
+  const { rows } = await app._prepareContext();
+  for ( const row of rows ) assert.equal(row.error, english[`DRAWING-PROMPTS.orphans.reason.${row.id}`]);
 });
 
 test("players cannot open, inspect, refresh or copy registry metadata", async () => {

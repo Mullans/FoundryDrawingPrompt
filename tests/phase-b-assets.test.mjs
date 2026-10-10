@@ -70,7 +70,8 @@ test("all module localization keys referenced by scripts, templates, and module.
   const missing = [...referenced].filter(key => !(key in lang)).sort();
   assert.deepEqual(missing, []);
   // The orphan window builds these keys dynamically; keep the exact contract checked.
-  for ( const suffix of ["title", "unknown", "localAccount", "status.unsupported", "status.unavailable", "status.denied", "status.unconfirmed", "status.unableToVerify", "status.failed"] ) {
+  for ( const suffix of ["title", "unknown", "localAccount", "status.unsupported", "status.unavailable", "status.denied", "status.unconfirmed", "status.unableToVerify", "status.failed",
+    "reason.unsupported", "reason.unavailable", "reason.denied", "reason.unconfirmed", "reason.unableToVerify", "reason.failed", "reason.deferred", "reason.uncertainDeletion"] ) {
     assert.equal(typeof lang[`DRAWING-PROMPTS.orphans.${suffix}`], "string", suffix);
   }
 });

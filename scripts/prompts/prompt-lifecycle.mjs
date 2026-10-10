@@ -348,22 +348,24 @@ async function retainAvailablePreviews(prompt, previews) {
     const revision = assignmentRetentionRevision(assignment);
     const dataUrl = previews[assignment.id];
     if ( !dataUrl || assignment.retainedCapture?.kind === "full-submission" ) continue;
+    let completedPaths = [];
     try {
       const format = /^data:image\/png/i.test(dataUrl) ? "png" : "webp";
       const stored = await persistSocketSubmission(assignment.id, {
         overlay: { dataUrl, format }, width: prompt.canvasWidth, height: prompt.canvasHeight,
         receiptTs: Date.now()
       }, { captureId: foundry.utils.randomID() });
+      completedPaths = Object.values(stored.staged ?? {}).filter(path => typeof path === "string");
       const capture = {
         kind: "saved-preview", receiptTs: stored.receiptTs,
         width: prompt.canvasWidth, height: prompt.canvasHeight,
         overlayPath: stored.staged.overlayPath, mergedPath: null
       };
       await savePrompt(prompt, { retainedCaptureOnly: { assignmentId: assignment.id, capture, revision } });
-      const { settleInternalUploads } = await import("./file-cleanup-service.mjs");
-      await settleInternalUploads([capture.overlayPath, capture.mergedPath].filter(Boolean));
     } catch (err) {
       console.warn("drawing-prompts | could not retain available preview", assignment.id, err);
+    } finally {
+      await settleCompletedCapture(completedPaths);
     }
   }
 }
@@ -373,6 +375,7 @@ async function retainFullCaptures(prompt) {
   for ( const assignmentId of Object.keys(prompt.assignments) ) {
     const assignment = prompt.getAssignment(assignmentId);
     const revision = assignmentRetentionRevision(assignment);
+    let completedPaths = [];
     try {
       const captureLiveWork = assignment.isActive && game.users.get(assignment.userId)?.active;
       let submission;
@@ -385,6 +388,9 @@ async function retainFullCaptures(prompt) {
           throw new Error("Invalid retained capture response");
         }
       } else submission = await resolveRestorationSubmission(assignment, prompt);
+      if ( submission && isStagedSubmission(submission) ) {
+        completedPaths = Object.values(submission.staged ?? {}).filter(path => typeof path === "string");
+      }
       if ( !submission || Number(submission.width) !== prompt.canvasWidth || Number(submission.height) !== prompt.canvasHeight || submission.wireScaled ) {
         const current = loadPrompt(prompt.id)?.getAssignment(assignment.id);
         if ( current?.isActive ) failures.push(current);
@@ -393,6 +399,7 @@ async function retainFullCaptures(prompt) {
       submission = { ...submission, recoveryKind: "full-submission", assignmentId: assignment.id, receiptTs: submission.receiptTs ?? Date.now() };
       if ( !isStagedSubmission(submission) ) submission = await persistSocketSubmission(assignment.id, submission,
         { captureId: foundry.utils.randomID() });
+      completedPaths = Object.values(submission.staged ?? {}).filter(path => typeof path === "string");
       const capture = {
         kind: "full-submission",
         receiptTs: submission.receiptTs,
@@ -402,17 +409,29 @@ async function retainFullCaptures(prompt) {
         mergedPath: submission.staged?.mergedPath ?? null
       };
       await savePrompt(prompt, { retainedCaptureOnly: { assignmentId: assignment.id, capture, revision } });
-      const { settleInternalUploads } = await import("./file-cleanup-service.mjs");
-      await settleInternalUploads([capture.overlayPath, capture.mergedPath].filter(Boolean));
       const current = prompt.getAssignment(assignment.id);
       if ( current.isActive && current.retainedCapture !== capture ) failures.push(current);
     } catch (err) {
       console.warn("drawing-prompts | retained capture failed", assignment.id, err);
       const current = loadPrompt(prompt.id)?.getAssignment(assignment.id);
       if ( current?.isActive ) failures.push(current);
+    } finally {
+      await settleCompletedCapture(completedPaths);
     }
   }
   return failures;
+}
+
+async function settleCompletedCapture(paths) {
+  if ( !paths.length ) return;
+  try {
+    const { settleInternalUploads } = await import("./file-cleanup-service.mjs");
+    await settleInternalUploads(paths);
+  } catch (error) {
+    // Persisted capture references remain protective; a failed registry write
+    // leaves completed uploads conservatively protected for later recovery.
+    console.warn("drawing-prompts | capture settlement deferred", error?.message);
+  }
 }
 
 /** Reopen a Closed Prompt with its remaining timer paused. */

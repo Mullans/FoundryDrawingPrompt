@@ -289,6 +289,12 @@ test("Close reports incremental retained-capture persistence failure through the
   assignment.assets = {};
   game.users.get("u1").active = true;
   const originalCapture = emit.requestRetainedCapture;
+  const failedCapturePath = "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp";
+  await game.settings.set(MODULE_ID, "fileCleanupRegistry", { version: 1, exports: [], records: [{
+    id: "failed-capture", assignmentId: "a-saved", promptId: "p-save", sourceUserId: "u1",
+    path: failedCapturePath, kind: "overlay", purpose: "retained-capture", state: "ready", status: "pending",
+    stagingRoot: "worlds/test-world/drawing-prompts/staging", revision: 1, leases: []
+  }] });
   emit.requestRetainedCapture = async (_userId, assignmentId, requestId) => ({
     requestId, assignmentId,
     submission: { mode: "staged", formats: { overlay: "webp" }, staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.webp", mergedPath: null }, width: 512, height: 512 }
@@ -297,6 +303,9 @@ test("Close reports incremental retained-capture persistence failure through the
   try {
     await assert.rejects(() => closePrompt("p-save"), error =>
       error.code === "RETAINED_CAPTURE_FAILED" && error.assignmentIds?.includes("a-saved"));
+    await cleanup.waitForFileCleanupIdle();
+    assert.equal(game.settings.get(MODULE_ID, "fileCleanupRegistry").records
+      .find(record => record.id === "failed-capture")?.state, "settled", "failed adoption releases the completed upload");
   } finally {
     emit.requestRetainedCapture = originalCapture;
   }
