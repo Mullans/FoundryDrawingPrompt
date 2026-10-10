@@ -169,3 +169,14 @@ test("local allowlists retain exact root-relative path behavior when Forge is fa
   assert.equal(isAllowedStagedPath("a1", `${root}/a1-overlay.webp`, root, { forge: false }), true);
   assert.equal(isAllowedStagedPath("a1", `https://assets.forge-vtt.com/account/${root}/a1-overlay.webp`, root, { forge: false }), false);
 });
+
+test("unique upload names remain assignment scoped and accept legacy captures", () => {
+  const staging = "worlds/test/drawing-prompts/staging";
+  const pending = "worlds/test/drawing-prompts/pending/a1";
+  for ( const suffix of ["", "-capture-c1", "-upload-u1", "-capture-c1-upload-u2"] ) {
+    assert.equal(isAllowedStagedPath("a1", `${staging}/a1-overlay${suffix}.webp`, staging), true);
+    assert.equal(isAllowedPendingPath("a1", `${pending}/merged${suffix}.png`, pending), true);
+  }
+  assert.equal(isAllowedStagedPath("a1", `${staging}/a2-overlay-upload-u1.webp`, staging), false);
+  assert.equal(isAllowedPendingPath("a1", `${pending}/overlay-upload-.webp`, pending), false);
+});

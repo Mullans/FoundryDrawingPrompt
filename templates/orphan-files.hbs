@@ -1,0 +1,27 @@
+<div class="dp-orphans-shell">
+  <p>{{localize "DRAWING-PROMPTS.orphans.explanation"}}</p>
+  <div class="dp-orphans-toolbar">
+    <button type="button" data-action="refresh" {{#if busy}}disabled{{/if}}><i class="fa-solid fa-arrows-rotate" inert></i> {{localize "DRAWING-PROMPTS.orphans.refresh"}}</button>
+    <button type="button" data-action="retry" {{#if busy}}disabled{{/if}}>{{localize "DRAWING-PROMPTS.orphans.retry"}}</button>
+    <a href="https://forge-vtt.com/assets/browse" target="_blank" rel="noopener noreferrer">{{localize "DRAWING-PROMPTS.orphans.assetsLibrary"}}</a>
+  </div>
+  {{#if busy}}<p role="status">{{localize "DRAWING-PROMPTS.orphans.checking"}}</p>{{/if}}
+  {{#if hasRows}}
+  <section class="dp-orphans-list" aria-label="{{localize "DRAWING-PROMPTS.orphans.title"}}">
+    {{#each rows}}
+    <article class="dp-orphans-row">
+      <strong title="{{this.path}}">{{this.filename}}</strong>
+      <dl>
+        <dt>{{localize "DRAWING-PROMPTS.orphans.prompt"}}</dt><dd>{{this.promptName}}</dd>
+        <dt>{{localize "DRAWING-PROMPTS.orphans.player"}}</dt><dd>{{this.playerName}}</dd>
+        <dt>{{localize "DRAWING-PROMPTS.orphans.account"}}</dt><dd>{{this.account}}</dd>
+        <dt>{{localize "DRAWING-PROMPTS.orphans.folder"}}</dt><dd>{{this.folder}}</dd>
+        <dt>{{localize "DRAWING-PROMPTS.orphans.orphaned"}}</dt><dd>{{this.orphanedDate}}</dd>
+        <dt>{{localize "DRAWING-PROMPTS.orphans.statusLabel"}}</dt><dd>{{this.status}}{{#if this.error}}<span class="dp-orphans-error">{{this.error}}</span>{{/if}}</dd>
+      </dl>
+      <button type="button" data-action="copyPath" data-file-id="{{this.id}}"><i class="fa-solid fa-copy" inert></i> {{localize "DRAWING-PROMPTS.orphans.copy"}}</button>
+    </article>
+    {{/each}}
+  </section>
+  {{else}}<p>{{localize "DRAWING-PROMPTS.orphans.empty"}}</p>{{/if}}
+</div>

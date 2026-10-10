@@ -330,7 +330,17 @@ export class PlayerDrawingApp extends HandlebarsApplicationMixin(ApplicationV2) 
       ui.notifications.warn(game.i18n.localize("DRAWING-PROMPTS.player.warnings.wireScaled"));
     }
     this.#closeReason = "submit";
-    await emit.drawingSubmitted(this.assignmentPayload.prompt.gmUserId, this.assignmentPayload.assignment.id, game.user.id, submissionPayload);
+    try {
+      await emit.drawingSubmitted(this.assignmentPayload.prompt.gmUserId, this.assignmentPayload.assignment.id, game.user.id, submissionPayload);
+    } finally {
+      // The GM may have closed/deleted the Assignment before this payload arrived.
+      // A settled upload remains protected by adopted references or an active Save.
+      const paths = Object.values(submissionPayload.staged ?? {}).filter(path => typeof path === "string");
+      if ( paths.length ) {
+        const { settleInternalUploads } = await import("../prompts/file-cleanup-service.mjs");
+        void settleInternalUploads(paths).catch(error => console.warn("drawing-prompts | upload settlement deferred", error?.message));
+      }
+    }
     updateStatus(this.assignmentPayload.assignment.id, STATUS.SUBMITTED);
     await this.close();
   }

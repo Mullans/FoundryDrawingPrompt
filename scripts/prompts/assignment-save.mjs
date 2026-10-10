@@ -179,8 +179,18 @@ export function createAssignmentSavePorts() {
     defaultAssetFolder,
     ensureDir,
     browseFiles,
-    uploadBlob,
-    uploadDataUrl,
+    uploadBlob: async (...args) => {
+      const uploaded = await uploadBlob(...args);
+      const { protectExportedFiles } = await import("./file-cleanup-service.mjs");
+      await protectExportedFiles([uploaded.path]);
+      return uploaded;
+    },
+    uploadDataUrl: async (...args) => {
+      const uploaded = await uploadDataUrl(...args);
+      const { protectExportedFiles } = await import("./file-cleanup-service.mjs");
+      await protectExportedFiles([uploaded.path]);
+      return uploaded;
+    },
     hasSourceBackground,
     bakeAndEncodePromptCanvasMerged,
     bakeAndEncodeSourceSpaceAssets,

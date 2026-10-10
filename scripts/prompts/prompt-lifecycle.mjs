@@ -4,7 +4,7 @@
 
 import { FILES_UPLOAD_PERMISSION, INTERNAL, MODULE_ID, PROMPT_STATUS, STATUS } from "../constants.mjs";
 import { emit } from "../socket.mjs";
-import { browseFiles, deleteDataFile, ensureDir, stagingDir } from "./asset-service.mjs";
+import { ensureDir, stagingDir } from "./asset-service.mjs";
 import { clearFramingViewAssets, hasSavedFramingViewAssets } from "./dual-save.mjs";
 import { prepareFramedBackgroundForSend } from "./framed-delivery.mjs";
 import {
@@ -39,7 +39,6 @@ import { pauseTimer } from "./timer-service.mjs";
 import { validateDraft } from "./draft-validation.mjs";
 import { TimerUpdateQueue } from "./timer-update-queue.mjs";
 import { validateSubmissionPayload } from "./transitions.mjs";
-import { isAllowedPendingPath, isAllowedStagedPath } from "./wire-validation.mjs";
 
 const draftLifecycleQueue = new TimerUpdateQueue();
 
@@ -337,6 +336,8 @@ export async function closePrompt(promptId, { closeWithoutCaptures = false, avai
   prompt.markClosed(now);
   await savePrompt(prompt, { lifecycleOnly: true, expectedLifecycle: PROMPT_STATUS.OPEN });
   Hooks.callAll("drawing-prompts.promptClosed", prompt);
+  const { reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
+  void reconcileFileCleanup().catch(error => console.warn("drawing-prompts | deferred file cleanup", error?.message));
   await refreshManager();
   return prompt;
 }
@@ -359,6 +360,8 @@ async function retainAvailablePreviews(prompt, previews) {
         overlayPath: stored.staged.overlayPath, mergedPath: null
       };
       await savePrompt(prompt, { retainedCaptureOnly: { assignmentId: assignment.id, capture, revision } });
+      const { settleInternalUploads } = await import("./file-cleanup-service.mjs");
+      await settleInternalUploads([capture.overlayPath, capture.mergedPath].filter(Boolean));
     } catch (err) {
       console.warn("drawing-prompts | could not retain available preview", assignment.id, err);
     }
@@ -399,6 +402,8 @@ async function retainFullCaptures(prompt) {
         mergedPath: submission.staged?.mergedPath ?? null
       };
       await savePrompt(prompt, { retainedCaptureOnly: { assignmentId: assignment.id, capture, revision } });
+      const { settleInternalUploads } = await import("./file-cleanup-service.mjs");
+      await settleInternalUploads([capture.overlayPath, capture.mergedPath].filter(Boolean));
       const current = prompt.getAssignment(assignment.id);
       if ( current.isActive && current.retainedCapture !== capture ) failures.push(current);
     } catch (err) {
@@ -455,48 +460,15 @@ export async function deletePrompt(promptId, { confirmed = false } = {}) {
   if ( prompt.lifecycleStatus === PROMPT_STATUS.OPEN ) {
     throw new Error("Cannot delete an open prompt. Please close from the Prompt Manager and try again.");
   }
-  const internalPaths = await moduleOwnedPromptPaths(prompt);
-  const deleted = await Promise.all(internalPaths.map(path => deleteDataFile(path)));
-  if ( deleted.some(result => !result) ) throw new Error("Could not remove all module-owned Prompt data.");
+  const { preparePromptCleanup, reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
+  await preparePromptCleanup(prompt);
   await deletePromptEntry(promptId);
   for ( const assignment of Object.values(prompt.assignments) ) clearPendingSubmission(assignment.id);
   await queueRecoveryTombstones(prompt);
   Hooks.callAll("drawing-prompts.promptDeleted", prompt);
   await refreshManager();
+  void reconcileFileCleanup().catch(error => console.warn("drawing-prompts | deferred file cleanup", error?.message));
   return true;
-}
-
-async function moduleOwnedPromptPaths(prompt) {
-  const paths = new Set();
-  const assignments = Object.values(prompt.assignments);
-  const exported = new Set(assignments.flatMap(assignment => Object.values(assignment.assets ?? {}))
-    .filter(value => typeof value === "string"));
-  const stagedFiles = assignments.length ? await browseFiles(stagingDir(), { strict: true }) : [];
-  for ( const assignment of assignments ) {
-    const pending = getPendingSubmission(assignment.id);
-    const context = submissionValidationContext(assignment.id);
-    // Only isolated capture filenames may be discovered without a current record.
-    // Ordinary submissions remain limited to explicit references above/below.
-    for ( const path of [...stagedFiles, ...await browseFiles(context.pendingRoot, { strict: true })] ) {
-      if ( typeof path !== "string" || exported.has(path)
-        || !/-capture-[A-Za-z0-9_-]{1,64}\.(webp|png)$/.test(path) ) continue;
-      for ( const kind of ["overlay", "merged"] ) {
-        if ( isAllowedStagedPath(assignment.id, path, context.stagingRoot, { forge: context.forge, expectedKind: kind })
-          || isAllowedPendingPath(assignment.id, path, context.pendingRoot, { forge: context.forge, expectedKind: kind }) ) paths.add(path);
-      }
-    }
-    for ( const [kind, path] of [
-      ["overlay", pending?.staged?.overlayPath],
-      ["merged", pending?.staged?.mergedPath],
-      ["overlay", assignment.retainedCapture?.overlayPath],
-      ["merged", assignment.retainedCapture?.mergedPath]
-    ]) {
-      if ( typeof path === "string" && path && !exported.has(path)
-        && (isAllowedStagedPath(assignment.id, path, context.stagingRoot, { forge: context.forge, expectedKind: kind })
-          || isAllowedPendingPath(assignment.id, path, context.pendingRoot, { forge: context.forge, expectedKind: kind })) ) paths.add(path);
-    }
-  }
-  return [...paths];
 }
 
 /** Clear queued browser Recovery copies for a player and retain only unacknowledged work. */

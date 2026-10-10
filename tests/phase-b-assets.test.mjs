@@ -30,6 +30,7 @@ test("ApplicationV2 template part paths exist", () => {
   assert.deepEqual([...templatePaths].sort(), [
     "modules/drawing-prompts/templates/clone-source-settings.hbs",
     "modules/drawing-prompts/templates/drawing-prompt-manager.hbs",
+    "modules/drawing-prompts/templates/orphan-files.hbs",
     "modules/drawing-prompts/templates/place-dialog.hbs",
     "modules/drawing-prompts/templates/player-drawing-app.hbs",
     "modules/drawing-prompts/templates/player-prompt-list.hbs",
@@ -53,7 +54,8 @@ test("all module localization keys referenced by scripts, templates, and module.
   const ignoredDynamicPrefixes = new Set([
     "DRAWING-PROMPTS.choices.fitMode",
     "DRAWING-PROMPTS.settings",
-    "DRAWING-PROMPTS.status"
+    "DRAWING-PROMPTS.status",
+    "DRAWING-PROMPTS.orphans"
   ]);
 
   for ( const file of files ) {
@@ -67,6 +69,10 @@ test("all module localization keys referenced by scripts, templates, and module.
 
   const missing = [...referenced].filter(key => !(key in lang)).sort();
   assert.deepEqual(missing, []);
+  // The orphan window builds these keys dynamically; keep the exact contract checked.
+  for ( const suffix of ["title", "unknown", "localAccount", "status.unsupported", "status.unavailable", "status.denied", "status.unconfirmed", "status.unableToVerify", "status.failed"] ) {
+    assert.equal(typeof lang[`DRAWING-PROMPTS.orphans.${suffix}`], "string", suffix);
+  }
 });
 
 /**

@@ -1308,7 +1308,7 @@
 
 .drawing-prompts .dp-library-toolbar {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) auto auto;
+  grid-template-columns: minmax(190px, 1fr) auto auto auto;
   align-items: end;
   gap: 8px;
 }
@@ -1446,7 +1446,7 @@
 .drawing-prompts .dp-library-empty p { margin: 0; }
 
 @media (max-width: 680px) {
-  .drawing-prompts .dp-library-toolbar { grid-template-columns: 1fr auto; }
+  .drawing-prompts .dp-library-toolbar { grid-template-columns: 1fr auto auto; }
   .drawing-prompts .dp-library-search { grid-column: 1 / -1; }
 
   .drawing-prompts .dp-library-row {
@@ -1521,3 +1521,23 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
 }
+/* Orphan reference surface: scoped to this module's applications. */
+.drawing-prompts .dp-library-orphans {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+  min-width: 2.6rem;
+}
+.drawing-prompts .dp-orphans-shell { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.drawing-prompts .dp-orphans-toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.drawing-prompts .dp-orphans-toolbar button { flex: 0 0 auto; width: auto; }
+.drawing-prompts .dp-orphans-list { display: flex; flex-direction: column; gap: 0.75rem; }
+.drawing-prompts .dp-orphans-row { padding: 0.75rem; border: 1px solid var(--color-border-light-primary); border-radius: 0.35rem; }
+.drawing-prompts .dp-orphans-row strong { display: block; overflow-wrap: anywhere; }
+.drawing-prompts .dp-orphans-row dl { display: grid; grid-template-columns: minmax(5rem, auto) minmax(0, 1fr); gap: 0.25rem 0.75rem; }
+.drawing-prompts .dp-orphans-row dt { font-weight: bold; }
+.drawing-prompts .dp-orphans-row dd { margin: 0; overflow-wrap: anywhere; }
+.drawing-prompts .dp-orphans-row button { width: auto; }
+.drawing-prompts .dp-orphans-error { display: block; opacity: 0.85; }

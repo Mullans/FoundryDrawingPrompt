@@ -37,6 +37,14 @@ import { isValidSnapshotPayload } from "./wire-validation.mjs";
  */
 export function getSocketHandlers() {
   return {
+    [CALLS.CLEANUP_OPERATION]: async function(payload) {
+      const { handleCleanupOperation } = await import("./file-cleanup-service.mjs");
+      return handleCleanupOperation(getSocketInitiatorId(this), payload);
+    },
+    [CALLS.CLEANUP_FILE]: async function(payload) {
+      const { handleCleanupFileRequest } = await import("./file-cleanup-service.mjs");
+      return handleCleanupFileRequest(getSocketInitiatorId(this), payload);
+    },
     [CALLS.OPEN]: handleOpenPrompt,
     [CALLS.RECEIVED]: function(assignmentId, userId, generation = 0) {
       return acknowledgePromptDelivery(getSocketInitiatorId(this), assignmentId, userId, generation);
@@ -302,28 +310,35 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
   }
   const decision = evaluateSubmission(assignment);
   if ( !decision.apply ) return debugIgnoredTransition("submitted", assignment, decision.reason);
-  if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
-  const now = Date.now();
-  if ( assignment.status === STATUS.PENDING ) assignment.markOpened(now);
-  const timing = evaluateSubmissionTiming(prompt.timerState, now);
-  assignment.markSubmitted({ ts: now, ...timing });
-  let receivedSubmission = { ...submissionPayload, receiptTs: now };
-  if ( !isStagedSubmission(receivedSubmission) ) {
-    try {
-      receivedSubmission = await persistSocketSubmission(assignmentId, receivedSubmission);
-    } catch (err) {
-      console.warn("drawing-prompts | could not persist socket submission to pending folder", assignmentId, err);
+  const { withFileCleanupProtection, protectExportedFiles, reconcileFileCleanup, settleInternalUploads } = await import("./file-cleanup-service.mjs");
+  await withFileCleanupProtection(Object.values(submissionPayload.staged ?? {}).filter(path => typeof path === "string"), async () => {
+    await protectExportedFiles(Object.entries(assignment.assets ?? {})
+      .filter(([key, value]) => key.endsWith("Path") && typeof value === "string").map(([, value]) => value));
+    if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
+    const now = Date.now();
+    if ( assignment.status === STATUS.PENDING ) assignment.markOpened(now);
+    const timing = evaluateSubmissionTiming(prompt.timerState, now);
+    assignment.markSubmitted({ ts: now, ...timing });
+    let receivedSubmission = { ...submissionPayload, receiptTs: now };
+    if ( !isStagedSubmission(receivedSubmission) ) {
+      try {
+        receivedSubmission = await persistSocketSubmission(assignmentId, receivedSubmission);
+      } catch (err) {
+        console.warn("drawing-prompts | could not persist socket submission to pending folder", assignmentId, err);
+      }
     }
-  }
-  setPendingSubmission(assignment.id, receivedSubmission);
-  assignment.pendingSubmission = receivedSubmission;
-  await savePrompt(prompt, { assignmentOnly: assignment.id });
-  Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
-  Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, receivedSubmission);
-  const previewSrc = submissionPreviewSrc(receivedSubmission);
-  if ( previewSrc ) receiveManagerSnapshot(assignment.id, previewSrc);
-  await setManagerWindowOpen(assignment.id, false);
-  await refreshManager();
+    setPendingSubmission(assignment.id, receivedSubmission);
+    assignment.pendingSubmission = receivedSubmission;
+    await savePrompt(prompt, { assignmentOnly: assignment.id });
+    await settleInternalUploads(Object.values(receivedSubmission.staged ?? {}).filter(path => typeof path === "string"));
+    Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
+    Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, receivedSubmission);
+    const previewSrc = submissionPreviewSrc(receivedSubmission);
+    if ( previewSrc ) receiveManagerSnapshot(assignment.id, previewSrc);
+    await setManagerWindowOpen(assignment.id, false);
+    await refreshManager();
+  });
+  void reconcileFileCleanup().catch(error => console.warn("drawing-prompts | deferred file cleanup", error?.message));
 }
 
 /**

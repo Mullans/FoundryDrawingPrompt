@@ -64,7 +64,8 @@ export const INTERNAL = Object.freeze({
   WIRE_QUALITY_STEPS: Object.freeze([0.8, 0.6, 0.45]),
   WIRE_DOWNSCALE_STEP: 0.75,
   LEGACY_FIT_MODE_MIGRATED: "legacyFitModeMigrated",
-  RECOVERY_TOMBSTONES: "recoveryTombstones"
+  RECOVERY_TOMBSTONES: "recoveryTombstones",
+  FILE_CLEANUP_REGISTRY: "fileCleanupRegistry"
 });
 
 export const SETTINGS = Object.freeze({

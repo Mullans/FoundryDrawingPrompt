@@ -10,11 +10,20 @@ const browser = await chromium.launch({ headless: true });
 const pages = [];
 const errors = [];
 let userId, promptId, cleanupPaths = [];
+let stage = "joining GM";
+const watchdog = setTimeout(() => {
+  console.error(`capture runtime timed out during ${stage}`);
+  process.exitCode = 1;
+  void browser.close();
+}, 240000);
 async function page(label) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   pages.push(page);
   page.on("pageerror", error => errors.push(`${label}: ${error.message}`));
-  page.on("console", message => { if ( message.type() === "error" ) errors.push(`${label}: ${message.text()}`); });
+  page.on("console", message => {
+    if ( message.text().startsWith("capture-check:")) console.log(`${new Date().toISOString()} ${label}: ${message.text()}`);
+    if ( message.type() === "error" ) errors.push(`${label}: ${message.text()}`);
+  });
   return page;
 }
 async function join(page, name) {
@@ -28,8 +37,10 @@ const gm = await page("GM");
 const player = await page("player");
 try {
   await join(gm, process.env.GM_USER || "Gamemaster");
+  stage = "joining fixture player";
   userId = await gm.evaluate(async name => (await User.create({ name, role: CONST.USER_ROLES.PLAYER, password: "" })).id, run);
   await join(player, run);
+  stage = "sending and capturing Prompt";
   await player.evaluate(async () => {
     const { PlayerDrawingApp } = await import("/modules/drawing-prompts/scripts/apps/player-drawing-app.mjs");
     globalThis.captureTest = { original: PlayerDrawingApp.captureRetainedForAssignment };
@@ -67,6 +78,7 @@ try {
     });
   }, promptId);
   await player.waitForFunction(() => Boolean(globalThis.captureTest?.captured && captureTest.release));
+  stage = "submitting during capture";
   const captured = await player.evaluate(() => captureTest.captured.submission);
   cleanupPaths = Object.values(captured.staged ?? {}).filter(Boolean);
   assert.equal(captured.mode, "staged", "native player upload lane is exercised");
@@ -90,6 +102,47 @@ try {
   assert.equal(after.status, "closed");
   assert.equal(after.assignment.status, "submitted", "Close preserves accepted submission");
   assert.deepEqual(after.assignment.pendingSubmission, before.pendingSubmission, "Close preserves accepted image paths and metadata");
+  stage = "deleting Prompt and checking fallback";
+  const fallbacks = await gm.evaluate(async promptId => {
+    const { deletePrompt } = await import("/modules/drawing-prompts/scripts/prompts/prompt-service.mjs");
+    const cleanup = await import("/modules/drawing-prompts/scripts/prompts/file-cleanup-service.mjs");
+    console.log("capture-check: deleting Prompt");
+    await deletePrompt(promptId, { confirmed: true });
+    console.log("capture-check: Prompt deleted; reconciling");
+    await cleanup.reconcileFileCleanup({ retry: true });
+    console.log("capture-check: reconciled");
+    return { exists: game.journal.has(promptId), files: cleanup.getOrphanFiles().map(record => record.path) };
+  }, promptId);
+  assert.equal(fallbacks.exists, false, "unsupported physical cleanup does not block Prompt deletion");
+  for ( const path of cleanupPaths ) assert.ok(fallbacks.files.includes(path), "every fixture file survives in the fallback registry");
+  await gm.reload();
+  stage = "reloading GM and opening fallback window";
+  await gm.waitForFunction(() => globalThis.game?.ready);
+  const retained = await gm.evaluate(async () => {
+    const cleanup = await import("/modules/drawing-prompts/scripts/prompts/file-cleanup-service.mjs");
+    console.log("capture-check: reload ready; reconciling");
+    await cleanup.reconcileFileCleanup({ retry: true });
+    console.log("capture-check: reload reconciled; opening library");
+    const { PromptLibrary } = await import("/modules/drawing-prompts/scripts/apps/prompt-library.mjs");
+    await PromptLibrary.open();
+    console.log("capture-check: library opened");
+    return cleanup.getOrphanFiles().map(record => record.path);
+  });
+  for ( const path of cleanupPaths ) assert.ok(retained.includes(path), "fallback survives a GM reload");
+  await gm.locator(".drawing-prompts-library [data-action='orphanFiles']").click();
+  await gm.locator(".drawing-prompts-orphan-files .dp-orphans-row").first().waitFor({ state: "visible" });
+  const dataRoot = resolve(process.env.FOUNDRY_DATA_PATH || fileURLToPath(new URL("../../../FoundryVTT-WindowsPortable-14.364/Data/", import.meta.url)));
+  for ( const path of cleanupPaths ) {
+    const absolute = resolve(dataRoot, path);
+    assert.ok(absolute.startsWith(`${dataRoot}${sep}`), "manual fixture removal stays within Foundry Data");
+    await unlink(absolute).catch(error => { if ( error.code !== "ENOENT" ) throw error; });
+  }
+  await gm.locator(".drawing-prompts-orphan-files [data-action='refresh']").click();
+  stage = "confirming manually deleted files disappear";
+  await gm.waitForFunction(async paths => {
+    const cleanup = await import("/modules/drawing-prompts/scripts/prompts/file-cleanup-service.mjs");
+    return !cleanup.getOrphanFiles().some(record => paths.includes(record.path));
+  }, cleanupPaths);
   assert.deepEqual(errors, [], "GM/player consoles remain clean");
 } finally {
   await player.evaluate(async () => {
@@ -99,17 +152,7 @@ try {
       captureTest.release?.();
     }
   }).catch(() => {});
-  const hostCleanup = await gm.evaluate(async ({ promptId }) => {
-    if ( !promptId || !game.journal.has(promptId) ) return false;
-    const { deletePrompt } = await import("/modules/drawing-prompts/scripts/prompts/prompt-service.mjs");
-    try { await deletePrompt(promptId, { confirmed: true }); return false; }
-    catch (error) {
-      if ( !error.message.includes("This host cannot delete uploaded files") ) throw error;
-      if ( !game.journal.has(promptId) ) throw new Error("Unsupported host deletion lost the Prompt");
-      return true;
-    }
-  }, { promptId }).catch(error => { console.error("capture fixture cleanup preflight failed", error); process.exitCode = 1; });
-  if ( hostCleanup ) {
+  if ( cleanupPaths.length ) {
     // Local test operator removes only this fixture's exact uploaded paths. This
     // is development tooling, not an unavailable browser deletion API.
     const dataRoot = resolve(process.env.FOUNDRY_DATA_PATH || fileURLToPath(new URL("../../../FoundryVTT-WindowsPortable-14.364/Data/", import.meta.url)));
@@ -127,6 +170,8 @@ try {
       }
       if ( !await deletePrompt(promptId, { confirmed: true }) ) throw new Error("Fixture Prompt was not deleted");
     }
+    const { refreshOrphanFiles } = await import("/modules/drawing-prompts/scripts/prompts/file-cleanup-service.mjs");
+    await refreshOrphanFiles();
     const { browseFiles } = await import("/modules/drawing-prompts/scripts/prompts/asset-service.mjs");
     for ( const dir of new Set(cleanupPaths.map(path => path.slice(0, path.lastIndexOf("/")))) ) {
       const files = await browseFiles(dir);
@@ -135,5 +180,6 @@ try {
     if ( userId && game.users.has(userId) ) await game.users.get(userId).delete();
   }, { promptId, userId, cleanupPaths }).catch(error => { console.error("capture fixture cleanup failed", error); process.exitCode = 1; });
   await browser.close();
+  clearTimeout(watchdog);
 }
-if ( !process.exitCode ) console.log("e2e-retained-capture: PASS (staged capture/Submit preserves accepted work; unsupported host deletion retains Prompt and succeeds after exact fixture host cleanup)");
+if ( !process.exitCode ) console.log("e2e-retained-capture: PASS (Close/Submit continuity; Prompt deletion persists fallback across reload; manual fixture deletion and Refresh clear entries)");

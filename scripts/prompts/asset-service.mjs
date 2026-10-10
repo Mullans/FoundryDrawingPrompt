@@ -47,9 +47,8 @@ export function canStageUploads() {
 }
 
 /**
- * Get the player-side submission staging directory. Staged files use
- * deterministic names and overwrite on resubmission; there is no client-side
- * delete API, so abandoned staged files are bounded by assignment id.
+ * Get the player-side submission staging directory. Upload attempts have unique
+ * names so orphan cleanup cannot remove a replacement image at the same path.
  * @returns {string} Staging directory.
  */
 export function stagingDir() {
@@ -118,28 +117,6 @@ async function browseExistingDirectory(dir) {
     if ( !parent ) return null;
     if ( !Array.isArray(parent.dirs) || parent.dirs.some(path => normalizePath(path) === dir) ) throw err;
     return null;
-  }
-}
-
-/** Delete one exact module-owned data-source file without touching its parent folder. */
-export async function deleteDataFile(path) {
-  assertGM();
-  const target = normalizePath(path);
-  if ( !target ) return false;
-  const picker = getFilePicker();
-  if ( typeof picker.delete !== "function" ) {
-    // Core Foundry exposes no file deletion API. Permit a retry after the host
-    // removes the exact file, but retain the Prompt while any file still exists.
-    const files = await browseFiles(target.slice(0, target.lastIndexOf("/")), { strict: true });
-    if ( !files.includes(target) ) return true;
-    throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.fileCleanupUnsupported"));
-  }
-  try {
-    await picker.delete("data", target, { notify: false });
-    return true;
-  } catch (err) {
-    console.warn(`${MODULE_ID} | could not delete module-owned file`, target, err);
-    return false;
   }
 }
 
@@ -213,8 +190,7 @@ export async function uploadJson(dir, filename, data) {
 
 /**
  * Stage full-resolution submission images from an upload-capable player.
- * Ordinary submissions use deterministic assignment filenames. Retained captures
- * use a correlated suffix so an older asynchronous capture never overwrites Submit.
+ * Each attempt has unique filenames, including correlated retained captures.
  * @param {string} assignmentId Assignment id.
  * @param {object} submission Full-resolution submission payload.
  * @param {{captureId?: string|null}} [options] Optional correlated retained-capture identity.
@@ -229,25 +205,58 @@ export async function stageSubmissionImages(assignmentId, submission, { captureI
   // rejects and the caller falls back to the socket lane.
   const dir = stagingDir();
   const basename = String(assignmentId || "assignment");
-  const overlayBlob = await dataUrlToBlob(submission?.overlay?.dataUrl);
-  const suffix = captureId === null ? "" : `-capture-${captureId}`;
+    const overlayBlob = await dataUrlToBlob(submission?.overlay?.dataUrl);
+    const mergedBlob = submission?.merged?.dataUrl ? await dataUrlToBlob(submission.merged.dataUrl) : null;
+  const attemptId = foundry.utils.randomID();
+  const suffix = `${captureId === null ? "" : `-capture-${captureId}`}-upload-${attemptId}`;
   const overlayFilename = `${basename}-overlay${suffix}.${extensionFor(submission?.overlay?.format)}`;
   const uploads = [
-    uploadBlobForCurrentUser(dir, overlayFilename, overlayBlob)
+    uploadInternalImage(assignmentId, dir, overlayFilename, overlayBlob,
+      { attemptId, kind: "overlay", purpose: captureId ? "retained-capture" : "staging" })
   ];
 
-  const hasMerged = Boolean(submission?.merged?.dataUrl);
-  if ( hasMerged ) {
-    const mergedBlob = await dataUrlToBlob(submission.merged.dataUrl);
+    if ( mergedBlob ) {
     const mergedFilename = `${basename}-merged${suffix}.${extensionFor(submission.merged.format)}`;
-    uploads.push(uploadBlobForCurrentUser(dir, mergedFilename, mergedBlob));
+    uploads.push(uploadInternalImage(assignmentId, dir, mergedFilename, mergedBlob,
+      { attemptId, kind: "merged", purpose: captureId ? "retained-capture" : "staging" }));
   }
 
-  const [overlay, merged] = await Promise.all(uploads);
+  const results = await Promise.allSettled(uploads);
+  const failure = results.find(result => result.status === "rejected");
+  if ( failure ) {
+    const { settleInternalUploads, reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
+    await settleInternalUploads([attemptId]);
+    void reconcileFileCleanup().catch(() => {});
+    throw failure.reason;
+  }
+  const [overlay, merged] = results.map(result => result.value);
   return {
     overlayPath: overlay.path,
     mergedPath: merged?.path ?? null
   };
+}
+
+/** Upload one registered internal image; intentionally exported artwork uses other helpers. */
+async function uploadInternalImage(assignmentId, dir, filename, blob, { attemptId, kind, purpose }) {
+  const { beginInternalUpload, completeInternalUpload } = await import("./file-cleanup-service.mjs");
+  const reservationId = await beginInternalUpload({
+    assignmentId, attemptId, kind, purpose, expectedPath: `${normalizePath(dir)}/${filename}`
+  });
+  let uploaded;
+  try {
+    uploaded = await uploadBlobForCurrentUser(dir, filename, blob);
+    await completeInternalUpload(reservationId, { path: uploaded.path });
+    return uploaded;
+  } catch (error) {
+    await completeInternalUpload(reservationId, { path: uploaded?.path, error: "Upload did not complete" }).catch(() => {});
+    throw error;
+  }
+}
+
+/** GM-side internal pending/capture upload with durable registration before file creation. */
+export async function uploadInternalDataUrl(assignmentId, dir, filename, dataUrl, identity) {
+  assertGM();
+  return uploadInternalImage(assignmentId, dir, filename, await dataUrlToBlob(dataUrl), identity);
 }
 
 /**
