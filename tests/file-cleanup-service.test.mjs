@@ -315,7 +315,12 @@ test("session recovery preserves a legacy Save lease acquired after its snapshot
 test("a disconnected upload intent survives absence and a late HTTP completion", async () => {
   prompt.lifecycleStatus = "open";
   prompt.assignments.assignment.status = "opened";
-  const reservationId = await cleanup.handleCleanupOperation("player", { type: "begin", assignmentId: "assignment", attemptId: "attempt", kind: "overlay", expectedPath: uploadPath, sessionId: "issuing-player-session" });
+  const original = emit.cleanupFile;
+  let reservationId;
+  emit.cleanupFile = async () => ({ sessionId: "issuing-player-session", attempts: [], leases: [] });
+  try {
+    reservationId = await cleanup.handleCleanupOperation("player", { type: "begin", assignmentId: "assignment", attemptId: "attempt", kind: "overlay", expectedPath: uploadPath, sessionId: "issuing-player-session" });
+  } finally { emit.cleanupFile = original; }
   game.users.get("player").active = false;
   prompt = null;
   files = [];
@@ -349,5 +354,212 @@ test("disconnected or replacement Save sessions cannot release outstanding read 
     assert.equal(value.readLeases.length, 1);
     assert.equal(value.records[0].leases.length, 1);
     assert.deepEqual(cleanup.getOrphanFiles(), []);
+  } finally { emit.cleanupFile = original; }
+});
+
+function openPlayerAssignments(count = 1) {
+  prompt.lifecycleStatus = "open";
+  prompt.assignments.assignment.status = "opened";
+  const ids = ["assignment"];
+  for ( let index = 1; index < count; index++ ) {
+    const assignmentId = `assignment${index}`;
+    ids.push(assignmentId);
+    prompt.assignments[assignmentId] = { id: assignmentId, userId: "player", userName: "Ada", status: "opened", assets: {} };
+  }
+  rebuildAssignmentIndex();
+  return ids;
+}
+
+function playerBegin(assignmentId, attemptId, clientSession = "authenticated-player", kind = "overlay") {
+  return { type: "begin", assignmentId, attemptId, kind, sessionId: clientSession,
+    expectedPath: `art/staging/${assignmentId}-${kind}-upload-${attemptId}.webp` };
+}
+
+test("missing and forged upload sessions are rejected without registry writes", async () => {
+  openPlayerAssignments();
+  const original = emit.cleanupFile;
+  let checks = 0;
+  emit.cleanupFile = async (userId, payload) => {
+    checks++;
+    assert.equal(userId, "player");
+    assert.deepEqual(payload, { action: "sessions", targetUserId: "player" });
+    return { sessionId: "authenticated-player", attempts: [], leases: [] };
+  };
+  try {
+    const missing = playerBegin("assignment", "missing");
+    delete missing.sessionId;
+    await assert.rejects(cleanup.handleCleanupOperation("player", missing), /authenticated client session/);
+    assert.equal(checks, 0);
+    await assert.rejects(cleanup.handleCleanupOperation("player", playerBegin("assignment", "forged", "invented-session")), /does not match/);
+    await assert.rejects(cleanup.handleCleanupOperation("gm", playerBegin("assignment", "forged-gm", "invented-gm-session")), /does not match/);
+    assert.equal(value.records.length, 0);
+    assert.equal(writes, 0);
+  } finally { emit.cleanupFile = original; }
+});
+
+test("concurrent unique reservations stop at the Assignment limit and replay remains accepted", async () => {
+  openPlayerAssignments();
+  const original = emit.cleanupFile;
+  let releaseSession;
+  const sessionResponse = new Promise(resolve => { releaseSession = () => resolve({ sessionId: "authenticated-player", attempts: [], leases: [] }); });
+  emit.cleanupFile = async () => sessionResponse;
+  try {
+    const pending = Array.from({ length: 9 }, (_item, index) => cleanup.handleCleanupOperation("player", playerBegin("assignment", `flood${index}`)));
+    await new Promise(resolve => setImmediate(resolve));
+    releaseSession();
+    const results = await Promise.allSettled(pending);
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 8);
+    assert.match(results.find(result => result.status === "rejected").reason.message, /Assignment has too many/);
+    assert.equal(value.records.length, 8);
+    assert.equal(writes, 8);
+    const first = value.records[0];
+    assert.equal(await cleanup.handleCleanupOperation("player", playerBegin("assignment", first.attemptId)), first.id);
+    assert.equal(writes, 8);
+    assert.equal(value.records.length, 8);
+  } finally { releaseSession(); emit.cleanupFile = original; }
+});
+
+test("the user-wide reservation limit spans Assignments, ready uploads, and session rollover", async () => {
+  const assignmentIds = openPlayerAssignments(5);
+  const original = emit.cleanupFile;
+  let currentSession = "authenticated-player";
+  emit.cleanupFile = async () => ({ sessionId: currentSession, attempts: [], leases: [] });
+  try {
+    for ( const assignmentId of assignmentIds.slice(0, 4) ) {
+      for ( let index = 0; index < 8; index++ ) await cleanup.handleCleanupOperation("player", playerBegin(assignmentId, `attempt${index}`));
+    }
+    // Completed but unadopted uploads still consume outstanding capacity.
+    const first = value.records[0];
+    await cleanup.handleCleanupOperation("player", { type: "complete", reservationId: first.id, path: first.path });
+    const before = writes;
+    currentSession = "replacement-player-session";
+    await assert.rejects(cleanup.handleCleanupOperation("player", playerBegin(assignmentIds[4], "overflow", currentSession)), /User has too many/);
+    assert.equal(value.records.length, 32);
+    assert.equal(writes, before);
+    assert.equal(await cleanup.handleCleanupOperation("player", playerBegin(first.assignmentId, first.attemptId, currentSession)), first.id);
+    assert.equal(writes, before);
+  } finally { emit.cleanupFile = original; }
+});
+
+test("parallel Submit and Close overlay/merged reservations fit the limits", async () => {
+  openPlayerAssignments();
+  const original = emit.cleanupFile;
+  emit.cleanupFile = async () => ({ sessionId: "authenticated-player", attempts: [], leases: [] });
+  try {
+    const requests = ["overlay", "merged"].flatMap(kind => [
+      playerBegin("assignment", "submit", "authenticated-player", kind),
+      { ...playerBegin("assignment", "close", "authenticated-player", kind), purpose: "retained-capture",
+        expectedPath: `art/staging/assignment-${kind}-capture-captureA-upload-close.webp` }
+    ]);
+    const ids = await Promise.all(requests.map(request => cleanup.handleCleanupOperation("player", request)));
+    assert.equal(new Set(ids).size, 4);
+    assert.equal(value.records.length, 4);
+  } finally { emit.cleanupFile = original; }
+});
+
+function discoveryContext(overrides = {}) {
+  return { id: "scan", revision: 1, assignmentId: "assignment", promptId: "prompt", promptName: "Creature", playerName: "Ada",
+    sourceUserId: "player", source: "data", folder: "art/staging", stagingRoot: "art/staging", pendingRoot: "art/pending/assignment", createdAt: 1, ...overrides };
+}
+
+test("failed deleted-Prompt discovery remains visible and Refresh discovers without deleting", async () => {
+  value.pendingScans = [discoveryContext()];
+  prompt = null;
+  const picker = foundry.applications.apps.FilePicker;
+  const original = picker.browse;
+  try {
+    picker.browse = async () => { throw new Error("permission denied"); };
+    await cleanup.refreshOrphanFiles();
+    const [scan] = cleanup.getPendingCleanupScans();
+    assert.equal(scan.status, "unableToVerify");
+    assert.equal(scan.promptName, "Creature");
+    assert.equal(scan.playerName, "Ada");
+    assert.equal(scan.folder, "art/staging");
+    assert.ok(scan.orphanedAt);
+    files = [uploadPath, "art/staging/unrelated-overlay.webp"];
+    picker.browse = original;
+    await cleanup.refreshOrphanFiles();
+    assert.deepEqual(cleanup.getPendingCleanupScans(), []);
+    assert.equal(cleanup.getOrphanFiles().length, 1);
+    assert.equal(cleanup.getOrphanFiles()[0].path, uploadPath);
+    assert.equal(cleanup.getOrphanFiles()[0].error, "File found; use Retry Cleanup");
+    assert.deepEqual(files, [uploadPath, "art/staging/unrelated-overlay.webp"]);
+  } finally { picker.browse = original; }
+});
+
+test("pending folder rows exclude retained Prompts and players but retain offline Forge owners", async () => {
+  value.pendingScans = [discoveryContext({ source: "forgevtt", status: "unavailable", error: "Offline" })];
+  assert.deepEqual(cleanup.getPendingCleanupScans(), []);
+  prompt = null;
+  game.users.get("player").active = false;
+  await cleanup.refreshOrphanFiles();
+  assert.equal(cleanup.getPendingCleanupScans()[0].source, "forgevtt");
+  assert.equal(cleanup.getPendingCleanupScans()[0].account, "");
+  assert.equal(cleanup.getPendingCleanupScans()[0].error, "File-owning client is offline");
+  game.user = game.users.get("player");
+  assert.deepEqual(cleanup.getPendingCleanupScans(), []);
+});
+
+test("Refresh groups discovery by exact folder and removes contexts after authoritative absence", async () => {
+  value.pendingScans = [discoveryContext(), discoveryContext({ id: "scan2", assignmentId: "other", sourceUserId: "other", pendingRoot: "art/pending/other" })];
+  prompt = null;
+  files = [uploadPath, "art/staging/other-merged-upload-attempt.webp", "art/staging/unrelated-overlay.webp"];
+  const picker = foundry.applications.apps.FilePicker;
+  const original = picker.browse;
+  let calls = 0;
+  try {
+    picker.browse = async (...args) => { calls++; return original(...args); };
+    await cleanup.refreshOrphanFiles();
+    // The authoritative discovery listing also verifies the found files.
+    assert.equal(calls, 1);
+    assert.equal(value.records.length, 2);
+    assert.equal(value.pendingScans.length, 0);
+    value.records = [];
+    value.pendingScans = [discoveryContext()];
+    files = [];
+    await cleanup.refreshOrphanFiles();
+    assert.equal(value.pendingScans.length, 0);
+    assert.deepEqual(cleanup.getPendingCleanupScans(), []);
+  } finally { picker.browse = original; }
+});
+
+test("discovery batches reject stale revisions and cross-folder context injection", async () => {
+  value.pendingScans = [discoveryContext(), discoveryContext({ id: "scan2", folder: "art/pending/assignment" })];
+  const invoke = scans => cleanup.handleCleanupFileRequest("gm", { action: "discoverBatch", targetUserId: "gm", scans });
+  await assert.rejects(invoke([{ scanId: "scan", revision: 2 }]), /stale/);
+  await assert.rejects(invoke([{ scanId: "scan", revision: 1 }, { scanId: "scan2", revision: 1 }]), /boundary/);
+  assert.equal(writes, 0);
+});
+
+test("bounded Refresh exposes unattempted folders and the next Refresh finishes them", async () => {
+  prompt = null;
+  value.pendingScans = Array.from({ length: 11 }, (_, index) => discoveryContext({ id: `scan${index}`, folder: `art${index}/staging`, stagingRoot: `art${index}/staging` }));
+  const picker = foundry.applications.apps.FilePicker;
+  const original = picker.browse;
+  let calls = 0;
+  try {
+    picker.browse = async (...args) => { calls++; return original(...args); };
+    await cleanup.refreshOrphanFiles();
+    assert.equal(calls, 10);
+    assert.equal(value.pendingScans.length, 1);
+    assert.equal(cleanup.getPendingCleanupScans()[0].deferred, true);
+    await cleanup.refreshOrphanFiles();
+    assert.equal(calls, 11);
+    assert.deepEqual(cleanup.getPendingCleanupScans(), []);
+  } finally { picker.browse = original; }
+});
+
+test("Refresh retains the original Forge folder when a response changes accounts", async () => {
+  prompt = null;
+  const folder = "https://assets.forge-vtt.com/owner/art/staging";
+  value.pendingScans = [discoveryContext({ source: "forgevtt", folder })];
+  const original = emit.cleanupFile;
+  try {
+    emit.cleanupFile = async () => ({ scans: [{ scanId: "scan", files: [] }], folder: "https://assets.forge-vtt.com/other/art/staging", files: [] });
+    await cleanup.refreshOrphanFiles();
+    assert.equal(value.pendingScans.length, 1);
+    assert.equal(cleanup.getPendingCleanupScans()[0].folder, folder);
+    assert.equal(cleanup.getPendingCleanupScans()[0].account, "owner");
+    assert.equal(cleanup.getPendingCleanupScans()[0].status, "unableToVerify");
   } finally { emit.cleanupFile = original; }
 });

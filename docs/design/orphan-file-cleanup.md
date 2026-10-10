@@ -15,6 +15,8 @@ Approved 2026-10-09; replaces the manual-only cleanup proposal. API evidence is 
 
 Internal uploads reserve a registry record before creating a file, use unique attempt names, and record each provider-returned path independently. A completed upload remains protected until the adopting Submission/capture is persisted or the attempt definitively fails. Save obtains a durable usage lease before reading internal files. Registry mutations are serialized through the active GM and remote actions authenticate the transport initiator.
 
+Authenticate the issuing browser session before accepting upload intent. Allow at most eight outstanding uploads per Assignment and 32 per user across sessions; exact retries remain idempotent at the limit. These limits accommodate concurrent Submit and Close while preventing unbounded unresolved reservations.
+
 Disconnection or a replacement browser session does not prove that an outstanding provider request or Save finished. Keep uncertain upload intents and read leases protected; a missing-file listing cannot discard an unsettled upload reservation.
 
 Prompt Delete requires its usual confirmation and close-first rule. Persist all attributable cleanup candidates before deleting the Prompt. Registry failure preserves the Prompt; journal deletion failure preserves its file references. Physical deletion runs after Prompt deletion and never blocks it once outstanding cleanup is durably recorded.
@@ -26,6 +28,8 @@ Every GM startup runs additive recovery against retained Prompts, even when regi
 The Prompt Library has a small GM-only Orphaned files button and unresolved-entry count. Its singleton world-shared window retains files that cannot be deleted, whose deletion fails, or whose deletion cannot be confirmed. Show original Prompt/player, filename, exact folder/account/path, orphaned date, and current reason/status. Include Copy Path/URL, Assets Library link, Refresh, and Retry Cleanup.
 
 Opening the window and Refresh verify existence without requesting deletion. Retry Cleanup requests deletion explicitly. Automatic attempts also run when candidates first become eligible, at startup, and when a relevant owner reconnects; no continuous polling or rapid retry loops.
+
+Unfinished discovery for deleted Prompts appears separately as folder checks, with original labels and copyable folder references. The accessible Library count distinguishes known files from unfinished checks. Refresh retries discovery and shares authoritative exact-folder listings with file verification; it does not infer that an unchecked folder is empty.
 
 Only authoritative absence removes records. Wrong-account, permission, network, and malformed-listing results retain them as unable to verify. Successful deletion without reliable verification remains deletion unconfirmed. Unresolved entries never expire merely with age.
 

@@ -68,7 +68,9 @@ export class OrphanFiles extends HandlebarsApplicationMixin(ApplicationV2) {
   async _prepareContext() {
     assertGM();
     const service = await this.service();
-    const rows = service.getOrphanFiles().map(record => ({
+    const files = service.getOrphanFiles();
+    const scans = service.getPendingCleanupScans?.() ?? [];
+    const rows = files.map(record => ({
       id: record.id,
       path: record.path,
       filename: record.path.split(/[\\/]/).at(-1),
@@ -78,8 +80,21 @@ export class OrphanFiles extends HandlebarsApplicationMixin(ApplicationV2) {
       folder: record.folder,
       orphanedDate: displayDate(record.orphanedAt),
       status: game.i18n.localize(`${PREFIX}status.${record.status}`),
-      error: localizedReason(record)
+      error: localizedReason(record),
+      isFolder: false
     }));
+    rows.push(...scans.map(scan => ({
+      id: scan.id,
+      path: scan.folder,
+      filename: game.i18n.localize(`${PREFIX}folderCheck`),
+      promptName: scan.promptName || game.i18n.localize(`${PREFIX}unknown`),
+      playerName: scan.playerName || game.i18n.localize(`${PREFIX}unknown`),
+      account: scan.account || game.i18n.localize(`${PREFIX}${scan.source === "data" ? "localAccount" : "unknown"}`),
+      folder: scan.folder,
+      status: game.i18n.localize(`${PREFIX}status.folderCheck`),
+      error: game.i18n.localize(`${PREFIX}reason.folderCheck`),
+      isFolder: true
+    })));
     return { rows, hasRows: rows.length > 0, busy: Boolean(this.#busy), count: rows.length };
   }
 
@@ -108,7 +123,9 @@ export class OrphanFiles extends HandlebarsApplicationMixin(ApplicationV2) {
   static async #onCopy(_event, target) {
     assertGM();
     const service = await this.service();
-    const record = service.getOrphanFiles().find(row => row.id === target.dataset.fileId);
-    if ( record ) await this.copy(record.path);
+    const folder = target.dataset.recordKind === "folder";
+    const records = folder ? service.getPendingCleanupScans?.() ?? [] : service.getOrphanFiles();
+    const record = records.find(row => row.id === target.dataset.fileId);
+    if ( record ) await this.copy(folder ? record.folder : record.path);
   }
 }

@@ -1541,3 +1541,4 @@
 .drawing-prompts .dp-orphans-row dd { margin: 0; overflow-wrap: anywhere; }
 .drawing-prompts .dp-orphans-row button { width: auto; }
 .drawing-prompts .dp-orphans-error { display: block; opacity: 0.85; }
+.drawing-prompts .dp-orphans-row--folder { border-style: dashed; }

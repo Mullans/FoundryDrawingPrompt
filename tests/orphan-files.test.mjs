@@ -35,7 +35,7 @@ const record = {
   playerName: "Pat", account: "account", folder: "internal", orphanedAt: 1, status: "denied", error: "Forbidden"
 };
 function service(overrides = {}) {
-  return { getOrphanFiles: () => [record], refreshOrphanFiles: async () => {}, reconcileFileCleanup: async () => {}, ...overrides };
+  return { getOrphanFiles: () => [record], getPendingCleanupScans: () => [], refreshOrphanFiles: async () => {}, reconcileFileCleanup: async () => {}, ...overrides };
 }
 
 test("fallback metadata preserves original ownership and reports access failure", async () => {
@@ -60,6 +60,39 @@ test("fallback explanations localize stable statuses and deferred or uncertain r
   const app = new OrphanFiles({}, { service: async () => service({ getOrphanFiles: () => records }) });
   const { rows } = await app._prepareContext();
   for ( const row of rows ) assert.equal(row.error, english[`DRAWING-PROMPTS.orphans.reason.${row.id}`]);
+});
+
+test("unfinished folder checks remain visible when no orphan files have been identified", async () => {
+  const scan = { id: "scan", folder: "https://assets.forge-vtt.com/account/internal", account: "account", promptName: "Deleted goblin", playerName: "Pat" };
+  const copies = [];
+  const app = new OrphanFiles({}, { service: async () => service({ getOrphanFiles: () => [], getPendingCleanupScans: () => [scan] }), copy: async path => copies.push(path) });
+  const context = await app._prepareContext();
+  assert.equal(context.hasRows, true);
+  assert.equal(context.count, 1);
+  assert.equal(context.rows[0].isFolder, true);
+  assert.equal(context.rows[0].filename, english["DRAWING-PROMPTS.orphans.folderCheck"]);
+  assert.equal(context.rows[0].status, english["DRAWING-PROMPTS.orphans.status.folderCheck"]);
+  assert.equal(context.rows[0].error, english["DRAWING-PROMPTS.orphans.reason.folderCheck"]);
+  assert.equal(context.rows[0].promptName, "Deleted goblin");
+  assert.equal(context.rows[0].account, "account");
+  assert.equal(context.rows[0].orphanedDate, undefined, "an unchecked folder is not an orphaned file");
+  await OrphanFiles.DEFAULT_OPTIONS.actions.copyPath.call(app, null, { dataset: { fileId: "scan", recordKind: "folder", path: "untrusted" } });
+  assert.deepEqual(copies, [scan.folder]);
+});
+
+test("Refresh replaces unfinished folder rows with the latest discovery results", async () => {
+  let pending = [{ id: "scan", folder: "internal", promptName: "Deleted" }];
+  let files = [];
+  const app = new OrphanFiles({}, { service: async () => service({
+    getOrphanFiles: () => files, getPendingCleanupScans: () => pending,
+    refreshOrphanFiles: async () => { pending = []; files = [record]; }
+  }) });
+  assert.equal((await app._prepareContext()).rows[0].isFolder, true);
+  await app.refresh();
+  const context = await app._prepareContext();
+  assert.equal(context.rows.length, 1);
+  assert.equal(context.rows[0].isFolder, false);
+  assert.equal(context.rows[0].path, record.path);
 });
 
 test("players cannot open, inspect, refresh or copy registry metadata", async () => {
@@ -133,12 +166,19 @@ test("copy resolves the current record rather than trusting a DOM-provided path"
 test("library count uses world fallback rows regardless of Prompt owner and delegates opening", async () => {
   let opens = 0;
   const library = new PromptLibrary({}, {
-    loadPrompts: () => [], getOrphanFiles: () => [record, { ...record, id: "other" }],
+    loadPrompts: () => [], getOrphanFiles: () => [record, { ...record, id: "other" }], getPendingCleanupScans: () => [],
     openOrphanFiles: async () => { opens++; }
   });
   assert.equal((await library._prepareContext()).orphanCount, 2);
   await PromptLibrary.DEFAULT_OPTIONS.actions.orphanFiles.call(library);
   assert.equal(opens, 1);
+});
+
+test("library count labels distinguish pending folder checks from known orphan files", async () => {
+  const library = new PromptLibrary({}, { loadPrompts: () => [], getOrphanFiles: () => [], getPendingCleanupScans: () => [{ id: "scan" }] });
+  const context = await library._prepareContext();
+  assert.equal(context.orphanCount, 1);
+  assert.match(context.orphanCountLabel, /0 files, 1 unfinished folder checks/);
 });
 
 test("opening paints cached records and reuses its singleton while verification is pending", async () => {

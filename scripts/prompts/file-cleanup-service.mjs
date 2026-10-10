@@ -6,6 +6,9 @@ import { assertGmInitiator } from "./socket-auth.mjs";
 
 const SETTING = "fileCleanupRegistry";
 const FALLBACK = new Set(["unsupported", "unavailable", "denied", "unconfirmed", "unableToVerify", "failed"]);
+const MAX_OUTSTANDING_PER_ASSIGNMENT = 8;
+const MAX_OUTSTANDING_PER_USER = 32;
+const clientSessionChecks = new Map();
 let queue = Promise.resolve();
 let cleanupQueue = Promise.resolve();
 let refreshRun = null;
@@ -142,6 +145,30 @@ function protectedRecord(record, state, paths) {
     || (record.purpose === "recovered" && loadPrompt(record.promptId)?.lifecycleStatus === "open");
 }
 
+async function validateUploadSession(initiatorId, payload) {
+  const user = users().find(item => item.id === initiatorId);
+  if ( !user ) throw new Error("Unknown cleanup initiator");
+  if ( !["overlay", "merged"].includes(payload.kind) || !/^[A-Za-z0-9_-]{1,64}$/.test(payload.attemptId ?? "") ) throw new Error("Invalid upload identity");
+  const duplicate = registry().records.find(item => item.assignmentId === payload.assignmentId && item.attemptId === payload.attemptId && item.kind === payload.kind);
+  if ( duplicate ) {
+    if ( duplicate.sourceUserId !== initiatorId || duplicate.path !== cleanupFileIdentity(payload.expectedPath)?.path ) throw new Error("Upload replay identity changed");
+  } else await context(payload.assignmentId, initiatorId);
+  if ( typeof payload.sessionId !== "string" || !payload.sessionId || payload.sessionId.length > 128 ) throw new Error("Upload requires the authenticated client session");
+  if ( initiatorId === game.user.id ) {
+    if ( payload.sessionId !== sessionId ) throw new Error("Upload session does not match its authenticated client");
+    return;
+  }
+  if ( !user.active ) throw new Error("Upload client is not connected");
+  let check = clientSessionChecks.get(initiatorId);
+  if ( !check ) {
+    check = requestCleanupClient(initiatorId, { action: "sessions", targetUserId: initiatorId });
+    clientSessionChecks.set(initiatorId, check);
+    void check.finally(() => { if ( clientSessionChecks.get(initiatorId) === check ) clientSessionChecks.delete(initiatorId); }).catch(() => {});
+  }
+  const actual = await check;
+  if ( actual?.sessionId !== payload.sessionId ) throw new Error("Upload session does not match its authenticated client");
+}
+
 async function context(assignmentId, initiatorId) {
   const prompt = loadPrompt(getPromptIdForAssignment(assignmentId));
   const assignment = Object.values(prompt?.assignments ?? {}).find(item => item.id === assignmentId);
@@ -174,6 +201,17 @@ export function getOrphanFiles() {
   let paths;
   try { paths = protectedPaths(state); } catch (_error) { return []; }
   return state.records.filter(record => FALLBACK.has(record.status) && !protectedRecord(record, state, paths)).map(row);
+}
+
+/** Unchecked folders remain visible even when no individual file is known. */
+export function getPendingCleanupScans() {
+  if ( !game.user?.isGM ) return [];
+  return registry().pendingScans.filter(scan => !loadPrompt(scan.promptId)
+    && (FALLBACK.has(scan.status) || scan.deferred)).map(scan => {
+    const identity = cleanupFileIdentity(`${scan.folder}/discovery.webp`);
+    return { ...scan, account: identity?.source === "forgevtt" ? identity.account : "",
+      orphanedAt: scan.orphanedAt ?? scan.createdAt ?? scan.lastAttemptAt };
+  });
 }
 
 export async function beginInternalUpload(data) {
@@ -220,6 +258,9 @@ export async function refreshOrphanFiles() {
 export async function handleCleanupOperation(initiatorId, payload) {
   if ( !isWriter() ) throw new Error("Only the active GM may mutate file cleanup tracking");
   if ( !payload || typeof payload !== "object" ) throw new Error("Invalid cleanup operation");
+  // Session RPCs never hold the world writer queue. The transaction below
+  // rechecks elected authority, current Assignment ownership and both limits.
+  if ( payload.type === "begin" ) await validateUploadSession(initiatorId, payload);
   if ( ["reconcile", "refresh"].includes(payload.type) ) {
     assertGmInitiator(initiatorId, users());
     const job = cleanupQueue.then(() => runCleanupCycle(payload));
@@ -227,6 +268,7 @@ export async function handleCleanupOperation(initiatorId, payload) {
     return job;
   }
   return serialize(async () => {
+    if ( !isWriter() ) throw new Error("Active GM changed before registry mutation");
     const state = registry();
     const user = users().find(item => item.id === initiatorId);
     if ( !user ) throw new Error("Unknown cleanup initiator");
@@ -238,13 +280,16 @@ export async function handleCleanupOperation(initiatorId, payload) {
         return duplicate.id;
       }
       const { prompt, assignment, validation } = await context(payload.assignmentId, initiatorId);
+      const outstanding = state.records.filter(item => ["uploading", "ready"].includes(item.state));
+      if ( outstanding.filter(item => item.assignmentId === assignment.id).length >= MAX_OUTSTANDING_PER_ASSIGNMENT ) throw new Error("Assignment has too many outstanding uploads");
+      if ( outstanding.filter(item => item.sourceUserId === initiatorId).length >= MAX_OUTSTANDING_PER_USER ) throw new Error("User has too many outstanding uploads");
       const record = {
         id: id(), assignmentId: assignment.id, promptId: prompt.id, promptName: prompt.promptName || prompt.promptText || "",
         playerName: assignment.userName, sourceUserId: initiatorId, attemptId: payload.attemptId, kind: payload.kind,
         purpose: ["staging", "retained-capture", "pending-submission", "pending", "capture", "submission"].includes(payload.purpose)
           ? payload.purpose : "submission", path: payload.expectedPath,
         stagingRoot: validation.stagingRoot, pendingRoot: validation.pendingRoot,
-        createdAt: Date.now(), state: "uploading", status: "pending", revision: 1, leases: [], sessionId: payload.sessionId ?? null
+        createdAt: Date.now(), state: "uploading", status: "pending", revision: 1, leases: [], sessionId: payload.sessionId
       };
       if ( !await allowed(record, record.path) ) throw new Error("Upload path outside its Assignment");
       if ( !cleanupFileIdentity(record.path).relativePath.endsWith(`-upload-${record.attemptId}.${record.path.endsWith(".png") ? "png" : "webp"}`) ) throw new Error("Upload filename does not match its unique attempt");
@@ -340,7 +385,11 @@ export async function handleCleanupOperation(initiatorId, payload) {
 
 async function runCleanupCycle(payload) {
   if ( !isWriter() ) throw new Error("Active GM changed before cleanup started");
-  if ( payload.type === "refresh" ) await verifyCandidates();
+  if ( payload.type === "refresh" ) {
+    const listings = new Map();
+    await retryDiscovery(registry(), { retry: true, verificationOnly: true, listings }, cycleBudget(false));
+    await verifyCandidates(listings);
+  }
   else {
     const budget = cycleBudget(payload.manual === true);
     if ( payload.scan ) {
@@ -397,7 +446,7 @@ async function discoverPrompt(prompt, state, browsed = new Map(), { defer = fals
       if ( browsed.get(root) === null ) {
         state.pendingScans ??= [];
         if ( !state.pendingScans.some(scan => scan.assignmentId === assignment.id && scan.folder === root && scan.sourceUserId === sourceUserId) ) state.pendingScans.push({
-          id: id(), revision: 1, assignmentId: assignment.id, promptId: prompt.id, promptName: prompt.promptName || prompt.promptText || "",
+          id: id(), revision: 1, createdAt: Date.now(), assignmentId: assignment.id, promptId: prompt.id, promptName: prompt.promptName || prompt.promptText || "",
           playerName: assignment.userName, sourceUserId, folder: root, source: globalThis.ForgeVTT?.usingTheForge ? "forgevtt" : "data",
           stagingRoot: originalValidation.stagingRoot, pendingRoot: originalValidation.pendingRoot
         });
@@ -428,39 +477,83 @@ function validationForFolder(folder, assignmentId, fallback) {
   return fallback;
 }
 
-async function retryDiscovery(state, { userId = null, retry = false, scan: startup = false } = {}, budget = cycleBudget(true)) {
-  for ( const scan of [...(state.pendingScans ?? [])].sort((a, b) => (a.lastAttemptAt ?? 0) - (b.lastAttemptAt ?? 0)) ) {
+async function retryDiscovery(state, { userId = null, retry = false, scan: startup = false, verificationOnly = false, listings = null } = {}, budget = cycleBudget(true)) {
+  const groups = new Map();
+  for ( const scan of [...state.pendingScans].sort((a, b) => (a.lastAttemptAt ?? 0) - (b.lastAttemptAt ?? 0)) ) {
     if ( userId && scan.sourceUserId !== userId ) continue;
-    if ( scan.lastAttemptAt && !retry && !startup && !userId ) continue;
+    if ( scan.lastAttemptAt && !scan.deferred && !retry && !startup && !userId ) continue;
     const target = scan.source === "data" ? game.user : users().find(user => user.id === scan.sourceUserId && user.active);
-    if ( !target ) continue;
-    if ( !budget.take() ) break;
-    let result;
-    const payload = { action: "discover", scanId: scan.id, revision: scan.revision, targetUserId: target.id };
-    try {
-      result = target.id === game.user.id ? await withTimeout(handleCleanupFileRequest(game.user.id, payload)) : await requestCleanupClient(target.id, payload);
-    } catch (_error) {
-      await serialize(async () => {
-        const latest = registry();
-        const current = latest.pendingScans.find(item => item.id === scan.id);
-        if ( current?.revision === scan.revision ) { current.lastAttemptAt = Date.now(); current.revision++; await persist(latest); }
-      });
+    const base = JSON.stringify([scan.source, scan.folder, target?.id ?? scan.sourceUserId]);
+    let key = base;
+    let chunk = 0;
+    while ( groups.get(key)?.scans.length >= 128 ) key = `${base}:${++chunk}`;
+    if ( !groups.has(key) ) groups.set(key, { target, scans: [] });
+    groups.get(key).scans.push(scan);
+  }
+  const retain = async (scans, status, error, deferred = false) => serialize(async () => {
+    const latest = registry();
+    let changed = false;
+    for ( const scan of scans ) {
+      const current = latest.pendingScans.find(item => item.id === scan.id);
+      if ( current?.revision !== scan.revision ) continue;
+      current.status = status; current.error = error; current.deferred = deferred;
+      current.orphanedAt ??= Date.now();
+      if ( !deferred ) current.lastAttemptAt = Date.now();
+      current.revision++; changed = true;
+    }
+    if ( changed ) await persist(latest);
+  });
+  for ( const { target, scans } of groups.values() ) {
+    if ( !target ) {
+      await retain(scans, "unavailable", "File-owning client is offline");
       continue;
     }
-    if ( !Array.isArray(result?.files) ) continue;
-    await serialize(async () => {
-    const latest = registry();
-    const current = latest.pendingScans.find(item => item.id === scan.id);
-    if ( current?.revision !== scan.revision ) return;
-    for ( const path of result.files ) {
-      if ( latest.exports.includes(path) || latest.records.some(record => record.path === path) ) continue;
-      for ( const kind of ["overlay", "merged"] ) {
-        const record = { ...scan, id: id(), kind, path, purpose: "recovered", state: "settled", status: "pending", revision: 1, createdAt: Date.now(), leases: [] };
-        if ( await allowed(record, path) ) { latest.records.push(record); break; }
-      }
+    if ( !budget.take() ) {
+      await retain(scans, "unavailable", "Folder discovery deferred; use Refresh", true);
+      continue;
     }
-    latest.pendingScans = latest.pendingScans.filter(item => item.id !== scan.id);
-    await persist(latest);
+    const observedRecords = new Set(registry().records.map(record => record.id));
+    let result;
+    const payload = { action: "discoverBatch", scans: scans.map(scan => ({ scanId: scan.id, revision: scan.revision })), targetUserId: target.id };
+    try {
+      result = target.id === game.user.id ? await withTimeout(handleCleanupFileRequest(game.user.id, payload)) : await requestCleanupClient(target.id, payload);
+      if ( !Array.isArray(result?.scans) || scans.some(scan => !Array.isArray(result.scans.find(item => item.scanId === scan.id)?.files)) ) throw new Error("Malformed discovery response");
+      if ( listings ) {
+        const identity = cleanupFileIdentity(`${result.folder}/discovery.webp`);
+        if ( !identity || !Array.isArray(result.files) || result.files.some(path => {
+          const file = cleanupFileIdentity(path);
+          return !file || file.source !== identity.source || file.account !== identity.account || file.folder !== identity.folder;
+        }) ) throw new Error("Malformed folder verification");
+        for ( const scan of scans ) {
+          const original = cleanupFileIdentity(`${scan.folder}/discovery.webp`);
+          if ( !original || (original.source === "forgevtt" && original.folder !== identity.folder)
+            || original.relativePath !== identity.relativePath ) throw new Error("Discovery changed the owning account or folder");
+        }
+        const key = `${identity.source}:${identity.account}:${identity.folder}:${target.id}`;
+        listings.set(key, { files: new Set(result.files), observedRecords });
+      }
+    } catch (_error) {
+      await retain(scans, "unableToVerify", "Folder contents could not be verified");
+      continue;
+    }
+    await serialize(async () => {
+      const latest = registry();
+      let changed = false;
+      for ( const scan of scans ) {
+        const current = latest.pendingScans.find(item => item.id === scan.id);
+        if ( current?.revision !== scan.revision ) continue;
+        for ( const path of result.scans.find(item => item.scanId === scan.id).files ) {
+          if ( latest.exports.includes(path) || latest.records.some(record => record.path === path) ) continue;
+          for ( const kind of ["overlay", "merged"] ) {
+            const record = { ...scan, id: id(), kind, path, purpose: "recovered", state: "settled", status: verificationOnly ? "unavailable" : "pending",
+              error: verificationOnly ? "File found; use Retry Cleanup" : undefined, deferred: verificationOnly, orphanedAt: Date.now(), revision: 1, createdAt: Date.now(), leases: [] };
+            if ( await allowed(record, path) ) { latest.records.push(record); break; }
+          }
+        }
+        latest.pendingScans = latest.pendingScans.filter(item => item.id !== scan.id);
+        changed = true;
+      }
+      if ( changed ) await persist(latest);
     });
   }
 }
@@ -557,9 +650,16 @@ export async function handleCleanupFileRequest(initiatorId, payload) {
       return records.map(record => ({ recordId: record.id, status: files.has(record.path) ? "exists" : "absent" }));
     } catch (_error) { return records.map(record => ({ recordId: record.id, status: "unableToVerify", error: "File existence could not be verified" })); }
   }
-  if ( payload.action === "discover" ) {
-    const scan = state.pendingScans.find(item => item.id === payload.scanId);
-    if ( !scan || scan.revision !== payload.revision || (scan.source !== "data" && scan.sourceUserId !== game.user.id) ) throw new Error("Discovery context is missing, stale, or belongs to another client");
+  if ( payload.action === "discover" || payload.action === "discoverBatch" ) {
+    const requests = payload.action === "discover" ? [{ scanId: payload.scanId, revision: payload.revision }] : payload.scans;
+    if ( !Array.isArray(requests) || !requests.length || requests.length > 128 ) throw new Error("Invalid discovery batch");
+    const scans = requests.map(request => {
+      const scan = state.pendingScans.find(item => item.id === request.scanId);
+      if ( !scan || scan.revision !== request.revision || (scan.source !== "data" && scan.sourceUserId !== game.user.id) ) throw new Error("Discovery context is missing, stale, or belongs to another client");
+      return scan;
+    });
+    const scan = scans[0];
+    if ( scans.some(item => item.folder !== scan.folder || item.source !== scan.source || (scan.source !== "data" && item.sourceUserId !== scan.sourceUserId)) ) throw new Error("Discovery batch crosses folder or account boundary");
     let folder = scan.folder;
     let identity = cleanupFileIdentity(`${folder}/discovery.webp`);
     if ( globalThis.ForgeVTT?.usingTheForge && identity?.source === "data" ) {
@@ -570,12 +670,17 @@ export async function handleCleanupFileRequest(initiatorId, payload) {
     }
     if ( !identity ) throw new Error("Unsafe discovery folder");
     const files = await browseCleanupFolder(identity);
-    const attributable = [];
-    for ( const path of files ) for ( const kind of ["overlay", "merged"] ) {
-      if ( await allowed({ ...scan, kind }, path) ) { attributable.push(path); break; }
+    const results = [];
+    for ( const context of scans ) {
+      const attributable = [];
+      for ( const path of files ) for ( const kind of ["overlay", "merged"] ) {
+        if ( await allowed({ ...context, kind }, path) ) { attributable.push(path); break; }
+      }
+      results.push({ scanId: context.id, files: attributable });
     }
-    return { files: attributable };
+    return payload.action === "discover" ? { files: results[0].files } : { scans: results, folder: identity.folder, files: [...files] };
   }
+
   const record = state.records.find(item => item.id === payload.recordId);
   if ( !record || record.revision !== payload.revision || !await allowed(record, record.path) ) throw new Error("Cleanup record is missing, stale, or unsafe");
   if ( protectedRecord(record, state, protectedPaths(state)) ) throw new Error("File is still protected");
@@ -647,7 +752,7 @@ async function cleanCandidates({ retry = false, userId = null } = {}, budget = c
   });
 }
 
-async function verifyCandidates() {
+async function verifyCandidates(listings = new Map()) {
   const state = registry();
   const groups = new Map();
   const paths = protectedPaths(state);
@@ -663,7 +768,12 @@ async function verifyCandidates() {
   for ( const records of groups.values() ) {
     const first = records[0];
     let results;
-    if ( clientFor(first) === game.user.id ) {
+    const identity = cleanupFileIdentity(first.path);
+    const key = `${identity.source}:${identity.account}:${identity.folder}:${clientFor(first)}`;
+    const listing = listings.get(key);
+    if ( listing && records.every(record => listing.observedRecords.has(record.id) || listing.files.has(record.path)) ) {
+      results = records.map(record => ({ recordId: record.id, status: listing.files.has(record.path) ? "exists" : "absent" }));
+    } else if ( clientFor(first) === game.user.id ) {
       let files;
       try { files = await withTimeout(browseCleanupFolder(cleanupFileIdentity(first.path))); } catch (_error) { files = null; }
       results = records.map(record => ({ recordId: record.id, status: files ? (files.has(record.path) ? "exists" : "absent") : "unableToVerify" }));

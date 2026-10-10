@@ -410,6 +410,34 @@ test("Close retains both available previews and cancellations after reloading", 
   }
 });
 
+for ( const receiptTs of [999, 1001] ) test(`submission timing uses receipt ${receiptTs} before cleanup writes cross the deadline`, async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { getPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");
+  storedPrompt.assignments["a-saved"].status = STATUS.OPENED;
+  storedPrompt.assignments["a-saved"].assets = {};
+  Object.assign(storedPrompt, { timerStatus: "running", deadlineAt: 1000, remainingMs: null });
+  const originalNow = Date.now;
+  const originalSet = game.settings.set;
+  let now = receiptTs;
+  Date.now = () => now;
+  game.settings.set = async function(...args) {
+    if ( args[1] === "fileCleanupRegistry" ) now = 1500;
+    return originalSet.apply(this, args);
+  };
+  try {
+    await getSocketHandlers().drawingSubmitted.call({ socketdata: { userId: "u1" } }, "a-saved", "u1", {
+      mode: "staged", width: 512, height: 512, formats: { overlay: "png" },
+      staged: { overlayPath: "worlds/test-world/drawing-prompts/staging/a-saved-overlay.png" }
+    });
+    assert.equal(now, 1500, "tracking writes advanced the clock past the deadline");
+    assert.equal(storedPrompt.assignments["a-saved"].submittedAt, receiptTs);
+    assert.equal(getPendingSubmission("a-saved").receiptTs, receiptTs);
+    assert.equal(storedPrompt.assignments["a-saved"].late, receiptTs > 1000);
+    assert.equal(storedPrompt.assignments["a-saved"].overtimeMs, receiptTs > 1000 ? 1 : null);
+    await cleanup.waitForFileCleanupIdle();
+  } finally { Date.now = originalNow; game.settings.set = originalSet; }
+});
+
 test("Close upload cannot overwrite submission pixels accepted while capture upload is pending", async () => {
   const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
   const { getPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");

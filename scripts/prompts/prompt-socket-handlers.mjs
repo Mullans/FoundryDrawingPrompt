@@ -294,6 +294,8 @@ async function handleDrawingSnapshot(assignmentId, userId, snapshotPayload) {
  * @returns {Promise<void>}
  */
 async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
+  // Receipt time belongs to the authenticated submission, not cleanup IO latency.
+  const receiptTs = Date.now();
   let pair;
   try {
     pair = validateOwningGMSender(getSocketInitiatorId(this), assignmentId, userId);
@@ -315,11 +317,10 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
     await protectExportedFiles(Object.entries(assignment.assets ?? {})
       .filter(([key, value]) => key.endsWith("Path") && typeof value === "string").map(([, value]) => value));
     if ( hasSavedFramingViewAssets(assignment) ) clearFramingViewAssets(assignment);
-    const now = Date.now();
-    if ( assignment.status === STATUS.PENDING ) assignment.markOpened(now);
-    const timing = evaluateSubmissionTiming(prompt.timerState, now);
-    assignment.markSubmitted({ ts: now, ...timing });
-    let receivedSubmission = { ...submissionPayload, receiptTs: now };
+    if ( assignment.status === STATUS.PENDING ) assignment.markOpened(receiptTs);
+    const timing = evaluateSubmissionTiming(prompt.timerState, receiptTs);
+    assignment.markSubmitted({ ts: receiptTs, ...timing });
+    let receivedSubmission = { ...submissionPayload, receiptTs };
     if ( !isStagedSubmission(receivedSubmission) ) {
       try {
         receivedSubmission = await persistSocketSubmission(assignmentId, receivedSubmission);

@@ -110,6 +110,10 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
       const service = await import("../prompts/file-cleanup-service.mjs");
       return service.getOrphanFiles();
     });
+    this.getPendingCleanupScans = dependencies.getPendingCleanupScans ?? (async () => {
+      const service = await import("../prompts/file-cleanup-service.mjs");
+      return service.getPendingCleanupScans?.() ?? [];
+    });
     this.openOrphanFiles = dependencies.openOrphanFiles ?? (async () => {
       const { OrphanFiles } = await import("./orphan-files.mjs");
       return OrphanFiles.open();
@@ -176,9 +180,14 @@ export class PromptLibrary extends HandlebarsApplicationMixin(ApplicationV2) {
       && (!needle || `${prompt.promptName ?? ""}\n${prompt.promptText ?? ""}`.toLocaleLowerCase().includes(needle)));
     const activeId = this.activePromptId();
     const rows = filtered.map(prompt => this.#rowContext(prompt, activeId));
+    const fileCount = (await this.getOrphanFiles()).length;
+    const scanCount = (await this.getPendingCleanupScans()).length;
+    const orphanCountLabel = localize("DRAWING-PROMPTS.orphans.countLabel", "Orphaned files: {files} files, {folders} unfinished folder checks")
+      .replace("{files}", fileCount).replace("{folders}", scanCount);
     return {
       rows,
-      orphanCount: (await this.getOrphanFiles()).length,
+      orphanCount: fileCount + scanCount,
+      orphanCountLabel,
       hasRows: rows.length > 0,
       emptyMessage: !all.length ? localize("DRAWING-PROMPTS.library.emptyAll", "No prompts have been saved.")
         : hiddenArchivedMatch ? localize("DRAWING-PROMPTS.library.emptyArchived", "Matching archived prompts are hidden.")
