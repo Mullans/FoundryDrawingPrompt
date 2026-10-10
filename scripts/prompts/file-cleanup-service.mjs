@@ -228,7 +228,7 @@ export async function beginInternalUpload(data) {
     data = { ...data, expectedPath: `https://assets.forge-vtt.com/${account}/${identity.relativePath.split("/").map(encodeURIComponent).join("/")}` };
   }
   const token = id();
-  activeAttempts.set(token, { attemptId: data.attemptId, reservationId: null });
+  activeAttempts.set(token, { attemptId: data.attemptId, path: data.expectedPath, reservationId: null });
   try {
     const reservationId = await operation({ type: "begin", ...data, sessionId });
     activeAttempts.get(token).reservationId = reservationId;
@@ -238,10 +238,17 @@ export async function beginInternalUpload(data) {
 export async function completeInternalUpload(reservationId, data) { return operation({ type: "complete", reservationId, ...data }); }
 export async function settleInternalUploads(pathsOrAttemptIds) {
   const values = Array.isArray(pathsOrAttemptIds) ? pathsOrAttemptIds : [pathsOrAttemptIds];
-  const reservations = new Set(registry().records.filter(record => values.includes(record.path) || values.includes(record.attemptId)).map(record => record.id));
-  const result = await operation({ type: "settle", values });
-  for ( const [token, attempt] of activeAttempts ) if ( reservations.has(attempt.reservationId) ) activeAttempts.delete(token);
-  return result;
+  let reservations = new Set();
+  try {
+    reservations = new Set(registry().records.filter(record => values.includes(record.path) || values.includes(record.attemptId)).map(record => record.id));
+    return await operation({ type: "settle", values });
+  } finally {
+    // The caller attests its HTTP work finished even if durable settlement fails.
+    // Local session recovery can then repair the retained reservation safely.
+    for ( const [token, attempt] of activeAttempts ) {
+      if ( values.includes(attempt.attemptId) || values.includes(attempt.path) || reservations.has(attempt.reservationId) ) activeAttempts.delete(token);
+    }
+  }
 }
 export async function protectExportedFiles(paths) { return operation({ type: "export", paths }); }
 export async function preparePromptCleanup(prompt) { return operation({ type: "prepare", promptId: prompt.id }); }

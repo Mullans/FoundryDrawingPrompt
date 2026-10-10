@@ -672,3 +672,51 @@ test("registration rechecks the current receipt after authenticated session veri
     assert.equal(writes, 0);
   } finally { emit.cleanupFile = original; }
 });
+
+test("failed partial path settlement releases only its image and stale-registry attempt settlement releases the rest", async () => {
+  const overlay = "art/staging/assignment-overlay-upload-failedSettle.webp";
+  const merged = "art/staging/assignment-merged-upload-failedSettle.webp";
+  await cleanup.beginInternalUpload({ assignmentId: "assignment", attemptId: "failedSettle", kind: "overlay", expectedPath: overlay });
+  await cleanup.beginInternalUpload({ assignmentId: "assignment", attemptId: "failedSettle", kind: "merged", expectedPath: merged });
+  failWrites = true;
+  await assert.rejects(cleanup.settleInternalUploads([overlay]), /disk failure/);
+  let sessions = await cleanup.handleCleanupFileRequest("gm", { action: "sessions", targetUserId: "gm" });
+  assert.ok(sessions.attempts.includes("failedSettle"));
+  assert.ok(value.records.every(record => record.state === "uploading"));
+  value.records = [];
+  await cleanup.settleInternalUploads(["failedSettle"]);
+  sessions = await cleanup.handleCleanupFileRequest("gm", { action: "sessions", targetUserId: "gm" });
+  assert.ok(!sessions.attempts.includes("failedSettle"));
+  failWrites = false;
+});
+
+test("partial staged upload preserves its original error when durable settlement fails and session recovery repairs it", async () => {
+  const { stageSubmissionImages } = await import("../scripts/prompts/asset-service.mjs");
+  const picker = foundry.applications.apps.FilePicker;
+  const originalUpload = picker.upload;
+  const originalSet = game.settings.set;
+  const failure = new Error("Original overlay upload failure");
+  game.user.can = () => true;
+  try {
+    picker.upload = async (_source, folder, file) => {
+      if ( file.name.includes("-overlay-") ) throw failure;
+      const path = `${folder}/${file.name}`;
+      files.push(path);
+      return { path };
+    };
+    game.settings.set = async (module, key, next) => {
+      if ( next.records.length === 2 && next.records.every(record => record.state === "settled") ) failWrites = true;
+      return originalSet(module, key, next);
+    };
+    const image = { overlay: { dataUrl: "data:image/png;base64,QQ==", format: "png" }, merged: { dataUrl: "data:image/png;base64,Qg==", format: "png" } };
+    await assert.rejects(stageSubmissionImages("assignment", image), error => error === failure);
+    assert.ok(value.records.some(record => record.kind === "merged" && record.state === "ready"));
+    const sessions = await cleanup.handleCleanupFileRequest("gm", { action: "sessions", targetUserId: "gm" });
+    assert.ok(!sessions.attempts.includes("test-id"));
+    await cleanup.waitForFileCleanupIdle();
+    game.settings.set = originalSet;
+    failWrites = false;
+    await cleanup.reconcileFileCleanup({ scan: true });
+    assert.equal(value.records.find(record => record.kind === "merged").state, "settled");
+  } finally { picker.upload = originalUpload; game.settings.set = originalSet; failWrites = false; }
+});

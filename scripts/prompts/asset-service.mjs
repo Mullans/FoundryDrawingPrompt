@@ -199,14 +199,14 @@ export async function uploadJson(dir, filename, data) {
 export async function stageSubmissionImages(assignmentId, submission, { captureId = null } = {}) {
   if ( captureId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(captureId) ) throw new Error("Invalid capture id");
   if ( !canStageUploads() ) throw new Error(game.i18n.localize("DRAWING-PROMPTS.errors.fileUploadRequired"));
-  // FILES_UPLOAD permits uploads into EXISTING directories only — createDirectory
+  // FILES_UPLOAD permits uploads into EXISTING directories only; createDirectory
   // requires browse rights players usually lack. The GM pre-creates the staging
   // directory at send time (see sendPrompt); if it is missing the upload
   // rejects and the caller falls back to the socket lane.
   const dir = stagingDir();
   const basename = String(assignmentId || "assignment");
-    const overlayBlob = await dataUrlToBlob(submission?.overlay?.dataUrl);
-    const mergedBlob = submission?.merged?.dataUrl ? await dataUrlToBlob(submission.merged.dataUrl) : null;
+  const overlayBlob = await dataUrlToBlob(submission?.overlay?.dataUrl);
+  const mergedBlob = submission?.merged?.dataUrl ? await dataUrlToBlob(submission.merged.dataUrl) : null;
   const attemptId = foundry.utils.randomID();
   const suffix = `${captureId === null ? "" : `-capture-${captureId}`}-upload-${attemptId}`;
   const overlayFilename = `${basename}-overlay${suffix}.${extensionFor(submission?.overlay?.format)}`;
@@ -215,7 +215,7 @@ export async function stageSubmissionImages(assignmentId, submission, { captureI
       { attemptId, kind: "overlay", purpose: captureId ? "retained-capture" : "staging" })
   ];
 
-    if ( mergedBlob ) {
+  if ( mergedBlob ) {
     const mergedFilename = `${basename}-merged${suffix}.${extensionFor(submission.merged.format)}`;
     uploads.push(uploadInternalImage(assignmentId, dir, mergedFilename, mergedBlob,
       { attemptId, kind: "merged", purpose: captureId ? "retained-capture" : "staging" }));
@@ -225,7 +225,8 @@ export async function stageSubmissionImages(assignmentId, submission, { captureI
   const failure = results.find(result => result.status === "rejected");
   if ( failure ) {
     const { settleInternalUploads, reconcileFileCleanup } = await import("./file-cleanup-service.mjs");
-    await settleInternalUploads([attemptId]);
+    try { await settleInternalUploads([attemptId]); }
+    catch (_error) { /* Same-session recovery can repair the persisted intent. */ }
     void reconcileFileCleanup().catch(() => {});
     throw failure.reason;
   }
