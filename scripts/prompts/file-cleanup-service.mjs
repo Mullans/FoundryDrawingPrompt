@@ -174,7 +174,13 @@ async function context(assignmentId, initiatorId) {
   const assignment = Object.values(prompt?.assignments ?? {}).find(item => item.id === assignmentId);
   const user = users().find(item => item.id === initiatorId);
   if ( !prompt || !assignment || !user || (user.isGM ? prompt.gmUserId !== user.id : assignment.userId !== user.id) ) throw new Error("Unauthorized file upload registration");
-  if ( !user.isGM && (prompt.lifecycleStatus !== "open" || assignment.status !== "opened") ) throw new Error("Assignment is not open for uploads");
+  if ( !user.isGM ) {
+    // A received invitation is drawable before its optional OPEN report arrives.
+    // Receipt status belongs to the current persisted delivery generation.
+    const drawable = assignment.status === "opened"
+      || (assignment.status === "pending" && assignment.delivery?.status === "received");
+    if ( prompt.lifecycleStatus !== "open" || !user.active || !assignment.isActive || !drawable ) throw new Error("Assignment is not open for uploads");
+  }
   const { submissionValidationContext } = await import("./pending-submission.mjs");
   return { prompt, assignment, validation: submissionValidationContext(assignmentId) };
 }

@@ -331,7 +331,12 @@ async function handleDrawingSubmitted(assignmentId, userId, submissionPayload) {
     setPendingSubmission(assignment.id, receivedSubmission);
     assignment.pendingSubmission = receivedSubmission;
     await savePrompt(prompt, { assignmentOnly: assignment.id });
-    await settleInternalUploads(Object.values(receivedSubmission.staged ?? {}).filter(path => typeof path === "string"));
+    try {
+      await settleInternalUploads(Object.values(receivedSubmission.staged ?? {}).filter(path => typeof path === "string"));
+    } catch (_error) {
+      // The durable Submission is already accepted. Its references protect the
+      // upload until registry settlement can resume; preserve the player's ACK.
+    }
     Hooks.callAll("drawing-prompts.assignmentUpdated", prompt, assignment);
     Hooks.callAll("drawing-prompts.assignmentSubmitted", prompt, assignment, receivedSubmission);
     const previewSrc = submissionPreviewSrc(receivedSubmission);

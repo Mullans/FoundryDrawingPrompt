@@ -8,7 +8,7 @@ The local Foundry 14 retained-capture harness creates disposable player files, o
 
 The native lifecycle passed on Foundry 14.364 at 2026-10-10 04:43 UTC. The earlier 120-second harness deadline was too short for its complete upload, deletion, reload, reconciliation, and cleanup sequence; the bounded harness now allows four minutes and reports the active step on timeout.
 
-Final integration evidence after bot remediation: 605 Node tests passed (`20261010-144007-40348-node.log`); the full drawing/manager smoke passed (`20261010-142517-63724-node.log`), and deletion/reload/manual Refresh passed (`20261010-142859-55812-node.log`). Logs live under the development-only `.artifacts/test-logs/` folder.
+Final integration evidence after bot remediation: 609 Node tests passed (`20261010-145023-37532-node.log`); the full drawing/manager smoke passed (`20261010-142517-63724-node.log`), and deletion/reload/manual Refresh passed (`20261010-142859-55812-node.log`). Logs live under the development-only `.artifacts/test-logs/` folder.
 
 ## Final paired review
 
@@ -34,6 +34,8 @@ Codex and Greptile reviewed pushed commit `0df733b`. Three findings were verifie
 | Greptile | Failed folder discovery remained hidden after Prompt deletion. | Display unfinished folder checks separately from known files; Refresh retries discovery without deleting assets. |
 
 Codex's follow-up on `817485f` identified three further edge cases: shared overlay/merged attempt tracking on partial registration failure, release failure masking an already committed Save/Submission, and incorrect owner attribution when the configured base contains a `pending` segment. Targeted regressions cover preserving the other in-flight image, returning the committed result while leaving a durable lease for reconciliation, and using exact validated staging/pending roots for discovery ownership.
+
+The follow-up on `ce4d80a` also verifies that post-save registry settlement cannot reject an accepted Submission, and that received, active pending recipients may register full-quality uploads before their assignment-open report persists. Tests cover post-commit setting failure, preserved pending artwork references, receipt changes during the authenticated session request, and rejection of unreceived, withdrawn, inactive, closed, or foreign assignments.
 
 ## Forge acceptance still required
 

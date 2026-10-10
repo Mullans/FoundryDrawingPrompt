@@ -621,3 +621,54 @@ test("custom bases containing pending preserve player staging and exact GM pendi
   assert.equal(value.records.find(record => record.path === pending).sourceUserId, "gm");
   for ( const scan of value.pendingScans ) assert.equal(scan.sourceUserId, scan.folder.endsWith("/staging") ? "player" : "gm");
 });
+
+test("active received pending Assignments permit uploads before OPEN is reported", async () => {
+  prompt.lifecycleStatus = "open";
+  prompt.assignments.assignment.status = "pending";
+  prompt.assignments.assignment.delivery = { status: "received", generation: 3 };
+  const original = emit.cleanupFile;
+  emit.cleanupFile = async () => ({ sessionId: "authenticated-player", attempts: [], leases: [] });
+  try {
+    const reservation = await cleanup.handleCleanupOperation("player", playerBegin("assignment", "receivedPending"));
+    assert.equal(value.records[0].id, reservation);
+    assert.equal(value.records[0].sourceUserId, "player");
+  } finally { emit.cleanupFile = original; }
+});
+
+test("unreceived, inactive, withdrawn, closed, and foreign Assignments still reject upload registration", async () => {
+  const original = emit.cleanupFile;
+  emit.cleanupFile = async () => ({ sessionId: "authenticated-player", attempts: [], leases: [] });
+  try {
+    for ( const delivery of ["pending", "sending", "failed", "withdrawn"] ) {
+      prompt.lifecycleStatus = "open";
+      prompt.assignments.assignment.status = "pending";
+      prompt.assignments.assignment.delivery = { status: delivery, generation: 4 };
+      await assert.rejects(cleanup.handleCleanupOperation("player", playerBegin("assignment", `unreceived${delivery}`)), /not open/);
+    }
+    prompt.assignments.assignment.delivery = { status: "received", generation: 4 };
+    game.users.get("player").active = false;
+    await assert.rejects(cleanup.handleCleanupOperation("player", playerBegin("assignment", "inactiveReceived")), /not open/);
+    game.users.get("player").active = true;
+    prompt.lifecycleStatus = "closed";
+    await assert.rejects(cleanup.handleCleanupOperation("player", playerBegin("assignment", "closedReceived")), /not open/);
+    prompt.lifecycleStatus = "open";
+    prompt.assignments.assignment.userId = "someoneElse";
+    await assert.rejects(cleanup.handleCleanupOperation("player", playerBegin("assignment", "foreignReceived")), /Unauthorized/);
+    assert.equal(writes, 0);
+  } finally { emit.cleanupFile = original; }
+});
+
+test("registration rechecks the current receipt after authenticated session verification", async () => {
+  prompt.lifecycleStatus = "open";
+  prompt.assignments.assignment.status = "pending";
+  prompt.assignments.assignment.delivery = { status: "received", generation: 3 };
+  const original = emit.cleanupFile;
+  emit.cleanupFile = async () => {
+    prompt.assignments.assignment.delivery = { status: "sending", generation: 4 };
+    return { sessionId: "authenticated-player", attempts: [], leases: [] };
+  };
+  try {
+    await assert.rejects(cleanup.handleCleanupOperation("player", playerBegin("assignment", "staleReceipt")), /not open/);
+    assert.equal(writes, 0);
+  } finally { emit.cleanupFile = original; }
+});

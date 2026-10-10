@@ -410,6 +410,45 @@ test("Close retains both available previews and cancellations after reloading", 
   }
 });
 
+test("committed Submission acknowledges success when registry settlement fails", async () => {
+  const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
+  const { getPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");
+  storedPrompt.assignments["a-saved"].status = STATUS.OPENED;
+  storedPrompt.assignments["a-saved"].assets = {};
+  const path = "worlds/test-world/drawing-prompts/staging/a-saved-overlay-upload-postcommit.png";
+  const reservationId = await cleanup.beginInternalUpload({ assignmentId: "a-saved", attemptId: "postcommit", kind: "overlay", expectedPath: path });
+  await cleanup.completeInternalUpload(reservationId, { path });
+  const entry = game.journal.get("p-save");
+  const originalFlag = entry.setFlag;
+  const originalSet = game.settings.set;
+  let committed = false;
+  let settlementFailures = 0;
+  entry.setFlag = async (...args) => {
+    const result = await originalFlag(...args);
+    committed = true;
+    return result;
+  };
+  game.settings.set = async function(...args) {
+    if ( committed && args[1] === "fileCleanupRegistry" && !settlementFailures ) {
+      settlementFailures++;
+      throw new Error("temporary post-commit registry failure");
+    }
+    return originalSet.apply(this, args);
+  };
+  try {
+    await assert.doesNotReject(getSocketHandlers().drawingSubmitted.call({ socketdata: { userId: "u1" } }, "a-saved", "u1", {
+      mode: "staged", width: 512, height: 512, formats: { overlay: "png" }, staged: { overlayPath: path }
+    }));
+    assert.equal(settlementFailures, 1);
+    assert.equal(storedPrompt.assignments["a-saved"].status, STATUS.SUBMITTED);
+    assert.equal(storedPrompt.assignments["a-saved"].pendingSubmission.staged.overlayPath, path);
+    assert.equal(getPendingSubmission("a-saved").staged.overlayPath, path);
+    await cleanup.waitForFileCleanupIdle();
+    assert.ok(game.settings.get(MODULE_ID, "fileCleanupRegistry").records.some(record => record.path === path));
+    assert.deepEqual(cleanup.getOrphanFiles(), [], "accepted Submission protects its file while settlement recovers");
+  } finally { entry.setFlag = originalFlag; game.settings.set = originalSet; }
+});
+
 for ( const receiptTs of [999, 1001] ) test(`submission timing uses receipt ${receiptTs} before cleanup writes cross the deadline`, async () => {
   const { getSocketHandlers } = await import("../scripts/prompts/prompt-socket-handlers.mjs");
   const { getPendingSubmission } = await import("../scripts/prompts/pending-submission.mjs");
