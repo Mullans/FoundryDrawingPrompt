@@ -8,7 +8,7 @@ The local Foundry 14 retained-capture harness creates disposable player files, o
 
 The native lifecycle passed on Foundry 14.364 at 2026-10-10 04:43 UTC. The earlier 120-second harness deadline was too short for its complete upload, deletion, reload, reconciliation, and cleanup sequence; the bounded harness now allows four minutes and reports the active step on timeout.
 
-Final integration evidence after bot remediation: 601 Node tests passed (`20261010-142839-54508-node.log`); the full drawing/manager smoke passed (`20261010-142517-63724-node.log`), and deletion/reload/manual Refresh passed (`20261010-142859-55812-node.log`). Logs live under the development-only `.artifacts/test-logs/` folder.
+Final integration evidence after bot remediation: 605 Node tests passed (`20261010-144007-40348-node.log`); the full drawing/manager smoke passed (`20261010-142517-63724-node.log`), and deletion/reload/manual Refresh passed (`20261010-142859-55812-node.log`). Logs live under the development-only `.artifacts/test-logs/` folder.
 
 ## Final paired review
 
@@ -32,6 +32,8 @@ Codex and Greptile reviewed pushed commit `0df733b`. Three findings were verifie
 | Codex | A player could grow unresolved upload reservations indefinitely or report an unverifiable session. | Validate session identity through the authenticated client and bound outstanding reservations per Assignment and player, including older sessions. Preserve exact replay at the limit. |
 | Greptile | Cleanup persistence latency could mark an on-time submission late. | Capture receipt time at handler entry and retain it for submission time, receipt time, and overtime. Test arrivals immediately before and after the deadline while tracking writes advance the clock. |
 | Greptile | Failed folder discovery remained hidden after Prompt deletion. | Display unfinished folder checks separately from known files; Refresh retries discovery without deleting assets. |
+
+Codex's follow-up on `817485f` identified three further edge cases: shared overlay/merged attempt tracking on partial registration failure, release failure masking an already committed Save/Submission, and incorrect owner attribution when the configured base contains a `pending` segment. Targeted regressions cover preserving the other in-flight image, returning the committed result while leaving a durable lease for reconciliation, and using exact validated staging/pending roots for discovery ownership.
 
 ## Forge acceptance still required
 

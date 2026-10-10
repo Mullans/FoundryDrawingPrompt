@@ -563,3 +563,61 @@ test("Refresh retains the original Forge folder when a response changes accounts
     assert.equal(cleanup.getPendingCleanupScans()[0].status, "unableToVerify");
   } finally { emit.cleanupFile = original; }
 });
+
+test("a rejected parallel image does not release its sibling attempt, and path settlement is per image", async () => {
+  const reservations = [];
+  for ( let index = 0; index < 7; index++ ) reservations.push(await cleanup.beginInternalUpload({ assignmentId: "assignment", attemptId: `cap${index}`, kind: "overlay", expectedPath: `art/staging/assignment-overlay-upload-cap${index}.webp` }));
+  const pair = await Promise.allSettled(["overlay", "merged"].map(kind => cleanup.beginInternalUpload({ assignmentId: "assignment", attemptId: "parallelCap", kind, expectedPath: `art/staging/assignment-${kind}-upload-parallelCap.webp` })));
+  assert.equal(pair.filter(result => result.status === "fulfilled").length, 1);
+  assert.equal(pair.filter(result => result.status === "rejected").length, 1);
+  let sessions = await cleanup.handleCleanupFileRequest("gm", { action: "sessions", targetUserId: "gm" });
+  assert.ok(sessions.attempts.includes("parallelCap"));
+  await cleanup.reconcileFileCleanup({ scan: true });
+  const survivor = value.records.find(record => record.attemptId === "parallelCap");
+  assert.equal(survivor.state, "uploading");
+  await cleanup.settleInternalUploads(["parallelCap", ...Array.from({ length: 7 }, (_, index) => `cap${index}`)]);
+  await cleanup.waitForFileCleanupIdle();
+  const overlayPath = "art/staging/assignment-overlay-upload-twoImages.webp";
+  const mergedPath = "art/staging/assignment-merged-upload-twoImages.webp";
+  await cleanup.beginInternalUpload({ assignmentId: "assignment", attemptId: "twoImages", kind: "overlay", expectedPath: overlayPath });
+  await cleanup.beginInternalUpload({ assignmentId: "assignment", attemptId: "twoImages", kind: "merged", expectedPath: mergedPath });
+  await cleanup.settleInternalUploads([overlayPath]);
+  sessions = await cleanup.handleCleanupFileRequest("gm", { action: "sessions", targetUserId: "gm" });
+  assert.ok(sessions.attempts.includes("twoImages"));
+  await cleanup.settleInternalUploads([mergedPath]);
+  sessions = await cleanup.handleCleanupFileRequest("gm", { action: "sessions", targetUserId: "gm" });
+  assert.ok(!sessions.attempts.includes("twoImages"));
+});
+
+test("failed final lease release preserves the committed task result and allows same-session recovery", async () => {
+  const result = await cleanup.withFileCleanupProtection([uploadPath], async () => { failWrites = true; return "committed"; });
+  assert.equal(result, "committed");
+  assert.equal(value.readLeases.length, 1);
+  const sessions = await cleanup.handleCleanupFileRequest("gm", { action: "sessions", targetUserId: "gm" });
+  assert.equal(sessions.leases.length, 0);
+  failWrites = false;
+  await cleanup.reconcileFileCleanup({ scan: true });
+  assert.equal(value.readLeases.length, 0);
+});
+
+test("a failed final lease release never masks the original task error or GM-change success", async () => {
+  const originalError = new Error("Original Save error");
+  await assert.rejects(cleanup.withFileCleanupProtection([uploadPath], async () => { failWrites = true; throw originalError; }), error => error === originalError);
+  failWrites = false;
+  const result = await cleanup.withFileCleanupProtection([uploadPath], async () => { game.users.get("gm").active = false; game.users.activeGM = null; return "saved"; });
+  assert.equal(result, "saved");
+  assert.equal(value.readLeases.length, 2);
+});
+
+test("custom bases containing pending preserve player staging and exact GM pending ownership", async () => {
+  globalThis.ForgeVTT = { usingTheForge: true };
+  const originalGet = game.settings.get;
+  game.settings.get = (module, key) => key === "fileCleanupRegistry" ? originalGet(module, key) : "shared/pending/art";
+  const staging = "https://assets.forge-vtt.com/player-account/shared/pending/art/staging/assignment-overlay-upload-owned.webp";
+  const pending = "https://assets.forge-vtt.com/gm-account/shared/pending/art/pending/assignment/overlay-upload-owned.webp";
+  prompt.assignments.assignment.pendingSubmission = { staged: { overlayPath: staging }, overlayPath: pending };
+  await cleanup.preparePromptCleanup(prompt);
+  assert.equal(value.records.find(record => record.path === staging).sourceUserId, "player");
+  assert.equal(value.records.find(record => record.path === pending).sourceUserId, "gm");
+  for ( const scan of value.pendingScans ) assert.equal(scan.sourceUserId, scan.folder.endsWith("/staging") ? "player" : "gm");
+});

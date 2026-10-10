@@ -15,7 +15,7 @@ let refreshRun = null;
 let scheduledCleanup = null;
 let settlementDirty = false;
 const sessionId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
-const activeAttempts = new Set();
+const activeAttempts = new Map();
 const activeLeases = new Set();
 const clone = value => JSON.parse(JSON.stringify(value));
 const id = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
@@ -221,16 +221,20 @@ export async function beginInternalUpload(data) {
     if ( !account || !/^[A-Za-z0-9_-]+$/.test(String(account)) ) throw new Error("Forge upload account unavailable");
     data = { ...data, expectedPath: `https://assets.forge-vtt.com/${account}/${identity.relativePath.split("/").map(encodeURIComponent).join("/")}` };
   }
-  activeAttempts.add(data.attemptId);
-  try { return await operation({ type: "begin", ...data, sessionId }); }
-  catch (error) { activeAttempts.delete(data.attemptId); throw error; }
+  const token = id();
+  activeAttempts.set(token, { attemptId: data.attemptId, reservationId: null });
+  try {
+    const reservationId = await operation({ type: "begin", ...data, sessionId });
+    activeAttempts.get(token).reservationId = reservationId;
+    return reservationId;
+  } catch (error) { activeAttempts.delete(token); throw error; }
 }
 export async function completeInternalUpload(reservationId, data) { return operation({ type: "complete", reservationId, ...data }); }
 export async function settleInternalUploads(pathsOrAttemptIds) {
   const values = Array.isArray(pathsOrAttemptIds) ? pathsOrAttemptIds : [pathsOrAttemptIds];
-  const attempts = registry().records.filter(record => values.includes(record.path) || values.includes(record.attemptId)).map(record => record.attemptId);
+  const reservations = new Set(registry().records.filter(record => values.includes(record.path) || values.includes(record.attemptId)).map(record => record.id));
   const result = await operation({ type: "settle", values });
-  for ( const value of [...values, ...attempts] ) activeAttempts.delete(value);
+  for ( const [token, attempt] of activeAttempts ) if ( reservations.has(attempt.reservationId) ) activeAttempts.delete(token);
   return result;
 }
 export async function protectExportedFiles(paths) { return operation({ type: "export", paths }); }
@@ -245,7 +249,13 @@ export async function withFileCleanupProtection(paths, task) {
     await operation({ type: "lease", paths: [...new Set(paths.filter(Boolean))], leaseId, sessionId });
     return await task();
   }
-  finally { activeLeases.delete(leaseId); await operation({ type: "release", leaseId }); }
+  finally {
+    activeLeases.delete(leaseId);
+    // Save has already settled. A failed release leaves its durable lease for
+    // same-session recovery and must not overwrite the result or original error.
+    try { await operation({ type: "release", leaseId }); }
+    catch (_error) { /* The issuing session can attest that this lease is inactive. */ }
+  }
 }
 
 export async function refreshOrphanFiles() {
@@ -435,7 +445,7 @@ async function discoverPrompt(prompt, state, browsed = new Map(), { defer = fals
     }
     for ( const root of roots ) {
       const originalValidation = validationForFolder(root, assignment.id, validation);
-      const sourceUserId = root.includes("/pending/") ? prompt.gmUserId : assignment.userId;
+      const sourceUserId = isPendingFolder(root, originalValidation.pendingRoot) ? prompt.gmUserId : assignment.userId;
       if ( !browsed.has(root) ) {
         // A successful empty listing in the GM's own library says nothing about
         // a player's identically named staging directory.
@@ -459,7 +469,7 @@ async function discoverPrompt(prompt, state, browsed = new Map(), { defer = fals
         const pathValidation = validationForFolder(cleanupFileIdentity(path)?.folder ?? "", assignment.id, validation);
         const record = {
           id: id(), assignmentId: assignment.id, promptId: prompt.id, promptName: prompt.promptName || prompt.promptText || "",
-          playerName: assignment.userName, sourceUserId: path.includes("/pending/") ? prompt.gmUserId : assignment.userId,
+          playerName: assignment.userName, sourceUserId: isPendingFolder(cleanupFileIdentity(path)?.folder, pathValidation.pendingRoot) ? prompt.gmUserId : assignment.userId,
           kind, path, stagingRoot: pathValidation.stagingRoot, pendingRoot: pathValidation.pendingRoot,
           purpose: "recovered", state: "settled", status: "pending", revision: 1, createdAt: Date.now(), leases: []
         };
@@ -467,6 +477,11 @@ async function discoverPrompt(prompt, state, browsed = new Map(), { defer = fals
       }
     }
   }
+}
+
+function isPendingFolder(folder, pendingRoot) {
+  const identity = cleanupFileIdentity(`${folder}/discovery.webp`);
+  return identity?.relativePath === `${pendingRoot}/discovery.webp`;
 }
 
 function validationForFolder(folder, assignmentId, fallback) {
@@ -628,7 +643,7 @@ async function request(record, action) {
 export async function handleCleanupFileRequest(initiatorId, payload) {
   assertGmInitiator(initiatorId, users());
   if ( activeGM()?.id !== initiatorId || payload?.targetUserId !== game.user.id ) throw new Error("Cleanup target or GM identity changed");
-  if ( payload.action === "sessions" ) return { sessionId, attempts: [...activeAttempts], leases: [...activeLeases] };
+  if ( payload.action === "sessions" ) return { sessionId, attempts: [...new Set([...activeAttempts.values()].map(attempt => attempt.attemptId))], leases: [...activeLeases] };
   const state = registry();
   if ( payload.action === "checkBatch" ) {
     if ( !Array.isArray(payload.records) || !payload.records.length ) throw new Error("Empty verification batch");
